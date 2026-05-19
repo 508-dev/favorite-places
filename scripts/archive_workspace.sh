@@ -1,17 +1,67 @@
 #!/usr/bin/env bash
 set -u
 
+dry_run=0
 workspace="${CONDUCTOR_WORKSPACE_PATH:-$(pwd -P)}"
+
+usage() {
+  cat <<'EOF'
+Usage: bash scripts/archive_workspace.sh [--dry-run]
+
+Stops long-running processes that belong to this Conductor workspace.
+
+Options:
+  --dry-run  Print matching processes without sending TERM or KILL.
+  -h, --help Show this help text.
+EOF
+}
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --dry-run)
+      dry_run=1
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "Unknown option: $1" >&2
+      usage >&2
+      exit 2
+      ;;
+  esac
+  shift
+done
+
+describe_pid() {
+  local pid="$1"
+  ps -p "$pid" -o pid=,command= 2>/dev/null || printf '%s\n' "$pid"
+}
 
 terminate_pids() {
   if [ "$#" -gt 0 ]; then
-    kill -TERM "$@" 2>/dev/null || true
+    if [ "$dry_run" -eq 1 ]; then
+      for pid in "$@"; do
+        printf 'Would TERM '
+        describe_pid "$pid"
+      done
+    else
+      kill -TERM "$@" 2>/dev/null || true
+    fi
   fi
 }
 
 kill_pids() {
   if [ "$#" -gt 0 ]; then
-    kill -KILL "$@" 2>/dev/null || true
+    if [ "$dry_run" -eq 1 ]; then
+      for pid in "$@"; do
+        printf 'Would KILL '
+        describe_pid "$pid"
+      done
+    else
+      kill -KILL "$@" 2>/dev/null || true
+    fi
   fi
 }
 
@@ -75,7 +125,9 @@ cleanup_port_range() {
     port=$((port + 1))
   done
 
-  sleep 2
+  if [ "$dry_run" -eq 0 ]; then
+    sleep 2
+  fi
 
   port="$CONDUCTOR_PORT"
   while [ "$port" -le "$end" ]; do
@@ -97,7 +149,9 @@ cleanup_workspace_processes() {
   if [ -n "$pids" ]; then
     terminate_pids $pids
   fi
-  sleep 2
+  if [ "$dry_run" -eq 0 ]; then
+    sleep 2
+  fi
   pids="$(workspace_pids_for_pattern "$pattern")"
   if [ -n "$pids" ]; then
     kill_pids $pids
