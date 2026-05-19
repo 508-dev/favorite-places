@@ -70,6 +70,21 @@ describe("worktree dev port", () => {
     expect(config.port).toBeLessThan(5220);
   });
 
+  it("keeps the default span when only the base port manually overrides Conductor", () => {
+    const config = resolveWorktreeDevPort({
+      env: {
+        CONDUCTOR_PORT: "7100",
+        WORKTREE_DEV_BASE_PORT: "5200",
+      },
+      worktreeRoot: "/repo/conductor-manual-base",
+    });
+
+    expect(config.basePort).toBe(5200);
+    expect(config.span).toBe(DEFAULT_WORKTREE_DEV_PORT_SPAN);
+    expect(config.port).toBeGreaterThanOrEqual(5200);
+    expect(config.port).toBeLessThan(5200 + DEFAULT_WORKTREE_DEV_PORT_SPAN);
+  });
+
   it("lets an explicit worktree port override the derived port", () => {
     const config = resolveWorktreeDevPort({
       env: { WORKTREE_DEV_PORT: "6200" },

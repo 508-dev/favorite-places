@@ -39,6 +39,18 @@ describe_pid() {
   ps -p "$pid" -o pid=,command= 2>/dev/null || printf '%s\n' "$pid"
 }
 
+command_uses_workspace_path() {
+  local command="$1"
+
+  case "$command" in
+    *"$workspace"/*|*"$workspace")
+      return 0
+      ;;
+  esac
+
+  return 1
+}
+
 terminate_pids() {
   if [ "$#" -gt 0 ]; then
     if [ "$dry_run" -eq 1 ]; then
@@ -71,11 +83,9 @@ pid_belongs_to_workspace() {
   local cwd
 
   command="$(ps -p "$pid" -o command= 2>/dev/null || true)"
-  case "$command" in
-    *"$workspace"*)
-      return 0
-      ;;
-  esac
+  if command_uses_workspace_path "$command"; then
+    return 0
+  fi
 
   cwd="$(lsof -a -p "$pid" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p' | head -n 1)"
   case "$cwd" in
