@@ -3,6 +3,8 @@ import { resolve } from "node:path";
 
 export const DEFAULT_WORKTREE_DEV_BASE_PORT = 4321;
 export const DEFAULT_WORKTREE_DEV_PORT_SPAN = 1000;
+export const CONDUCTOR_WORKTREE_DEV_PORT_SPAN = 10;
+export const CONDUCTOR_PORT_ENV = "CONDUCTOR_PORT";
 export const WORKTREE_DEV_BASE_PORT_ENV = "WORKTREE_DEV_BASE_PORT";
 export const WORKTREE_DEV_PORT_ENV = "WORKTREE_DEV_PORT";
 export const WORKTREE_DEV_PORT_OFFSET_ENV = "WORKTREE_DEV_PORT_OFFSET";
@@ -94,12 +96,16 @@ export function resolveWorktreeDevPort({ env = process.env, worktreeRoot }) {
     };
   }
 
-  const basePort =
-    parsePortLike(env[WORKTREE_DEV_BASE_PORT_ENV], WORKTREE_DEV_BASE_PORT_ENV) ??
-    DEFAULT_WORKTREE_DEV_BASE_PORT;
+  const configuredBasePort = parsePortLike(
+    env[WORKTREE_DEV_BASE_PORT_ENV],
+    WORKTREE_DEV_BASE_PORT_ENV,
+  );
+  const conductorBasePort = parsePortLike(env[CONDUCTOR_PORT_ENV], CONDUCTOR_PORT_ENV);
+  const basePort = configuredBasePort ?? conductorBasePort ?? DEFAULT_WORKTREE_DEV_BASE_PORT;
+  const basePortUsesConductor = configuredBasePort === undefined && conductorBasePort !== undefined;
   const span =
     parsePositiveInteger(env[WORKTREE_DEV_PORT_SPAN_ENV], WORKTREE_DEV_PORT_SPAN_ENV) ??
-    DEFAULT_WORKTREE_DEV_PORT_SPAN;
+    (basePortUsesConductor ? CONDUCTOR_WORKTREE_DEV_PORT_SPAN : DEFAULT_WORKTREE_DEV_PORT_SPAN);
 
   if (basePort + span - 1 > MAX_PORT) {
     throw new Error(
