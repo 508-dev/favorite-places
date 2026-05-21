@@ -202,9 +202,16 @@ class EnrichmentPlace(PipelineModel):
     google_place_resource_name: str | None = None
     display_name: str | None = None
     formatted_address: str | None = None
+    formatted_address_en: str | None = None
+    formatted_address_local: str | None = None
     address_display_en: str | None = None
     address_display_en_source: str | None = None
     address_display_en_confidence: str | None = None
+    address_country_name: str | None = None
+    address_country_code: str | None = None
+    address_admin_area: str | None = None
+    address_locality: str | None = None
+    address_postal_code: str | None = None
     google_maps_uri: str | None = None
     rating: float | None = None
     user_rating_count: int | None = None
