@@ -9000,6 +9000,129 @@ class BuildDataTests(unittest.TestCase):
         self.assertIsNone(build_data.infer_country_from_address(raw.places[0].address))
         self.assertIsNone(build_data.infer_country_from_address(raw.places[1].address))
 
+    def test_extract_api_address_components_returns_country_name_and_code(self) -> None:
+        components = [
+            {"longText": "42", "shortText": "42", "types": ["street_number"]},
+            {"longText": "Quai Jean-Charles Rey", "shortText": "Quai Jean-Charles Rey", "types": ["route"]},
+            {"longText": "98000", "shortText": "98000", "types": ["postal_code"]},
+            {"longText": "Monaco", "shortText": "MC", "types": ["country", "political"]},
+        ]
+        result = build_data.extract_api_address_components(components)
+        self.assertEqual(result["country_name"], "Monaco")
+        self.assertEqual(result["country_code"], "MC")
+        self.assertEqual(result["postal_code"], "98000")
+        self.assertIsNone(result["locality"])
+        self.assertIsNone(result["admin_area"])
+
+    def test_extract_api_address_components_returns_japan_for_okinawa(self) -> None:
+        components = [
+            {"longText": "RS-ONE 1F", "shortText": "RS-ONE 1F", "types": ["premise"]},
+            {"longText": "2-19-17 Kumoji", "shortText": "2-19-17 Kumoji", "types": ["street_address"]},
+            {"longText": "Naha", "shortText": "Naha", "types": ["locality", "political"]},
+            {"longText": "Okinawa", "shortText": "Okinawa", "types": ["administrative_area_level_1", "political"]},
+            {"longText": "900-0015", "shortText": "900-0015", "types": ["postal_code"]},
+            {"longText": "Japan", "shortText": "JP", "types": ["country", "political"]},
+        ]
+        result = build_data.extract_api_address_components(components)
+        self.assertEqual(result["country_name"], "Japan")
+        self.assertEqual(result["country_code"], "JP")
+        self.assertEqual(result["admin_area"], "Okinawa")
+        self.assertEqual(result["locality"], "Naha")
+
+    def test_normalize_enrichment_match_populates_address_components(self) -> None:
+        candidate = {
+            "id": "ChIJabc123",
+            "name": "places/ChIJabc123",
+            "displayName": {"text": "Café de Paris"},
+            "formattedAddress": "Place du Casino, 98000 Monaco",
+            "googleMapsUri": "https://maps.google.com/?cid=1",
+            "addressComponents": [
+                {"longText": "98000", "shortText": "98000", "types": ["postal_code"]},
+                {"longText": "Monaco", "shortText": "MC", "types": ["country", "political"]},
+            ],
+        }
+        place = build_data.normalize_enrichment_match(candidate)
+        self.assertEqual(place.formatted_address_en, "Place du Casino, 98000 Monaco")
+        self.assertEqual(place.address_country_name, "Monaco")
+        self.assertEqual(place.address_country_code, "MC")
+
+    def test_infer_country_from_enrichment_cache_returns_most_common_api_country(self) -> None:
+        def make_entry(country_name: str, country_code: str) -> EnrichmentCacheEntry:
+            return EnrichmentCacheEntry(
+                fetched_at="2024-01-01T00:00:00+00:00",
+                query="test",
+                matched=True,
+                place=EnrichmentPlace(
+                    address_country_name=country_name,
+                    address_country_code=country_code,
+                ),
+            )
+
+        cache = {
+            "place1": make_entry("Monaco", "MC"),
+            "place2": make_entry("Monaco", "MC"),
+            "place3": make_entry("Monaco", "MC"),
+        }
+        country_name, country_code = build_data.infer_country_from_enrichment_cache(cache)
+        self.assertEqual(country_name, "Monaco")
+        self.assertEqual(country_code, "MC")
+
+    def test_infer_country_from_enrichment_cache_ignores_unmatched_entries(self) -> None:
+        unmatched = EnrichmentCacheEntry(
+            fetched_at="2024-01-01T00:00:00+00:00",
+            query="test",
+            matched=False,
+            place=EnrichmentPlace(address_country_name="Japan", address_country_code="JP"),
+        )
+        no_components = EnrichmentCacheEntry(
+            fetched_at="2024-01-01T00:00:00+00:00",
+            query="test",
+            matched=True,
+            place=EnrichmentPlace(),
+        )
+        cache = {"place1": unmatched, "place2": no_components}
+        country_name, country_code = build_data.infer_country_from_enrichment_cache(cache)
+        self.assertIsNone(country_name)
+        self.assertIsNone(country_code)
+
+    def test_normalize_guide_uses_enrichment_cache_country_when_title_is_ambiguous(self) -> None:
+        raw = RawSavedList(
+            title="Okinawa Main Island",
+            places=[
+                RawPlace(
+                    name="Restaurant",
+                    address="〒900-0015 Okinawa, Naha, Kumoji, 2 Chome-19-17 RS-ONE 1F",
+                    maps_url="https://maps.google.com/?cid=1",
+                ),
+            ],
+        )
+        enrichment_cache = {
+            "place1": EnrichmentCacheEntry(
+                fetched_at="2024-01-01T00:00:00+00:00",
+                query="Restaurant Okinawa",
+                matched=True,
+                place=EnrichmentPlace(
+                    address_country_name="Japan",
+                    address_country_code="JP",
+                    address_admin_area="Okinawa",
+                    address_locality="Naha",
+                ),
+            )
+        }
+
+        with (
+            patch.object(build_data, "LIST_OVERRIDES_DIR", Path("/nonexistent")),
+            patch.object(build_data, "PLACE_OVERRIDES_DIR", Path("/nonexistent")),
+            patch.object(build_data, "read_json", return_value={}),
+            patch.object(build_data, "transform_guide_description_with_site_hook", side_effect=lambda d, **kw: d),
+            patch.object(build_data, "guide_author_for_ui", return_value=None),
+            patch.object(build_data, "stable_place_id", return_value="place1"),
+        ):
+            guide = build_data.normalize_guide("okinawa-main-island", raw, enrichment_cache=enrichment_cache)
+
+        self.assertEqual(guide.country_name, "Japan")
+        self.assertEqual(guide.country_code, "JP")
+
     def test_country_inference_ignores_parenthetical_title_suffix(self) -> None:
         raw = RawSavedList(
             title="Taipei, Taiwan (Example) 🇹🇼",
