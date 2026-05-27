@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import atexit
 import importlib
 import json
 import os
@@ -15,7 +14,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeAlias
 
 from gmaps_scraper.models import (
     PLACE_LLM_DISPLAY_TRANSLATION_FIELDS,
@@ -79,8 +78,11 @@ class _NoopLangfuseObservation:
         return None
 
 
-_LANGFUSE_CLIENT_CACHE: dict[tuple[str, str, str | None], Any] = {}
-_LANGFUSE_FLUSH_CLIENT_IDS: set[int] = set()
+_LANGFUSE_DEFAULT_TIMEOUT_SECONDS = 2
+_LANGFUSE_DEFAULT_FLUSH_AT = 8
+_LANGFUSE_DEFAULT_FLUSH_INTERVAL_SECONDS = 1.0
+_LANGFUSE_CONFIG: TypeAlias = tuple[str, str, str | None, int, int, float]
+_LANGFUSE_CLIENT_CACHE: dict[_LANGFUSE_CONFIG, Any] = {}
 _LANGFUSE_CLIENT_CACHE_LOCK = threading.Lock()
 
 
@@ -91,7 +93,7 @@ def _configured_langfuse_client() -> Any | None:
     return _langfuse_client_for_config(config)
 
 
-def _langfuse_client_for_config(config: tuple[str, str, str | None]) -> Any | None:
+def _langfuse_client_for_config(config: _LANGFUSE_CONFIG) -> Any | None:
     cached = _LANGFUSE_CLIENT_CACHE.get(config)
     if cached is not None:
         return cached
@@ -99,29 +101,30 @@ def _langfuse_client_for_config(config: tuple[str, str, str | None]) -> Any | No
         cached = _LANGFUSE_CLIENT_CACHE.get(config)
         if cached is not None:
             return cached
-        public_key, secret_key, base_url = config
+        public_key, secret_key, base_url, timeout, flush_at, flush_interval = config
         try:
             langfuse_module = importlib.import_module("langfuse")
             langfuse_class = langfuse_module.Langfuse
         except (ImportError, AttributeError):
             return None
+        kwargs: dict[str, object] = {
+            "public_key": public_key,
+            "secret_key": secret_key,
+            "timeout": timeout,
+            "flush_at": flush_at,
+            "flush_interval": flush_interval,
+        }
+        if base_url:
+            kwargs["base_url"] = base_url
         try:
-            if base_url:
-                client = langfuse_class(
-                    public_key=public_key,
-                    secret_key=secret_key,
-                    base_url=base_url,
-                )
-            else:
-                client = langfuse_class(public_key=public_key, secret_key=secret_key)
+            client = langfuse_class(**kwargs)
         except Exception:
             return None
         _LANGFUSE_CLIENT_CACHE[config] = client
-        _register_langfuse_flush(client)
         return client
 
 
-def _langfuse_config_from_env() -> tuple[str, str, str | None] | None:
+def _langfuse_config_from_env() -> _LANGFUSE_CONFIG | None:
     public_key = os.environ.get("LANGFUSE_PUBLIC_KEY")
     secret_key = os.environ.get("LANGFUSE_SECRET_KEY")
     base_url = _normalize_langfuse_base_url(
@@ -129,13 +132,44 @@ def _langfuse_config_from_env() -> tuple[str, str, str | None] | None:
     )
     if not public_key or not secret_key:
         return None
-    return public_key, secret_key, base_url
+    return (
+        public_key,
+        secret_key,
+        base_url,
+        _langfuse_int_option("LANGFUSE_TIMEOUT", default=_LANGFUSE_DEFAULT_TIMEOUT_SECONDS),
+        _langfuse_int_option("LANGFUSE_FLUSH_AT", default=_LANGFUSE_DEFAULT_FLUSH_AT),
+        _langfuse_float_option(
+            "LANGFUSE_FLUSH_INTERVAL",
+            default=_LANGFUSE_DEFAULT_FLUSH_INTERVAL_SECONDS,
+        ),
+    )
+
+
+def _langfuse_int_option(name: str, *, default: int) -> int:
+    raw_value = os.environ.get(name)
+    if not raw_value:
+        return default
+    try:
+        value = int(raw_value)
+    except ValueError:
+        return default
+    return value if value > 0 else default
+
+
+def _langfuse_float_option(name: str, *, default: float) -> float:
+    raw_value = os.environ.get(name)
+    if not raw_value:
+        return default
+    try:
+        value = float(raw_value)
+    except ValueError:
+        return default
+    return value if value > 0 else default
 
 
 def _clear_langfuse_client_cache() -> None:
     with _LANGFUSE_CLIENT_CACHE_LOCK:
         _LANGFUSE_CLIENT_CACHE.clear()
-        _LANGFUSE_FLUSH_CLIENT_IDS.clear()
 
 
 def _normalize_langfuse_base_url(value: str | None) -> str | None:
@@ -147,21 +181,6 @@ def _normalize_langfuse_base_url(value: str | None) -> str | None:
     if "://" in stripped:
         return stripped
     return f"https://{stripped}"
-
-
-def _register_langfuse_flush(client: Any) -> None:
-    client_id = id(client)
-    if client_id in _LANGFUSE_FLUSH_CLIENT_IDS:
-        return
-    _LANGFUSE_FLUSH_CLIENT_IDS.add(client_id)
-    atexit.register(_flush_langfuse_client, client)
-
-
-def _flush_langfuse_client(client: Any) -> None:
-    try:
-        client.flush()
-    except Exception:
-        return
 
 
 def _langfuse_full_capture_enabled() -> bool:

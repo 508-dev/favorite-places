@@ -507,7 +507,10 @@ class LLMConfigTests(unittest.TestCase):
         ):
             config = llm_module._langfuse_config_from_env()
 
-        self.assertEqual(config, ("pk-lf-test", "sk-lf-test", "https://us.cloud.langfuse.com"))
+        self.assertEqual(
+            config,
+            ("pk-lf-test", "sk-lf-test", "https://us.cloud.langfuse.com", 2, 8, 1.0),
+        )
 
     def test_langfuse_client_uses_host_fallback_from_env(self) -> None:
         with (
@@ -523,7 +526,28 @@ class LLMConfigTests(unittest.TestCase):
         ):
             config = llm_module._langfuse_config_from_env()
 
-        self.assertEqual(config, ("pk-lf-test", "sk-lf-test", "https://eu.langfuse.com"))
+        self.assertEqual(
+            config,
+            ("pk-lf-test", "sk-lf-test", "https://eu.langfuse.com", 2, 8, 1.0),
+        )
+
+    def test_langfuse_client_uses_export_options_from_env(self) -> None:
+        with (
+            patch.dict(
+                "os.environ",
+                {
+                    "LANGFUSE_PUBLIC_KEY": "pk-lf-test",
+                    "LANGFUSE_SECRET_KEY": "sk-lf-test",
+                    "LANGFUSE_TIMEOUT": "4",
+                    "LANGFUSE_FLUSH_AT": "3",
+                    "LANGFUSE_FLUSH_INTERVAL": "0.5",
+                },
+                clear=True,
+            )
+        ):
+            config = llm_module._langfuse_config_from_env()
+
+        self.assertEqual(config, ("pk-lf-test", "sk-lf-test", None, 4, 3, 0.5))
 
     def test_langfuse_client_does_not_cache_disabled_env(self) -> None:
         class FakeLangfuse:
@@ -554,7 +578,13 @@ class LLMConfigTests(unittest.TestCase):
         self.assertIsInstance(client, FakeLangfuse)
         self.assertEqual(
             client.kwargs,
-            {"public_key": "pk-lf-test", "secret_key": "sk-lf-test"},
+            {
+                "public_key": "pk-lf-test",
+                "secret_key": "sk-lf-test",
+                "timeout": 2,
+                "flush_at": 8,
+                "flush_interval": 1.0,
+            },
         )
 
     def test_local_config_can_define_fireworks_alias(self) -> None:

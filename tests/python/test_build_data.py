@@ -6699,8 +6699,43 @@ class BuildDataTests(unittest.TestCase):
                 "public_key": "pk-lf-test",
                 "secret_key": "sk-lf-test",
                 "base_url": "https://us.cloud.langfuse.com",
+                "timeout": 2,
+                "flush_at": 8,
+                "flush_interval": 1.0,
             },
         )
+
+    def test_langfuse_client_uses_export_options_from_env(self) -> None:
+        class FakeLangfuse:
+            def __init__(self, **kwargs: object) -> None:
+                self.kwargs = kwargs
+
+        fake_module = ModuleType("langfuse")
+        fake_module.Langfuse = FakeLangfuse  # type: ignore[attr-defined]
+        build_data.clear_langfuse_client_cache()
+        self.addCleanup(build_data.clear_langfuse_client_cache)
+
+        with (
+            patch.dict(
+                os.environ,
+                {
+                    "LANGFUSE_PUBLIC_KEY": "pk-lf-test",
+                    "LANGFUSE_SECRET_KEY": "sk-lf-test",
+                    "LANGFUSE_TIMEOUT": "4",
+                    "LANGFUSE_FLUSH_AT": "3",
+                    "LANGFUSE_FLUSH_INTERVAL": "0.5",
+                },
+                clear=True,
+            ),
+            patch.dict(sys.modules, {"langfuse": fake_module}),
+            patch.object(build_data, "load_dotenv_values", return_value={}),
+        ):
+            client = build_data.configured_langfuse_client()
+
+        self.assertIsInstance(client, FakeLangfuse)
+        self.assertEqual(client.kwargs["timeout"], 4)
+        self.assertEqual(client.kwargs["flush_at"], 3)
+        self.assertEqual(client.kwargs["flush_interval"], 0.5)
 
     def test_normalize_semantic_neighborhood_display_cases_slug_outputs(self) -> None:
         cases = {

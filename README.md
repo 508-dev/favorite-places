@@ -211,7 +211,7 @@ Example `site/enrichment.json`:
 
 When `semantic_llm` is enabled and LLM credentials are configured, the pipeline uses compact cache-only evidence from price range, review topics, review snippets, and About labels to infer neighborhood, type tags, and vibe tags. `semantic_descriptions` separately enables generated card descriptions. Descriptions are reused while the semantic description signature remains stable; the signature tracks major quality changes such as name/address/category changes, review topics appearing, About sections changing, price range, and coarse rating/review-count buckets. Set `semantic_description_force_refresh` when you intentionally want to regenerate descriptions even if the signature is unchanged. If the LLM is unavailable or errors, deterministic category, locality, and vibe rules still produce the guide data.
 
-Set `LANGFUSE_PUBLIC_KEY` and `LANGFUSE_SECRET_KEY` to log uncached LLM calls to Langfuse. The optional `LANGFUSE_BASE_URL` selects a non-default Langfuse region or self-hosted instance. Langfuse logging covers scraper place repair and semantic enrichment/description generations; cache hits are not logged as model calls. Scraper repair logs redact URLs and omit full request/response payloads by default; set `GMAPS_SCRAPER_LANGFUSE_FULL_CAPTURE=true` only when you explicitly want full scraper repair payload capture.
+Set `LANGFUSE_PUBLIC_KEY` and `LANGFUSE_SECRET_KEY` to log uncached LLM calls to Langfuse. The optional `LANGFUSE_BASE_URL` selects a non-default Langfuse region or self-hosted instance. Langfuse logging covers scraper place repair and semantic enrichment/description generations; cache hits are not logged as model calls. Langfuse export uses short, async-friendly defaults (`LANGFUSE_TIMEOUT=2`, `LANGFUSE_FLUSH_AT=8`, and `LANGFUSE_FLUSH_INTERVAL=1.0`) so observability does not dominate long refresh jobs; override those SDK settings if needed. Scraper repair logs redact URLs and omit full request/response payloads by default; set `GMAPS_SCRAPER_LANGFUSE_FULL_CAPTURE=true` only when you explicitly want full scraper repair payload capture.
 
 `price_display` controls the card-facing price label while keeping raw scraper fields in the enrichment cache. `source_order` chooses which scraper field to display first: `price_range`, `admission_price`, or `room_price`. Numeric `price_range` values are displayed conservatively for food/drink/shopping-style categories; attraction tickets and lodging quotes should come through the separate `admission_price` or `room_price` fields. `currency_mode` supports `raw`, `guide_local`, or `target`; `target` also requires `target_currency`, such as `USD`. Symbol-only values like `$$` keep the same tier and swap the symbol, while numeric prices use cached daily USD exchange rates from `api.fxratesapi.com` with jsDelivr currency-api fallback. If rates are unavailable, the raw price is used. `max_numeric_by_source` can hide implausibly large converted values by source field and display currency, which is useful when Google surfaces reseller bundles instead of a simple admission ticket.
 
@@ -247,6 +247,9 @@ GOOGLE_MAPS_PLACES_SEMANTIC_DESCRIPTION_FORCE_REFRESH=false
 LANGFUSE_PUBLIC_KEY=pk-lf-...
 LANGFUSE_SECRET_KEY=sk-lf-...
 LANGFUSE_BASE_URL=https://cloud.langfuse.com
+LANGFUSE_TIMEOUT=2
+LANGFUSE_FLUSH_AT=8
+LANGFUSE_FLUSH_INTERVAL=1.0
 GMAPS_SCRAPER_LANGFUSE_FULL_CAPTURE=false
 
 # Optional proxy for Google Maps list and place-page scraping.
