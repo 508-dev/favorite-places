@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import argparse
-import atexit
 import csv
 import hashlib
 import html as html_lib
@@ -10788,8 +10787,10 @@ def load_dotenv_values(path: Path) -> dict[str, str]:
     return values
 
 
-LANGFUSE_CLIENT_CACHE: dict[tuple[str, str, str | None], Any] = {}
-LANGFUSE_FLUSH_CLIENT_IDS: set[int] = set()
+LANGFUSE_DEFAULT_TIMEOUT_SECONDS = 2
+LANGFUSE_DEFAULT_FLUSH_AT = 8
+LANGFUSE_DEFAULT_FLUSH_INTERVAL_SECONDS = 1.0
+LANGFUSE_CLIENT_CACHE: dict[tuple[str, str, str | None, int, int, float], Any] = {}
 LANGFUSE_CLIENT_CACHE_LOCK = Lock()
 
 
@@ -10805,11 +10806,62 @@ def configured_langfuse_client() -> Any | None:
     )
     if not public_key or not secret_key:
         return None
-    return langfuse_client_for_config(public_key, secret_key, base_url)
+    options = langfuse_client_options(env)
+    return langfuse_client_for_config(public_key, secret_key, base_url, **options)
 
 
-def langfuse_client_for_config(public_key: str, secret_key: str, base_url: str | None) -> Any | None:
-    cache_key = (public_key, secret_key, base_url)
+def langfuse_client_options(env: dict[str, str]) -> dict[str, int | float]:
+    return {
+        "timeout": langfuse_int_option(
+            "LANGFUSE_TIMEOUT",
+            env,
+            default=LANGFUSE_DEFAULT_TIMEOUT_SECONDS,
+        ),
+        "flush_at": langfuse_int_option(
+            "LANGFUSE_FLUSH_AT",
+            env,
+            default=LANGFUSE_DEFAULT_FLUSH_AT,
+        ),
+        "flush_interval": langfuse_float_option(
+            "LANGFUSE_FLUSH_INTERVAL",
+            env,
+            default=LANGFUSE_DEFAULT_FLUSH_INTERVAL_SECONDS,
+        ),
+    }
+
+
+def langfuse_int_option(name: str, env: dict[str, str], *, default: int) -> int:
+    raw_value = os.environ.get(name) or env.get(name)
+    if not raw_value:
+        return default
+    try:
+        value = int(raw_value)
+    except ValueError:
+        return default
+    return value if value > 0 else default
+
+
+def langfuse_float_option(name: str, env: dict[str, str], *, default: float) -> float:
+    raw_value = os.environ.get(name) or env.get(name)
+    if not raw_value:
+        return default
+    try:
+        value = float(raw_value)
+    except ValueError:
+        return default
+    return value if value > 0 else default
+
+
+def langfuse_client_for_config(
+    public_key: str,
+    secret_key: str,
+    base_url: str | None,
+    *,
+    timeout: int,
+    flush_at: int,
+    flush_interval: float,
+) -> Any | None:
+    cache_key = (public_key, secret_key, base_url, timeout, flush_at, flush_interval)
     cached = LANGFUSE_CLIENT_CACHE.get(cache_key)
     if cached is not None:
         return cached
@@ -10821,7 +10873,13 @@ def langfuse_client_for_config(public_key: str, secret_key: str, base_url: str |
             from langfuse import Langfuse
         except ImportError:
             return None
-        kwargs = {"public_key": public_key, "secret_key": secret_key}
+        kwargs = {
+            "public_key": public_key,
+            "secret_key": secret_key,
+            "timeout": timeout,
+            "flush_at": flush_at,
+            "flush_interval": flush_interval,
+        }
         if base_url:
             kwargs["base_url"] = base_url
         try:
@@ -10829,14 +10887,12 @@ def langfuse_client_for_config(public_key: str, secret_key: str, base_url: str |
         except Exception:
             return None
         LANGFUSE_CLIENT_CACHE[cache_key] = client
-        register_langfuse_flush(client)
         return client
 
 
 def clear_langfuse_client_cache() -> None:
     with LANGFUSE_CLIENT_CACHE_LOCK:
         LANGFUSE_CLIENT_CACHE.clear()
-        LANGFUSE_FLUSH_CLIENT_IDS.clear()
 
 
 def normalize_langfuse_base_url(value: str | None) -> str | None:
@@ -10848,14 +10904,6 @@ def normalize_langfuse_base_url(value: str | None) -> str | None:
     if "://" in stripped:
         return stripped
     return f"https://{stripped}"
-
-
-def register_langfuse_flush(client: Any) -> None:
-    client_id = id(client)
-    if client_id in LANGFUSE_FLUSH_CLIENT_IDS:
-        return
-    LANGFUSE_FLUSH_CLIENT_IDS.add(client_id)
-    atexit.register(flush_langfuse_client, client)
 
 
 def flush_langfuse_client(client: Any) -> None:
