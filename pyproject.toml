@@ -19,6 +19,9 @@ dev = [
   "ruff>=0.14.1,<0.15.0",
 ]
 
+[tool.uv]
+exclude-newer = "1 week"
+
 [tool.uv.sources]
 gmaps-scraper = { path = "vendor/gmaps-scraper" }
 
