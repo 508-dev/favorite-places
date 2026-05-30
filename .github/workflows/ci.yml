@@ -40,6 +40,7 @@ jobs:
               - "public/**"
               - "astro.config.*"
               - "package.json"
+              - "bunfig.toml"
               - "bun.lock"
               - "tsconfig.json"
               - "tests/frontend/**"
