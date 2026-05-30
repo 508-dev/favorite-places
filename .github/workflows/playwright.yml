@@ -7,6 +7,7 @@ on:
       - "public/**"
       - "astro.config.*"
       - "package.json"
+      - "bunfig.toml"
       - "bun.lock"
       - "tsconfig.json"
       - "playwright.config.*"
@@ -39,6 +40,7 @@ on:
       - "public/**"
       - "astro.config.*"
       - "package.json"
+      - "bunfig.toml"
       - "bun.lock"
       - "tsconfig.json"
       - "playwright.config.*"
@@ -85,6 +87,7 @@ jobs:
           filters: |
             all:
               - "package.json"
+              - "bunfig.toml"
               - "bun.lock"
               - "playwright.config.*"
               - "astro.config.*"
