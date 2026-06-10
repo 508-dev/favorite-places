@@ -4,6 +4,7 @@ from datetime import UTC, datetime
 from tempfile import TemporaryDirectory
 from pathlib import Path
 from unittest.mock import patch
+import os
 import unittest
 
 from scripts.pipeline_models import TrustSignal
@@ -23,6 +24,7 @@ from scripts.trust_signals import (
     parse_michelin_region_page,
     parse_wikipedia_michelin_starred_page,
     parse_google_search_results,
+    refresh_trust_signals_for_raw_guides,
     scrape_official_michelin_region,
     enrich_michelin_signal_award_years,
     infer_award_year,
@@ -105,6 +107,84 @@ class TrustSignalsTest(unittest.TestCase):
             loaded = store.load_signals_for_place_keys(["cid:111"])
 
         self.assertEqual(loaded, {"cid:111": [current_signal]})
+
+    def test_refresh_clears_stale_michelin_rows_without_search_provider(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "trust.sqlite"
+            now = datetime(2026, 1, 15, tzinfo=UTC)
+            match_signature = trust_match_signature("Former Star", "Tokyo", "Japan")
+            stale_michelin = TrustSignal(
+                source="michelin",
+                label="MICHELIN Guide",
+                tier="1 star",
+                award_year=2025,
+                is_current=True,
+                url="https://guide.michelin.com/en/tokyo-region/tokyo/restaurant/former-star",
+                title="Former Star",
+                fetched_at=now.isoformat(),
+                confidence="high",
+                match_reason="Michelin name exact match",
+            )
+            tabelog_signal = TrustSignal(
+                source="tabelog",
+                label="Tabelog Award",
+                tier="Bronze",
+                award_year=2025,
+                url="https://award.tabelog.com/en/restaurants/former-star",
+                title="Former Star - Tabelog Award",
+                fetched_at=now.isoformat(),
+                confidence="high",
+                match_reason="name plus source/location match",
+            )
+            store = TrustSignalStore(sqlite_url_for_path(db_path))
+            store.replace_search_signals("place-1", [stale_michelin, tabelog_signal], match_signature=match_signature, now=now)
+            raw_lists = {
+                "tokyo-japan": RawSavedList(
+                    title="Tokyo, Japan",
+                    places=[
+                        RawPlace(
+                            name="Former Star",
+                            address="1 Shibuya, Tokyo, Japan",
+                            maps_url="https://maps.google.com/?q=former-star",
+                        )
+                    ],
+                )
+            }
+
+            with (
+                patch.dict(
+                    os.environ,
+                    {
+                        "FAVORITE_PLACES_TRUST_CACHE_PATH": str(db_path),
+                        "BRAVE_SEARCH_API_KEY": "",
+                        "BRAVE_API_KEY": "",
+                        "FAVORITE_PLACES_TRUST_GOOGLE_FALLBACK": "",
+                    },
+                ),
+                patch(
+                    "scripts.trust_signals.scrape_michelin_region_source",
+                    return_value=[
+                        MichelinRestaurant(
+                            name="Other Restaurant",
+                            url="https://guide.michelin.com/en/tokyo-region/tokyo/restaurant/other",
+                            tier="1 star",
+                            is_current=True,
+                            region_key="japan/tokyo",
+                        )
+                    ],
+                ),
+            ):
+                summary = refresh_trust_signals_for_raw_guides(
+                    root=Path(tmpdir),
+                    raw_lists=raw_lists,
+                    enrichment_caches={"tokyo-japan": {}},
+                    stable_place_ids={("tokyo-japan", 0): "place-1"},
+                )
+
+            loaded = store.load_signals_for_place_keys(["place-1"])
+
+        self.assertEqual(summary.searched_places, 1)
+        self.assertEqual(loaded, {"place-1": [tabelog_signal]})
 
     def test_normalize_guide_includes_cached_trust_signals(self) -> None:
         raw = RawSavedList(

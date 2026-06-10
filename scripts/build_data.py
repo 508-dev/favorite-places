@@ -11585,6 +11585,9 @@ def main() -> int:
     parser = build_parser()
     args = parser.parse_args()
 
+    if args.trust_google_fallback and not args.refresh_trust_signals:
+        parser.error("--trust-google-fallback requires --refresh-trust-signals")
+
     if (args.refresh_list or args.refresh_force) and not args.refresh:
         args.refresh = True
     if args.force_semantic_descriptions and not args.refresh_semantic_descriptions:

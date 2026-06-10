@@ -508,6 +508,18 @@ class BuildDataTests(unittest.TestCase):
         )
         rebuild_generated_data.assert_not_called()
 
+    def test_main_rejects_google_fallback_without_trust_refresh(self) -> None:
+        stderr = StringIO()
+        with (
+            patch.object(sys, "argv", ["build_data.py", "--trust-google-fallback"]),
+            redirect_stderr(stderr),
+            self.assertRaises(SystemExit) as raised,
+        ):
+            build_data.main()
+
+        self.assertEqual(raised.exception.code, 2)
+        self.assertIn("--trust-google-fallback requires --refresh-trust-signals", stderr.getvalue())
+
     def test_main_falls_back_to_full_rebuild_when_photo_only_fast_path_is_unavailable(self) -> None:
         with (
             patch.object(sys, "argv", ["build_data.py", "--refresh-photos"]),

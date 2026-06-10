@@ -1267,7 +1267,7 @@
     flex: 0 0 1rem;
     align-items: center;
     justify-content: center;
-    color: currentColor;
+    color: currentcolor;
   }
 
   .place-card-trust-icon--michelin-stars {

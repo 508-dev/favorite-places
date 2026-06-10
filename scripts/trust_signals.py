@@ -401,8 +401,10 @@ class TrustSignalStore:
         *,
         match_signature: str,
         now: datetime,
+        replaceable_sources: Iterable[str] = TRUST_SIGNAL_REPLACEABLE_SOURCES,
     ) -> None:
         refresh_after = now + TRUST_SIGNAL_REFRESH_TTL
+        sources = tuple(replaceable_sources)
         rows = [
             trust_signal_row(
                 place_key,
@@ -417,7 +419,7 @@ class TrustSignalStore:
                 delete(trust_place_signals).where(
                     and_(
                         trust_place_signals.c.place_key == place_key,
-                        trust_place_signals.c.source.in_(TRUST_SIGNAL_REPLACEABLE_SOURCES),
+                        trust_place_signals.c.source.in_(sources),
                     )
                 )
             )
@@ -615,6 +617,7 @@ def refresh_trust_signals_for_raw_guides(
             for source in michelin_sources_by_guide.get(slug, [])
             for restaurant in michelin_restaurants_by_source.get((source.source_type, source.region_key), [])
         ]
+        guide_has_michelin_sources = bool(michelin_sources_by_guide.get(slug))
         for index, place in enumerate(raw.places):
             place_id = stable_place_ids.get((slug, index))
             if place_id is None:
@@ -683,6 +686,18 @@ def refresh_trust_signals_for_raw_guides(
             summary.michelin_details_refreshed += detail_result.fetched_details
             summary.provider_failures += detail_result.provider_failures
             if not results and not michelin_signals and not brave_api_key and not google_fallback_enabled:
+                if guide_has_michelin_sources:
+                    for key in keys:
+                        store.replace_search_signals(
+                            key,
+                            [],
+                            match_signature=trust_match_signature(place.name, city_name, country_name),
+                            now=now,
+                            replaceable_sources=("michelin",),
+                        )
+                    summary.searched_places += 1
+                    summary.provider_failures += provider_failures
+                    continue
                 summary.skipped_places += 1
                 continue
 

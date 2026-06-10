@@ -106,8 +106,23 @@ const currentAwardSources = new Set(
     .filter((signal) => (signal.source === "michelin" || signal.source === "tabelog") && signal.is_current === true)
     .map((signal) => signal.source),
 );
+const isSafeExternalUrl = (value: string | null | undefined): value is string => {
+  if (!value) {
+    return false;
+  }
+  try {
+    const parsed = new URL(value);
+    return parsed.protocol === "https:" || parsed.protocol === "http:";
+  } catch {
+    return false;
+  }
+};
 const trustSignals = rawTrustSignals
   .filter((signal) => !(currentAwardSources.has(signal.source) && signal.is_current === false))
+  .map((signal) => ({
+    ...signal,
+    url: isSafeExternalUrl(signal.url) ? signal.url : null,
+  }))
   .slice(0, 3);
 const trustSignalLabel = (signal: (typeof trustSignals)[number]) =>
   [
