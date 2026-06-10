@@ -5,7 +5,17 @@ export type FieldSource =
   | "google_places"
   | "osm"
   | "wikidata"
-  | "website";
+  | "website"
+  | "trust_signal";
+export type TrustSignalSource =
+  | "michelin"
+  | "tabelog"
+  | "timeout"
+  | "blog"
+  | "web"
+  | "brave_search"
+  | "google_search";
+export type TrustSignalConfidence = "high" | "medium" | "low";
 export type MarkerIcon =
   | "default"
   | "cafe"
@@ -51,6 +61,21 @@ export interface PlaceProvenance {
   hidden?: PlaceField<boolean> | null;
   manual_rank?: PlaceField<number> | null;
   status?: PlaceField<string> | null;
+  trust_signals?: PlaceField<TrustSignal[]> | null;
+}
+
+export interface TrustSignal {
+  source: TrustSignalSource;
+  label: string;
+  tier?: string | null;
+  award_year?: number | null;
+  is_current?: boolean | null;
+  url?: string | null;
+  title?: string | null;
+  published_at?: string | null;
+  fetched_at: string;
+  confidence: TrustSignalConfidence;
+  match_reason: string;
 }
 
 export interface Place {
@@ -84,6 +109,7 @@ export interface Place {
   hidden: boolean;
   manual_rank: number;
   status: string;
+  trust_signals?: TrustSignal[];
   provenance: PlaceProvenance;
 }
 

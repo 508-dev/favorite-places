@@ -89,6 +89,7 @@ interface PlaceCardConfig {
   showRating: boolean;
   showReviewCount: boolean;
   showPriceRange: boolean;
+  showTrustSignals: boolean;
   showTopPickBadge: boolean;
   showWhyRecommended: boolean;
   showAddress: boolean;
@@ -236,6 +237,7 @@ const defaultSiteConfig: SiteConfig = {
     showRating: true,
     showReviewCount: true,
     showPriceRange: true,
+    showTrustSignals: true,
     showTopPickBadge: true,
     showWhyRecommended: true,
     showAddress: true,

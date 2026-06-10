@@ -254,6 +254,11 @@ Common variables:
 - `FAVORITE_PLACES_SITE_DIR`: point the app and Python pipeline at a non-default site pack
 - `GMAPS_SCRAPER_PROXY`: route scraper traffic through a proxy
 - `FAVORITE_PLACES_GMAPS_SCRAPER_STATE_DIR`: optionally override the scraper browser-profile and HTTP-cookie-jar root; point multiple worktrees at the same absolute path to reuse scraper session state
+- `BRAVE_SEARCH_API_KEY` / `BRAVE_API_KEY`: enable Brave Search for optional trust-signal refreshes
+- `FAVORITE_PLACES_TRUST_CACHE_PATH`: override the default SQLite trust-signal cache path
+- `FAVORITE_PLACES_TRUST_STORE_URL`: override trust-signal storage with an explicit SQLAlchemy URL
+- `FAVORITE_PLACES_TRUST_GOOGLE_FALLBACK`: allow Google Search HTML fallback for trust-signal refreshes when set to `true`
+- `FAVORITE_PLACES_MICHELIN_REGION_URLS`: JSON object of `"country/city"` to MICHELIN region URL overrides for full-guide snapshots
 
 Use a restricted browser key for `GOOGLE_MAPS_JS_API_KEY`. Do not expose `GOOGLE_PLACES_API_KEY` to the browser.
 
@@ -263,15 +268,16 @@ The project keeps these layers separate:
 
 1. `site/data/raw/`: raw scraper or CSV import snapshots
 2. `site/data/cache/places.sqlite`: cached Google Places lookups keyed by guide slug and stable place id
-3. `site/data/cache/google-places/`: optional debug export directory, gitignored
-4. `site/overrides/`: handwritten metadata, tags, notes, visibility, attribution, and ranking
-5. `src/data/generated/`: static JSON that Astro reads at build time, gitignored
-6. `public/data/search-index.json`: browser search index, gitignored
+3. `~/.cache/favorite-places/trust-signals/trust.sqlite`: optional user-shared trust-signal cache for MICHELIN guide snapshots, MICHELIN restaurant detail-year snapshots, Wikipedia Michelin-star history, Tabelog, Time Out, and blog/search mentions
+4. `site/data/cache/google-places/`: optional debug export directory, gitignored
+5. `site/overrides/`: handwritten metadata, tags, notes, visibility, attribution, and ranking
+6. `src/data/generated/`: static JSON that Astro reads at build time, gitignored
+7. `public/data/search-index.json`: browser search index, gitignored
 
 Merge precedence:
 
 1. Manual overrides
-2. Google Places enrichment cache
+2. Google Places enrichment cache and optional trust-signal cache
 3. Raw scraped list data
 
 Manual overrides always win over machine-enriched fields.

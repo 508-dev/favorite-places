@@ -35,6 +35,8 @@
     "refresh:semantic-descriptions:force": "uv run python3 scripts/build_data.py --force-semantic-descriptions",
     "refresh:semantic-enrichment": "uv run python3 scripts/build_data.py --refresh-semantic-enrichment",
     "refresh:semantic-enrichment:force": "uv run python3 scripts/build_data.py --force-semantic-enrichment",
+    "refresh:trust": "uv run python3 scripts/build_data.py --refresh-trust-signals",
+    "refresh:trust:google-fallback": "uv run python3 scripts/build_data.py --refresh-trust-signals --trust-google-fallback",
     "eval:llm": "uv run python3 scripts/evaluate_llms.py",
     "eval:llm:semantic": "uv run python3 scripts/evaluate_llms.py semantic",
     "eval:llm:dom-repair": "uv run python3 scripts/evaluate_llms.py dom-repair",
