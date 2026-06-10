@@ -1229,13 +1229,15 @@
   }
 
   .place-card-trust-pill--michelin-stars-2 {
-    width: 2.35rem;
-    min-width: 2.35rem;
+    width: 2.75rem;
+    min-width: 2.75rem;
+    padding-inline: 0.2rem;
   }
 
   .place-card-trust-pill--michelin-stars-3 {
-    width: 3rem;
-    min-width: 3rem;
+    width: 3.65rem;
+    min-width: 3.65rem;
+    padding-inline: 0.24rem;
   }
 
   .place-card-trust-pill--michelin-bib {
@@ -3533,13 +3535,15 @@
   }
 
   .place-card-stats .place-card-trust-pill--michelin-stars-2 {
-    width: 2.3rem !important;
-    min-width: 2.3rem !important;
+    width: 2.75rem !important;
+    min-width: 2.75rem !important;
+    padding-inline: 0.2rem !important;
   }
 
   .place-card-stats .place-card-trust-pill--michelin-stars-3 {
-    width: 2.9rem !important;
-    min-width: 2.9rem !important;
+    width: 3.65rem !important;
+    min-width: 3.65rem !important;
+    padding-inline: 0.24rem !important;
   }
 
   .place-card-stats .place-card-trust-pill--previous .place-card-trust-icon {
