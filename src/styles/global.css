@@ -1228,6 +1228,16 @@
     color: #bd1f2d;
   }
 
+  .place-card-trust-pill--michelin-stars-2 {
+    width: 2.35rem;
+    min-width: 2.35rem;
+  }
+
+  .place-card-trust-pill--michelin-stars-3 {
+    width: 3rem;
+    min-width: 3rem;
+  }
+
   .place-card-trust-pill--michelin-bib {
     background: color-mix(in srgb, var(--surface) 88%, #bd1f2d 12%);
   }

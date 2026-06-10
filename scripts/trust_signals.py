@@ -421,42 +421,53 @@ class TrustSignalStore:
                     )
                 )
             )
-        for row in rows:
-            upsert_row(self.engine, trust_place_signals, row, ["place_key", "signal_key"])
+            upsert_rows(connection, trust_place_signals, rows, ["place_key", "signal_key"])
 
 
 def upsert_row(engine: Engine, table: Table, row: dict[str, Any], primary_key_columns: list[str]) -> None:
-    dialect_name = engine.dialect.name
-    update_values = {
-        key: value
-        for key, value in row.items()
+    with engine.begin() as connection:
+        upsert_rows(connection, table, [row], primary_key_columns)
+
+
+def upsert_rows(connection: Any, table: Table, rows: list[dict[str, Any]], primary_key_columns: list[str]) -> None:
+    if not rows:
+        return
+
+    dialect_name = connection.engine.dialect.name
+    update_columns = [
+        key
+        for key in rows[0]
         if key not in primary_key_columns
-    }
+    ]
     if dialect_name == "sqlite":
         from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
-        statement = sqlite_insert(table).values(row)
+        statement = sqlite_insert(table).values(rows)
         statement = statement.on_conflict_do_update(
             index_elements=primary_key_columns,
-            set_=update_values,
+            set_={
+                column_name: statement.excluded[column_name]
+                for column_name in update_columns
+            },
         )
-        with engine.begin() as connection:
-            connection.execute(statement)
+        connection.execute(statement)
         return
 
     if dialect_name == "postgresql":
         from sqlalchemy.dialects.postgresql import insert as postgres_insert
 
-        statement = postgres_insert(table).values(row)
+        statement = postgres_insert(table).values(rows)
         statement = statement.on_conflict_do_update(
             index_elements=primary_key_columns,
-            set_=update_values,
+            set_={
+                column_name: statement.excluded[column_name]
+                for column_name in update_columns
+            },
         )
-        with engine.begin() as connection:
-            connection.execute(statement)
+        connection.execute(statement)
         return
 
-    with engine.begin() as connection:
+    for row in rows:
         clauses = [
             table.c[column_name] == row[column_name]
             for column_name in primary_key_columns
@@ -816,7 +827,7 @@ def scrape_official_michelin_region(source: MichelinRegionSource) -> list[Michel
         seen_pages.add(next_url)
         body = fetch_text(next_url)
         for restaurant in parse_michelin_region_page(body, region_key=source.region_key, page_url=next_url):
-            restaurants[(normalize_search_text(restaurant.name), restaurant.url)] = restaurant
+            restaurants[(normalize_search_text(restaurant.name), restaurant.url, restaurant.tier or "")] = restaurant
         next_url = michelin_next_page_url(body, page_url=next_url)
     return sorted(restaurants.values(), key=lambda restaurant: normalize_search_text(restaurant.name))
 

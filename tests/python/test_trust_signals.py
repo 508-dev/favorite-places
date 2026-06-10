@@ -23,6 +23,7 @@ from scripts.trust_signals import (
     parse_michelin_region_page,
     parse_wikipedia_michelin_starred_page,
     parse_google_search_results,
+    scrape_official_michelin_region,
     enrich_michelin_signal_award_years,
     infer_award_year,
     signals_from_michelin_region,
@@ -341,6 +342,30 @@ class TrustSignalsTest(unittest.TestCase):
         self.assertEqual(
             esterre_star.url,
             "https://guide.michelin.com/en/tokyo-region/restaurant/esterre-by-alain-ducasse",
+        )
+
+    def test_scrape_official_michelin_region_preserves_co_awards(self) -> None:
+        body = """
+        <div class="card__menu">
+          <div data-dtm-distinction="1 star" data-green-star="true" data-restaurant-name="ESTERRE by Alain Ducasse"></div>
+          <a href="/en/jp/tokyo-region/restaurant/esterre-by-alain-ducasse">Open</a>
+        </div>
+        """
+        source = MichelinRegionSource(
+            source_type="official",
+            region_key="japan/tokyo",
+            url="https://guide.michelin.com/en/jp/tokyo-region/restaurants",
+        )
+
+        with (
+            patch("scripts.trust_signals.fetch_text", return_value=body),
+            patch("scripts.trust_signals.michelin_next_page_url", return_value=None),
+        ):
+            restaurants = scrape_official_michelin_region(source)
+
+        self.assertEqual(
+            sorted(restaurant.tier for restaurant in restaurants),
+            ["1 star", "Green Star"],
         )
 
     def test_parse_michelin_region_page_extracts_singular_three_star_distinction(self) -> None:
