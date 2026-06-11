@@ -194,8 +194,12 @@ describe("guide map interactions", () => {
     expect(placeCard).toContain(
       "getMapMarkerColors(place.marker_icon, { topPick: featured || place.top_pick })",
     );
+    expect(placeCard).toContain(
+      "const hasMapCoordinates = place.lat !== null && place.lng !== null;",
+    );
     expect(placeCard).toContain('class="place-card-name-row"');
     expect(placeCard).toContain('class="place-card-marker"');
+    expect(placeCard).toContain("{hasMapCoordinates && (");
     expect(placeCard).toContain("data-place-card-map-select");
     expect(placeCard).toContain("aria-label={`Show ${place.name} on the guide map`}");
     expect(placeCard).toContain('class="place-card-map-link"');
