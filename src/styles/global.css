@@ -1600,11 +1600,32 @@
   }
 
   .place-card-reservation-menu summary {
+    position: relative;
     list-style: none;
   }
 
   .place-card-reservation-menu summary::-webkit-details-marker {
     display: none;
+  }
+
+  .place-card-reservation-caret {
+    position: absolute;
+    right: 0.36rem;
+    bottom: 0.28rem;
+    display: inline-flex;
+    color: currentColor;
+    opacity: 0.86;
+    pointer-events: none;
+  }
+
+  .place-card-reservation-caret svg {
+    width: 0.58rem;
+    height: 0.58rem;
+    display: block;
+  }
+
+  .place-card-reservation-menu[open] .place-card-reservation-caret {
+    transform: rotate(180deg);
   }
 
   .place-card-reservation-options {

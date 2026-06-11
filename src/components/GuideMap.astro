@@ -1742,7 +1742,7 @@ const mapPlaces = places
       card.addEventListener("pointerleave", () => clearHoveredPlace(placeId));
       card.addEventListener("click", (event) => {
         const target = event.target instanceof Element ? event.target : null;
-        if (target?.closest("a, button, input, select, textarea, [role='button']")) return;
+        if (target?.closest("a, button, input, select, textarea, summary, [role='button']")) return;
         selectPlace(placeId, { expandCollapsed: true });
       });
     });

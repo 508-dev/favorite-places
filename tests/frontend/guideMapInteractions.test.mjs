@@ -139,6 +139,7 @@ describe("guide map interactions", () => {
     );
     expect(guideMap).toContain("selectPlace(placeId, { expandCollapsed: true });");
     expect(guideMap).not.toContain("data-place-card-map-select");
+    expect(guideMap).toContain("a, button, input, select, textarea, summary, [role='button']");
   });
 
   it("tightens the mobile guide chrome to save vertical space", () => {
@@ -192,8 +193,13 @@ describe("guide map interactions", () => {
     expect(placeCard).toContain('class="place-card-name-row"');
     expect(placeCard).toContain("place-card-map-link");
     expect(placeCard).toContain("place-card-action-link--maps");
-    expect(placeCard).toContain("const hasReservationLinks = reservationLinks.length > 0;");
+    expect(placeCard).toContain(
+      "const reservationLink = reservationLinks.length === 1 ? reservationLinks[0] : null;",
+    );
+    expect(placeCard).toContain("const hasReservationOptions = reservationLinks.length > 1;");
+    expect(placeCard).toContain("title={`Find a Table - ${reservationLink.label}`}");
     expect(placeCard).toContain('class="place-card-reservation-menu"');
+    expect(placeCard).toContain('class="place-card-reservation-caret"');
     expect(placeCard).toContain('class="place-card-reservation-options"');
     expect(placeCard).toContain('class="place-card-reservation-option"');
     expect(placeCard).toContain("aria-label={`Open ${place.name} in Google Maps`}");
@@ -208,6 +214,7 @@ describe("guide map interactions", () => {
     expectCssToContain(css, ".place-card-map-link img");
     expectCssToContain(css, ".place-card-map-link-label");
     expectCssToContain(css, ".place-card-reservation-menu");
+    expectCssToContain(css, ".place-card-reservation-caret");
     expectCssToContain(css, ".place-card-reservation-options");
     expectCssToContain(css, ".place-card-reservation-option");
     expect(css).not.toContain(".place-card-map-select");
