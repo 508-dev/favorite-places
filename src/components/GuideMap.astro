@@ -321,7 +321,7 @@ const mapPlaces = places
     const detailsActionHtml = `<button class="guide-map-popup-details-action" type="button" data-guide-map-popup-details data-place-id="${escapeHtml(place.id)}" aria-label="Show details for ${escapeHtml(place.name)}">Details</button>`;
     const footerHtml = `<span class="guide-map-popup-footer">${ratingMeta ? `<span class="guide-map-popup-rating" title="${escapeHtml(ratingMeta.title)}">${escapeHtml(ratingMeta.label)}</span>` : ""}<span class="guide-map-popup-actions">${detailsActionHtml}${mapsActionHtml}</span></span>`;
     const popupBody = `
-      ${photoUrl ? `<div class="guide-map-popup-photo"><img src="${escapeHtml(photoUrl)}" alt="${escapeHtml(place.name)}" loading="lazy" decoding="async" data-image-component /></div>` : ""}
+      ${photoUrl ? `<div class="guide-map-popup-photo"><img src="${escapeHtml(photoUrl)}" alt="" loading="lazy" decoding="async" data-image-component /></div>` : ""}
       <span class="guide-map-popup-copy">
         <strong>${escapeHtml(place.name)}</strong>
         <span class="guide-map-popup-meta">${escapeHtml(meta)}</span>
