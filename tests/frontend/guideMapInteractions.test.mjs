@@ -123,7 +123,7 @@ describe("guide map interactions", () => {
     expectCssToContain(css, "white-space: nowrap;");
   });
 
-  it("focuses the full place card when a map marker is selected", () => {
+  it("scrolls the full place card into view when a map marker is selected", () => {
     const guideMap = readSource("src/components/GuideMap.astro");
 
     expect(guideMap).toContain(
@@ -133,11 +133,14 @@ describe("guide map interactions", () => {
       "selectPlace(placeId, { focusCard: shouldAutoFocusCardFromMarker() })",
     );
     expect(guideMap).toContain("const focusPlaceCard = (placeId: string) => {");
-    expect(guideMap).toContain("card.focus({ preventScroll: true });");
+    expect(guideMap).not.toContain("card.focus({ preventScroll: true });");
     expect(guideMap).toContain(
       'card.scrollIntoView({ behavior: "smooth", block: "center", inline: "nearest" });',
     );
     expect(guideMap).toContain("selectPlace(placeId, { expandCollapsed: true });");
+    expect(guideMap).toContain(
+      'card.querySelectorAll<HTMLButtonElement>("[data-place-card-map-select]")',
+    );
   });
 
   it("tightens the mobile guide chrome to save vertical space", () => {
@@ -193,9 +196,12 @@ describe("guide map interactions", () => {
     );
     expect(placeCard).toContain('class="place-card-name-row"');
     expect(placeCard).toContain('class="place-card-marker"');
+    expect(placeCard).toContain("data-place-card-map-select");
+    expect(placeCard).toContain("aria-label={`Show ${place.name} on the guide map`}");
     expect(placeCard).toContain('class="place-card-map-link"');
     expect(placeCard).toContain("aria-label={`Open ${place.name} in Google Maps`}");
-    expect(placeCard).toContain('<img src="/icons/google-maps.svg" alt="" width="18" height="26"');
+    expect(placeCard).toContain('src="/icons/google-maps.svg"');
+    expect(placeCard).not.toContain("data-image-component");
     expect(placeCard).toContain('class="place-card-map-link-label"');
     expect(placeCard).toContain("{siteConfig.placeCard.mapsLabel}</span>");
     expect(placeCard).not.toContain("badge badge--featured");

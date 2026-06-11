@@ -1067,7 +1067,7 @@
   }
 
   .place-card:hover,
-  .place-card:focus-visible,
+  .place-card:focus-within,
   .place-card[data-map-active="true"] {
     border-color: var(--accent);
     background: color-mix(in srgb, var(--accent-soft) 52%, var(--surface));
@@ -1080,17 +1080,12 @@
     box-shadow: 0 0 0 3px rgba(185, 71, 54, 0.18);
   }
 
-  .place-card:focus-visible {
-    outline: 3px solid var(--accent);
-    outline-offset: 3px;
-  }
-
   .place-card[data-map-active="true"] {
     box-shadow: inset 0 0 0 1px var(--accent);
   }
 
   .place-card[data-place-status="temporarily-closed"]:hover,
-  .place-card[data-place-status="temporarily-closed"]:focus-visible,
+  .place-card[data-place-status="temporarily-closed"]:focus-within,
   .place-card[data-place-status="temporarily-closed"][data-map-active="true"] {
     border-color: color-mix(in srgb, var(--accent) 72%, var(--line));
     background: linear-gradient(
@@ -1104,14 +1099,14 @@
   }
 
   .place-card[data-place-status="temporarily-closed"]:hover::before,
-  .place-card[data-place-status="temporarily-closed"]:focus-visible::before,
+  .place-card[data-place-status="temporarily-closed"]:focus-within::before,
   .place-card[data-place-status="temporarily-closed"][data-map-active="true"]::before {
     width: 0.48rem;
     background: color-mix(in srgb, var(--accent) 72%, var(--accent-soft));
   }
 
   .place-card[data-place-status="temporarily-closed"]:hover .place-card-status-indicator,
-  .place-card[data-place-status="temporarily-closed"]:focus-visible .place-card-status-indicator,
+  .place-card[data-place-status="temporarily-closed"]:focus-within .place-card-status-indicator,
   .place-card[data-place-status="temporarily-closed"][data-map-active="true"]
     .place-card-status-indicator {
     border-color: color-mix(in srgb, var(--accent) 58%, var(--line));
@@ -1139,7 +1134,7 @@
   }
 
   .place-card:hover .place-card-photo img,
-  .place-card:focus-visible .place-card-photo img {
+  .place-card:focus-within .place-card-photo img {
     transform: scale(1.035);
   }
 
@@ -1353,12 +1348,15 @@
     display: inline-grid;
     place-items: center;
     flex: 0 0 auto;
+    padding: 0;
     border: 1px solid color-mix(in srgb, var(--accent) 34%, var(--line));
     border-radius: 999px;
     background: color-mix(in srgb, var(--accent-soft) 72%, var(--surface));
     color: var(--accent-strong);
     box-shadow: 0 10px 24px rgba(39, 47, 56, 0.1);
+    font: inherit;
     cursor: help;
+    appearance: none;
   }
 
   .place-card-status-indicator::after {
@@ -1569,6 +1567,7 @@
     white-space: nowrap;
   }
 
+  .place-card-map-select,
   .place-card-map-link {
     width: 2.45rem;
     min-height: 2.3rem;
@@ -1583,7 +1582,10 @@
     background: color-mix(in srgb, var(--surface) 92%, white);
     color: #18457a;
     box-shadow: 0 10px 24px rgba(39, 47, 56, 0.1);
+    font: inherit;
     text-decoration: none;
+    cursor: pointer;
+    appearance: none;
     transition:
       border-color 160ms ease,
       background-color 160ms ease,
@@ -1592,11 +1594,27 @@
       transform 160ms ease;
   }
 
+  .place-card-map-select {
+    color: var(--accent-strong);
+  }
+
+  .place-card-map-select-icon,
   .place-card-map-link img {
     width: 1rem;
     height: auto;
     display: block;
     flex: 0 0 auto;
+  }
+
+  .place-card-map-select-icon {
+    height: 1rem;
+  }
+
+  .place-card-map-select-icon svg {
+    display: block;
+    width: 100%;
+    height: 100%;
+    overflow: visible;
   }
 
   .place-card-map-link-label {
@@ -1608,6 +1626,8 @@
     line-height: 1;
   }
 
+  .place-card-map-select:hover,
+  .place-card-map-select:focus-visible,
   .place-card-map-link:hover,
   .place-card-map-link:focus-visible {
     border-color: rgba(26, 115, 232, 0.28);
@@ -1617,6 +1637,7 @@
     transform: translateY(-1px);
   }
 
+  .place-card-map-select:focus-visible,
   .place-card-map-link:focus-visible {
     outline: 2px solid var(--accent);
     outline-offset: 2px;

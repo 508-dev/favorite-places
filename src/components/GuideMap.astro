@@ -72,13 +72,14 @@ const mapPlaces = places
         ></p>
       </div>
       <div class="map-stage">
-        <div
+        <section
           class="guide-map"
           data-guide-map
           data-map-provider={mapProvider}
           data-google-maps-api-key={googleMapsApiKey}
           data-place-photos-enabled={placePhotosEnabled ? "true" : "false"}
           data-places={JSON.stringify(mapPlaces)}
+          aria-label="Places map"
         />
 
         <noscript>
@@ -98,6 +99,7 @@ const mapPlaces = places
 <script>
   import L from "leaflet";
   import "leaflet/dist/leaflet.css";
+  import { installMapAccessibility } from "../lib/mapAccessibility";
   import {
     buildMapMarkerDataUrl,
     buildMapMarkerSvg,
@@ -319,7 +321,7 @@ const mapPlaces = places
     const detailsActionHtml = `<button class="guide-map-popup-details-action" type="button" data-guide-map-popup-details data-place-id="${escapeHtml(place.id)}" aria-label="Show details for ${escapeHtml(place.name)}">Details</button>`;
     const footerHtml = `<span class="guide-map-popup-footer">${ratingMeta ? `<span class="guide-map-popup-rating" title="${escapeHtml(ratingMeta.title)}">${escapeHtml(ratingMeta.label)}</span>` : ""}<span class="guide-map-popup-actions">${detailsActionHtml}${mapsActionHtml}</span></span>`;
     const popupBody = `
-      ${photoUrl ? `<div class="guide-map-popup-photo"><img src="${escapeHtml(photoUrl)}" alt="Photo of ${escapeHtml(place.name)}" loading="lazy" /></div>` : ""}
+      ${photoUrl ? `<div class="guide-map-popup-photo"><img src="${escapeHtml(photoUrl)}" alt="" loading="lazy" decoding="async" /></div>` : ""}
       <span class="guide-map-popup-copy">
         <strong>${escapeHtml(place.name)}</strong>
         <span class="guide-map-popup-meta">${escapeHtml(meta)}</span>
@@ -1371,6 +1373,7 @@ const mapPlaces = places
             )
           : initLeafletRuntime(mapElement, places, handleMarkerSelect, handlePopupDetailsSelect);
 
+      installMapAccessibility(mapElement, "Places map");
       runtime.setVisiblePlaces(currentVisiblePlaceIds);
       mapElement.guideMap = runtime.rawMap;
       element.dataset.initialized = "true";
@@ -1398,7 +1401,6 @@ const mapPlaces = places
       const card = cardByPlaceId.get(placeId);
       if (!card || card.hidden) return;
 
-      card.focus({ preventScroll: true });
       card.scrollIntoView({ behavior: "smooth", block: "center", inline: "nearest" });
     };
 
@@ -1736,20 +1738,18 @@ const mapPlaces = places
       card.dataset.mapInteractionInitialized = "true";
 
       const placeId = card.dataset.placeId || "";
+      card.querySelectorAll<HTMLButtonElement>("[data-place-card-map-select]").forEach((button) => {
+        button.addEventListener("click", (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          selectPlace(placeId, { expandCollapsed: true });
+        });
+      });
       card.addEventListener("pointerenter", () => hoverPlace(placeId));
       card.addEventListener("pointerleave", () => clearHoveredPlace(placeId));
-      card.addEventListener("focus", () => hoverPlace(placeId));
-      card.addEventListener("blur", () => clearHoveredPlace(placeId));
       card.addEventListener("click", (event) => {
         const target = event.target instanceof Element ? event.target : null;
         if (target?.closest("a, button, input, select, textarea, [role='button']")) return;
-        selectPlace(placeId, { expandCollapsed: true });
-      });
-      card.addEventListener("keydown", (event) => {
-        if (event.key !== "Enter" && event.key !== " ") return;
-        const target = event.target instanceof Element ? event.target : null;
-        if (target?.closest("a, button, input, select, textarea, [role='button']")) return;
-        event.preventDefault();
         selectPlace(placeId, { expandCollapsed: true });
       });
     });

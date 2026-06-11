@@ -72,7 +72,12 @@ const jsonLdEntries = (Array.isArray(jsonLd) ? jsonLd : jsonLd ? [jsonLd] : []).
       {
         siteConfig.logo ? (
           <a class="ui-site-title" href={siteConfig.logo.href} aria-label={siteConfig.logo.alt}>
-            <img src={siteConfig.logo.src} alt={siteConfig.logo.alt} />
+            <img
+              src={siteConfig.logo.src}
+              alt={siteConfig.logo.alt}
+              loading="eager"
+              decoding="async"
+            />
           </a>
         ) : (
           <a class="ui-site-title ui-site-title-text" href="/" aria-label={siteConfig.siteName}>
