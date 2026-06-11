@@ -199,7 +199,7 @@ The default trust cache is outside the repo and shared across checkouts/repos fo
 ~/.cache/favorite-places/trust-signals/trust.sqlite
 ```
 
-Set `XDG_CACHE_HOME` to move that default root. Override it with `FAVORITE_PLACES_TRUST_CACHE_PATH` for a SQLite file, or `FAVORITE_PLACES_TRUST_STORE_URL` for a SQLAlchemy URL.
+Set `XDG_CACHE_HOME` to move that default root. Override it with `FAVORITE_PLACES_TRUST_STORE_URL` for a SQLAlchemy URL, including local SQLite file URLs.
 
 Example `site/enrichment.json`:
 
@@ -286,7 +286,6 @@ FAVORITE_PLACES_GMAPS_SCRAPER_STATE_DIR=/absolute/path/to/.context/gmaps-scraper
 
 # Optional trust-signal cache and search provider settings.
 BRAVE_SEARCH_API_KEY=...
-FAVORITE_PLACES_TRUST_CACHE_PATH=/absolute/path/to/trust.sqlite
 FAVORITE_PLACES_TRUST_STORE_URL=sqlite:////absolute/path/to/trust.sqlite
 FAVORITE_PLACES_TRUST_GOOGLE_FALLBACK=false
 FAVORITE_PLACES_MICHELIN_REGION_URLS='{"japan/kyoto":"https://guide.michelin.com/en/jp/kyoto-region/restaurants"}'

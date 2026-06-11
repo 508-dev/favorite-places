@@ -31,6 +31,7 @@ from scripts.trust_signals import (
     parse_google_search_results,
     refresh_trust_signals_for_raw_guides,
     scrape_official_michelin_region,
+    search_signals_without_duplicate_award_urls,
     enrich_michelin_signal_award_years,
     infer_award_year,
     signals_from_michelin_region,
@@ -621,6 +622,43 @@ class TrustSignalsTest(unittest.TestCase):
         self.assertEqual(signals[1].award_year, 2026)
         self.assertTrue(all(signal.confidence == "high" for signal in signals))
 
+    def test_search_result_dedupe_removes_duplicate_tabelog_urls(self) -> None:
+        fetched_at = datetime(2026, 1, 15, tzinfo=UTC)
+        source_signal = TrustSignal(
+            source="tabelog",
+            label="The Tabelog Award",
+            tier="Gold",
+            award_year=2026,
+            is_current=True,
+            url="https://tabelog.com/tokyo/A1302/A130202/13249117/",
+            title="GINZA KOKORO",
+            fetched_at=fetched_at.isoformat(),
+            confidence="high",
+            match_reason="Tabelog name exact match",
+        )
+        search_signals = signals_from_search_results(
+            [
+                SearchResult(
+                    title="The Tabelog Award 2026 Gold GINZA KOKORO",
+                    url="https://tabelog.com/en/tokyo/A1302/A130202/13249117/",
+                    snippet="Tokyo restaurant award winner.",
+                ),
+                SearchResult(
+                    title="The best cafes in Tokyo",
+                    url="https://www.timeout.com/tokyo/restaurants/ginzakokoro",
+                    snippet="GINZA KOKORO is in Tokyo.",
+                ),
+            ],
+            place_name="GINZA KOKORO",
+            city_name="Tokyo",
+            country_name="Japan",
+            fetched_at=fetched_at,
+        )
+
+        filtered = search_signals_without_duplicate_award_urls([source_signal], search_signals)
+
+        self.assertEqual([signal.source for signal in filtered], ["timeout"])
+
     def test_tabelog_sources_only_include_japan_guides(self) -> None:
         sources = tabelog_sources_for_guides(
             {
@@ -1004,6 +1042,9 @@ class TrustSignalsTest(unittest.TestCase):
         <h2><b>6 MICHELIN Green Star Restaurants:</b></h2>
         <h3>Taipei</h3>
         <p>EMBERS <br> Hosu </p>
+        <h2><b>37 Bib Gourmand Restaurants</b></h2>
+        <h3>Taipei</h3>
+        <p>Good Cho's <br> Sung Chu Yuan </p>
         <h2><b>222 Selected Restaurants</b></h2>
         <h3>Taipei</h3>
         <p>Longtail <br> Mume </p>
@@ -1030,6 +1071,8 @@ class TrustSignalsTest(unittest.TestCase):
         )
         embers = next(restaurant for restaurant in restaurants if restaurant.name == "EMBERS")
         self.assertEqual(embers.tier, "Green Star")
+        good_chos = next(restaurant for restaurant in restaurants if restaurant.name == "Good Cho's")
+        self.assertEqual(good_chos.tier, "Bib Gourmand")
         self.assertIn("Longtail", [restaurant.name for restaurant in restaurants])
 
     def test_parse_michelin_region_page_extracts_restaurants(self) -> None:
@@ -1275,6 +1318,33 @@ class TrustSignalsTest(unittest.TestCase):
         restaurants = [
             MichelinRestaurant(
                 name="A Cut",
+                url="https://guide.michelin.com/en/taipei-region/taipei/restaurant/a-cut",
+                tier="1 star",
+                award_year=2025,
+                is_current=False,
+                region_key="taiwan/taipei",
+            )
+        ]
+
+        signals = signals_from_michelin_region(
+            restaurants,
+            context=MichelinMatchContext(
+                place_name="A Cut Steakhouse",
+                city_name="Taipei",
+                country_name="Taiwan",
+                address="Taipei, Taiwan",
+            ),
+            fetched_at=datetime(2026, 1, 15, tzinfo=UTC),
+        )
+
+        self.assertEqual(len(signals), 1)
+        self.assertEqual(signals[0].confidence, "medium")
+        self.assertEqual(signals[0].match_reason, "Michelin name alias plus location match")
+
+    def test_michelin_similarity_requires_real_location_evidence_for_alias_matches(self) -> None:
+        restaurants = [
+            MichelinRestaurant(
+                name="A Cut",
                 url="https://en.wikipedia.org/wiki/List_of_Michelin-starred_restaurants_in_Taiwan",
                 tier="1 star",
                 award_year=2025,
@@ -1294,9 +1364,7 @@ class TrustSignalsTest(unittest.TestCase):
             fetched_at=datetime(2026, 1, 15, tzinfo=UTC),
         )
 
-        self.assertEqual(len(signals), 1)
-        self.assertEqual(signals[0].confidence, "medium")
-        self.assertEqual(signals[0].match_reason, "Michelin name alias plus location match")
+        self.assertEqual(signals, [])
 
     def test_michelin_similarity_rejects_single_token_alias(self) -> None:
         restaurants = [

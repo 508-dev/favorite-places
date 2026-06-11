@@ -143,20 +143,6 @@ trust_place_signals = Table(
     Column("signal_json", Text, nullable=False),
 )
 
-trust_resolution_jobs = Table(
-    "trust_resolution_jobs",
-    metadata,
-    Column("job_id", String, primary_key=True),
-    Column("place_key", String, nullable=False),
-    Column("status", String, nullable=False),
-    Column("run_after", String, nullable=False),
-    Column("claimed_at", String),
-    Column("attempts", Integer, nullable=False, default=0),
-    Column("payload_json", Text, nullable=False),
-    Column("last_error", Text),
-)
-
-
 class SearchResult(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
@@ -887,8 +873,8 @@ def refresh_trust_signals_for_raw_guides(
                 *michelin_signals,
                 *tabelog_signals,
                 *tabelog_search_signals,
-                *search_signals_without_duplicate_michelin_urls(
-                    michelin_signals,
+                *search_signals_without_duplicate_award_urls(
+                    [*michelin_signals, *tabelog_signals, *tabelog_search_signals],
                     signals_from_search_results(
                         results,
                         place_name=place.name,
@@ -1557,6 +1543,8 @@ def michelin_full_list_heading_tier(normalized_heading: str) -> str | None:
         return "2 stars"
     if "one michelin star" in normalized_heading:
         return "1 star"
+    if "bib gourmand" in normalized_heading:
+        return "Bib Gourmand"
     if "michelin green star" in normalized_heading or "green star" in normalized_heading:
         return "Green Star"
     if "selected restaurants" in normalized_heading:
@@ -1950,24 +1938,18 @@ def michelin_match_has_location_context(
     restaurant: MichelinRestaurant,
     context: MichelinMatchContext,
 ) -> bool:
-    haystack = normalize_search_text(
+    restaurant_location_text = normalize_search_text(
         " ".join(
             value
             for value in [
                 restaurant.region_key,
                 restaurant.url,
-                context.address or "",
-                context.city_name or "",
-                context.country_name or "",
             ]
             if value
         )
     )
-    for value in (context.city_name, context.country_name):
-        normalized = normalize_search_text(value or "")
-        if normalized and normalized in haystack:
-            return True
-    return "/" in restaurant.region_key
+    normalized_city = normalize_search_text(context.city_name or "")
+    return bool(normalized_city and normalized_city in restaurant_location_text)
 
 
 def tabelog_match_has_location_context(
@@ -1984,11 +1966,8 @@ def tabelog_match_has_location_context(
             if value
         )
     )
-    for value in (context.city_name,):
-        normalized = normalize_search_text(value or "")
-        if normalized and normalized in restaurant_location_text:
-            return True
-    return "/" in restaurant.region_key
+    normalized_city = normalize_search_text(context.city_name or "")
+    return bool(normalized_city and normalized_city in restaurant_location_text)
 
 
 def brave_search(query: str, *, api_key: str) -> list[SearchResult]:
@@ -2167,25 +2146,41 @@ def signals_from_search_results(
     return sort_trust_signals(dedupe_trust_signals(signals))
 
 
-def search_signals_without_duplicate_michelin_urls(
-    michelin_signals: Iterable[TrustSignal],
+def search_signals_without_duplicate_award_urls(
+    existing_signals: Iterable[TrustSignal],
     search_signals: Iterable[TrustSignal],
 ) -> list[TrustSignal]:
     michelin_urls = {
         canonical_michelin_restaurant_url(signal.url)
-        for signal in michelin_signals
+        for signal in existing_signals
         if signal.source == "michelin" and signal.url
+    }
+    tabelog_urls = {
+        canonical_tabelog_url(signal.url)
+        for signal in existing_signals
+        if signal.source == "tabelog" and signal.url
     }
     filtered = [
         signal
         for signal in search_signals
-        if not (
-            signal.source == "michelin"
-            and signal.url
-            and canonical_michelin_restaurant_url(signal.url) in michelin_urls
-        )
+        if not trust_signal_duplicates_existing_award_url(signal, michelin_urls=michelin_urls, tabelog_urls=tabelog_urls)
     ]
     return sort_trust_signals(dedupe_trust_signals(filtered))
+
+
+def trust_signal_duplicates_existing_award_url(
+    signal: TrustSignal,
+    *,
+    michelin_urls: set[str],
+    tabelog_urls: set[str],
+) -> bool:
+    if not signal.url:
+        return False
+    if signal.source == "michelin":
+        return canonical_michelin_restaurant_url(signal.url) in michelin_urls
+    if signal.source == "tabelog":
+        return canonical_tabelog_url(signal.url) in tabelog_urls
+    return False
 
 
 def classify_search_result(
