@@ -31,6 +31,7 @@ from sqlalchemy import (
     select,
 )
 from sqlalchemy.engine import Engine
+from sqlalchemy.engine import make_url
 
 try:
     from scripts.pipeline_models import EnrichmentCacheEntry, RawPlace, RawSavedList, TrustSignal
@@ -230,6 +231,7 @@ class TrustSignalRefreshSummary(BaseModel):
 class TrustSignalStore:
     def __init__(self, store_url: str) -> None:
         self.store_url = store_url
+        ensure_sqlite_store_parent_dir(store_url)
         self.engine = create_engine(store_url, future=True)
         metadata.create_all(self.engine)
         ensure_trust_schema(self.engine)
@@ -617,8 +619,21 @@ def resolve_path(value: str, *, root: Path) -> Path:
 
 
 def sqlite_url_for_path(path: Path) -> str:
-    path.parent.mkdir(parents=True, exist_ok=True)
     return f"sqlite:///{path}"
+
+
+def ensure_sqlite_store_parent_dir(store_url: str) -> None:
+    parsed_url = make_url(store_url)
+    if parsed_url.drivername.split("+", 1)[0] != "sqlite":
+        return
+    sqlite_database = parsed_url.database
+    if not sqlite_database or sqlite_database == ":memory:":
+        return
+    if str(parsed_url.query.get("uri", "")).lower() == "true" and sqlite_database.startswith("file:"):
+        sqlite_database = sqlite_database.removeprefix("file:")
+    if sqlite_database == ":memory:":
+        return
+    Path(sqlite_database).expanduser().parent.mkdir(parents=True, exist_ok=True)
 
 
 def load_trust_signals_for_places(
@@ -733,6 +748,7 @@ def refresh_trust_signals_for_raw_guides(
 
             results: list[SearchResult] = []
             provider_failures = 0
+            failed_replaceable_sources: set[str] = set()
             search_snapshot_is_fresh = store.place_has_fresh_search_snapshot(query, now=now)
             if search_snapshot_is_fresh and not force_refresh:
                 results = (
@@ -806,6 +822,7 @@ def refresh_trust_signals_for_raw_guides(
                     )
                 except (HTTPError, URLError, OSError, ValueError) as exc:
                     provider_failures += 1
+                    failed_replaceable_sources.add("tabelog")
                     print(f"WARNING: Tabelog trust search failed for {place.name}: {exc}", flush=True)
                 else:
                     tabelog_search_signals = signals_from_tabelog_search_results(
@@ -828,7 +845,7 @@ def refresh_trust_signals_for_raw_guides(
                         ("michelin", guide_has_michelin_sources),
                         ("tabelog", guide_has_tabelog_sources),
                     )
-                    if enabled
+                    if enabled and source not in failed_replaceable_sources
                 ]
                 if replaceable_sources:
                     for key in keys:
@@ -866,6 +883,11 @@ def refresh_trust_signals_for_raw_guides(
                     signals,
                     match_signature=trust_match_signature(place.name, city_name, country_name),
                     now=now,
+                    replaceable_sources=[
+                        source
+                        for source in TRUST_SIGNAL_REPLACEABLE_SOURCES
+                        if source not in failed_replaceable_sources
+                    ],
                 )
             summary.searched_places += 1
             summary.signals_written += len(signals) * len(keys)
@@ -1903,24 +1925,21 @@ def tabelog_match_has_location_context(
     restaurant: TabelogRestaurant,
     context: MichelinMatchContext,
 ) -> bool:
-    haystack = normalize_search_text(
+    restaurant_location_text = normalize_search_text(
         " ".join(
             value
             for value in [
                 restaurant.region_key,
                 restaurant.url,
-                context.address or "",
-                context.city_name or "",
-                context.country_name or "",
             ]
             if value
         )
     )
-    for value in (context.city_name, context.country_name):
+    for value in (context.city_name,):
         normalized = normalize_search_text(value or "")
-        if normalized and normalized in haystack:
+        if normalized and normalized in restaurant_location_text:
             return True
-    return "japan" in haystack or "tabelog.com" in haystack
+    return "/" in restaurant.region_key
 
 
 def brave_search(query: str, *, api_key: str) -> list[SearchResult]:

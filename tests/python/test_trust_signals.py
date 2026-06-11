@@ -54,6 +54,17 @@ class TrustSignalsTest(unittest.TestCase):
             Path(tmpdir) / "favorite-places" / "trust-signals" / "trust.sqlite",
         )
 
+    def test_sqlite_url_for_path_does_not_create_parent_directory(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "missing" / "trust.sqlite"
+            store_url = sqlite_url_for_path(db_path)
+
+            self.assertFalse(db_path.parent.exists())
+
+            TrustSignalStore(store_url)
+
+            self.assertTrue(db_path.parent.exists())
+
     def test_store_round_trips_place_signals(self) -> None:
         with TemporaryDirectory() as tmpdir:
             db_path = Path(tmpdir) / "trust.sqlite"
@@ -390,6 +401,83 @@ class TrustSignalsTest(unittest.TestCase):
         self.assertEqual(loaded["place-1"][0].tier, "寿司 TOKYO 百名店")
         self.assertEqual(loaded["place-1"][0].match_reason, "Tabelog direct search URL match")
 
+    def test_refresh_preserves_tabelog_rows_when_tabelog_search_fails(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "trust.sqlite"
+            now = datetime(2026, 1, 15, tzinfo=UTC)
+            existing_signal = TrustSignal(
+                source="tabelog",
+                label="Tabelog Hyakumeiten",
+                tier="寿司 TOKYO 百名店",
+                award_year=2025,
+                is_current=True,
+                url="https://tabelog.com/tokyo/A1314/A131401/13196420/",
+                title="東麻布 天本",
+                fetched_at=now.isoformat(),
+                confidence="high",
+                match_reason="Tabelog direct search URL match",
+            )
+            store = TrustSignalStore(sqlite_url_for_path(db_path))
+            store.replace_search_signals(
+                "place-1",
+                [existing_signal],
+                match_signature=trust_match_signature("Higashiazabu Amamoto", "Tokyo", "Japan"),
+                now=now,
+            )
+            raw_lists = {
+                "tokyo-japan": RawSavedList(
+                    title="Tokyo, Japan",
+                    places=[
+                        RawPlace(
+                            name="Higashiazabu Amamoto",
+                            address="Akabanebashi, Tokyo, Japan",
+                            maps_url="https://maps.google.com/?q=higashiazabu-amamoto",
+                        )
+                    ],
+                )
+            }
+
+            with (
+                patch.dict(
+                    os.environ,
+                    {
+                        "FAVORITE_PLACES_TRUST_CACHE_PATH": str(db_path),
+                        "FAVORITE_PLACES_TABELOG_SOURCE_URLS": '{"hyakumeiten":"https://award.tabelog.com/hyakumeiten"}',
+                        "BRAVE_SEARCH_API_KEY": "",
+                        "BRAVE_API_KEY": "",
+                        "FAVORITE_PLACES_TRUST_GOOGLE_FALLBACK": "",
+                    },
+                ),
+                patch("scripts.trust_signals.scrape_michelin_region_source", return_value=[]),
+                patch(
+                    "scripts.trust_signals.scrape_tabelog_source",
+                    return_value=[
+                        TabelogRestaurant(
+                            name="東麻布 天本",
+                            url="https://tabelog.com/tokyo/A1314/A131401/13196420/",
+                            label="Tabelog Hyakumeiten",
+                            tier="寿司 TOKYO 百名店",
+                            award_year=2025,
+                            is_current=True,
+                            region_key="japan",
+                        )
+                    ],
+                ),
+                patch("scripts.trust_signals.tabelog_search", side_effect=OSError("blocked")),
+            ):
+                summary = refresh_trust_signals_for_raw_guides(
+                    root=Path(tmpdir),
+                    raw_lists=raw_lists,
+                    enrichment_caches={"tokyo-japan": {}},
+                    stable_place_ids={("tokyo-japan", 0): "place-1"},
+                    force_refresh=True,
+                )
+
+            loaded = store.load_signals_for_place_keys(["place-1"])
+
+        self.assertEqual(summary.provider_failures, 1)
+        self.assertEqual(loaded, {"place-1": [existing_signal]})
+
     def test_normalize_guide_includes_cached_trust_signals(self) -> None:
         raw = RawSavedList(
             configured_source_type="google_list_url",
@@ -670,6 +758,44 @@ class TrustSignalsTest(unittest.TestCase):
         )
 
         self.assertEqual(signals, [])
+
+    def test_tabelog_restaurants_require_real_location_evidence_for_fuzzy_matches(self) -> None:
+        restaurant = TabelogRestaurant(
+            name="Ginza Kokolo",
+            url="https://tabelog.com/osaka/A2701/A270101/27000001/",
+            label="The Tabelog Award",
+            tier="Bronze",
+            award_year=2026,
+            is_current=True,
+            region_key="japan",
+        )
+
+        signals = signals_from_tabelog_restaurants(
+            [restaurant],
+            context=MichelinMatchContext(
+                place_name="GINZA KOKORO",
+                city_name="Tokyo",
+                country_name="Japan",
+                address="Ginza, Tokyo, Japan",
+            ),
+            fetched_at=datetime(2026, 1, 15, tzinfo=UTC),
+        )
+
+        self.assertEqual(signals, [])
+
+        signals_with_location = signals_from_tabelog_restaurants(
+            [restaurant.model_copy(update={"url": "https://tabelog.com/tokyo/A1302/A130202/13249117/"})],
+            context=MichelinMatchContext(
+                place_name="GINZA KOKORO",
+                city_name="Tokyo",
+                country_name="Japan",
+                address="Ginza, Tokyo, Japan",
+            ),
+            fetched_at=datetime(2026, 1, 15, tzinfo=UTC),
+        )
+
+        self.assertEqual(len(signals_with_location), 1)
+        self.assertEqual(signals_with_location[0].confidence, "medium")
 
     def test_michelin_region_sources_only_include_relevant_guides(self) -> None:
         sources = michelin_region_sources_for_guides(

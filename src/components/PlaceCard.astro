@@ -369,7 +369,7 @@ const displayedPlaceAttribution = showPlaceAttribution ? placeAttribution : null
               class="place-card-map-link"
               href={place.maps_url}
               target="_blank"
-              rel="noreferrer"
+              rel="noopener noreferrer"
               aria-label={`Open ${place.name} in Google Maps`}
               title={`Open ${place.name} in Google Maps`}
             >
@@ -400,7 +400,7 @@ const displayedPlaceAttribution = showPlaceAttribution ? placeAttribution : null
                   class={trustSignalClassName(signal)}
                   href={signal.url}
                   target="_blank"
-                  rel="noreferrer"
+                  rel="noopener noreferrer"
                   title={trustSignalTitle(signal)}
                   aria-label={trustSignalTitle(signal)}
                 >

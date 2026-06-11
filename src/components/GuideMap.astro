@@ -84,7 +84,7 @@ const mapPlaces = places
         <noscript>
           <div class="map-fallback">
             {mapPlaces.slice(0, 8).map((place) => (
-              <a href={place.mapsUrl} target="_blank" rel="noreferrer">
+              <a href={place.mapsUrl} target="_blank" rel="noopener noreferrer">
                 {place.name}
               </a>
             ))}
@@ -314,7 +314,7 @@ const mapPlaces = places
     const photoUrl = placePhotosEnabled ? safePhotoUrl(place.mainPhotoPath) : null;
     const ratingMeta = popupRatingMeta(place);
     const mapsActionHtml = mapsUrl
-      ? `<a class="guide-map-popup-map-action" href="${escapeHtml(mapsUrl)}" target="_blank" rel="noreferrer" aria-label="Open ${escapeHtml(place.name)} in Google Maps" title="Open in Google Maps"><img src="/icons/google-maps.svg" alt="" width="18" height="26" loading="lazy" decoding="async" /></a>`
+      ? `<a class="guide-map-popup-map-action" href="${escapeHtml(mapsUrl)}" target="_blank" rel="noopener noreferrer" aria-label="Open ${escapeHtml(place.name)} in Google Maps" title="Open in Google Maps"><img src="/icons/google-maps.svg" alt="" width="18" height="26" loading="lazy" decoding="async" /></a>`
       : "";
     const detailsActionHtml = `<button class="guide-map-popup-details-action" type="button" data-guide-map-popup-details data-place-id="${escapeHtml(place.id)}" aria-label="Show details for ${escapeHtml(place.name)}">Details</button>`;
     const footerHtml = `<span class="guide-map-popup-footer">${ratingMeta ? `<span class="guide-map-popup-rating" title="${escapeHtml(ratingMeta.title)}">${escapeHtml(ratingMeta.label)}</span>` : ""}<span class="guide-map-popup-actions">${detailsActionHtml}${mapsActionHtml}</span></span>`;
