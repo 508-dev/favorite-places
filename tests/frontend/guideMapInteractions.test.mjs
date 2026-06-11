@@ -197,11 +197,21 @@ describe("guide map interactions", () => {
       "const reservationLink = reservationLinks.length === 1 ? reservationLinks[0] : null;",
     );
     expect(placeCard).toContain("const hasReservationOptions = reservationLinks.length > 1;");
+    expect(placeCard).not.toContain("place-card-action-link--website");
     expect(placeCard).toContain("title={`Find a Table - ${reservationLink.label}`}");
     expect(placeCard).toContain('class="place-card-reservation-menu"');
     expect(placeCard).toContain('class="place-card-reservation-caret"');
     expect(placeCard).toContain('class="place-card-reservation-options"');
     expect(placeCard).toContain('class="place-card-reservation-option"');
+    expect(placeCard).toContain(
+      "const previousMichelinStarDisplaySignal = previousMichelinStarSignals.reduce",
+    );
+    expect(placeCard).toContain(
+      "const previousMichelinStarPeakSignal = previousMichelinStarSignals.reduce",
+    );
+    expect(placeCard).toContain(
+      "At most ${trustSignalMichelinStarCount(previousMichelinStarPeakSignal)} MICHELIN stars",
+    );
     expect(placeCard).toContain("aria-label={`Open ${place.name} in Google Maps`}");
     expect(placeCard).toContain('src="/icons/google-maps.svg"');
     expect(placeCard).not.toContain("data-image-component");

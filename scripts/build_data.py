@@ -531,6 +531,9 @@ def default_refresh_workers() -> int:
 DEFAULT_REFRESH_WORKERS = default_refresh_workers()
 
 
+ENRICHMENT_CONTACT_FIELDS_VERSION = 1
+
+
 PLACES_FIELD_MASK = ",".join(
     [
         "places.id",
@@ -3324,18 +3327,17 @@ def build_place_provenance(
     if primary_category_localized:
         provenance.primary_category_localized = google_places_field(primary_category_localized, enrichment_cache_entry)
     if normalized.website:
-        provenance.website = google_places_field(normalized.website, enrichment_cache_entry)
+        provenance.website = (
+            google_maps_page_field(normalized.website, enrichment_cache_entry)
+            if cache_entry_has_merged_page_source(enrichment_cache_entry)
+            else google_places_field(normalized.website, enrichment_cache_entry)
+        )
     if normalized.reservation_links:
         reservation_link_values = [link.model_dump(mode="json") for link in normalized.reservation_links]
-        if enrichment_cache_entry is not None and (
-            enrichment_cache_entry.source == "google_maps_page"
-            or "google_maps_page" in enrichment_cache_entry.merged_sources
-        ):
-            provenance.reservation_links = PlaceField(
-                value=reservation_link_values,
-                source="google_maps_page",
-                fetched_at=enrichment_cache_entry.fetched_at,
-                expires_at=enrichment_cache_entry.refresh_after,
+        if cache_entry_has_merged_page_source(enrichment_cache_entry):
+            provenance.reservation_links = google_maps_page_field(
+                reservation_link_values,
+                enrichment_cache_entry,
             )
         else:
             provenance.reservation_links = google_places_field(
@@ -3568,6 +3570,25 @@ def google_places_field(value: Any, cache_entry: EnrichmentCacheEntry | None) ->
         source=source,
         fetched_at=cache_entry.fetched_at if cache_entry else None,
         expires_at=cache_entry.refresh_after if cache_entry else None,
+    )
+
+
+def google_maps_page_field(value: Any, cache_entry: EnrichmentCacheEntry | None) -> PlaceField:
+    return PlaceField(
+        value=value,
+        source="google_maps_page",
+        fetched_at=cache_entry.fetched_at if cache_entry else None,
+        expires_at=cache_entry.refresh_after if cache_entry else None,
+    )
+
+
+def cache_entry_has_merged_page_source(cache_entry: EnrichmentCacheEntry | None) -> bool:
+    return bool(
+        cache_entry is not None
+        and (
+            cache_entry.source == "google_maps_page"
+            or "google_maps_page" in cache_entry.merged_sources
+        )
     )
 
 
@@ -6558,6 +6579,7 @@ def enrichment_input_signature(
         "country_name": as_string(country_name),
         "google_place_id_override": as_string(signature_google_place_id),
         "google_maps_places": google_maps_place_scraper_policy_payload(),
+        "contact_fields_version": ENRICHMENT_CONTACT_FIELDS_VERSION,
         "search_query_version": 2,
     }
     serialized = json.dumps(payload, sort_keys=True, ensure_ascii=False)

@@ -137,13 +137,79 @@ const trustSignalBaseLabel = (signal: TrustSignal) =>
     signal.award_year ? String(signal.award_year) : null,
   ].filter(Boolean).join(" · ");
 const trustSignalAwardTierKey = (signal: TrustSignal) => signal.display_tier ?? signal.tier ?? "";
+const normalizedTrustTier = (tier: string | null | undefined) => (tier ?? "").toLowerCase();
+const michelinStarCount = (tier: string | null | undefined) => {
+  const normalized = normalizedTrustTier(tier);
+  if (normalized.includes("3 star")) {
+    return 3;
+  }
+  if (normalized.includes("2 star")) {
+    return 2;
+  }
+  if (normalized.includes("1 star")) {
+    return 1;
+  }
+  return 0;
+};
+const trustSignalMichelinStarCount = (signal: TrustSignal) => michelinStarCount(signal.display_tier ?? signal.tier);
+const previousMichelinStarSignals = rawTrustSignals.filter(
+  (signal) => signal.source === "michelin" && signal.is_current === false && trustSignalMichelinStarCount(signal) > 0,
+);
+const currentMichelinStarSignals = rawTrustSignals.filter(
+  (signal) => signal.source === "michelin" && signal.is_current === true && trustSignalMichelinStarCount(signal) > 0,
+);
+const previousMichelinStarDisplaySignal = previousMichelinStarSignals.reduce<TrustSignal | null>((best, signal) => {
+  if (!best) {
+    return signal;
+  }
+  if ((signal.award_year ?? 0) !== (best.award_year ?? 0)) {
+    return (signal.award_year ?? 0) > (best.award_year ?? 0) ? signal : best;
+  }
+  const signalStars = trustSignalMichelinStarCount(signal);
+  const bestStars = trustSignalMichelinStarCount(best);
+  return signalStars > bestStars ? signal : best;
+}, null);
+const previousMichelinStarPeakSignal = previousMichelinStarSignals.reduce<TrustSignal | null>((best, signal) => {
+  if (!best) {
+    return signal;
+  }
+  const signalStars = trustSignalMichelinStarCount(signal);
+  const bestStars = trustSignalMichelinStarCount(best);
+  if (signalStars !== bestStars) {
+    return signalStars > bestStars ? signal : best;
+  }
+  return (signal.award_year ?? 0) > (best.award_year ?? 0) ? signal : best;
+}, null);
+const previousMichelinStarHistoryNote =
+  previousMichelinStarDisplaySignal &&
+  previousMichelinStarPeakSignal &&
+  trustSignalMichelinStarCount(previousMichelinStarPeakSignal) >
+    trustSignalMichelinStarCount(previousMichelinStarDisplaySignal)
+    ? [
+        `At most ${trustSignalMichelinStarCount(previousMichelinStarPeakSignal)} MICHELIN stars`,
+        previousMichelinStarPeakSignal.award_year ? `in ${previousMichelinStarPeakSignal.award_year}` : null,
+      ].filter(Boolean).join(" ")
+    : null;
 const currentAwardKeys = new Set(
   rawTrustSignals
     .filter((signal) => (signal.source === "michelin" || signal.source === "tabelog") && signal.is_current === true)
     .map((signal) => `${signal.source}:${trustSignalAwardTierKey(signal)}`),
 );
-const shouldHidePreviousTrustSignal = (signal: TrustSignal) =>
-  signal.is_current === false && currentAwardKeys.has(`${signal.source}:${trustSignalAwardTierKey(signal)}`);
+const shouldHidePreviousTrustSignal = (signal: TrustSignal) => {
+  if (signal.is_current !== false) {
+    return false;
+  }
+  if (currentAwardKeys.has(`${signal.source}:${trustSignalAwardTierKey(signal)}`)) {
+    return true;
+  }
+  if (signal.source === "michelin" && trustSignalMichelinStarCount(signal) > 0) {
+    if (currentMichelinStarSignals.length > 0) {
+      return true;
+    }
+    return previousMichelinStarDisplaySignal !== null && signal !== previousMichelinStarDisplaySignal;
+  }
+  return false;
+};
 const trustSignalConfidenceNote = (signal: TrustSignal) => {
   if (signal.confidence !== "medium") {
     return null;
@@ -190,6 +256,10 @@ const trustSignals = combineTabelogTrustSignals(rawTrustSignals
   .map((signal) => ({
     ...signal,
     url: isSafeExternalUrl(signal.url) ? signal.url : null,
+    groupedTrustSignalConfidenceNotes:
+      signal === previousMichelinStarDisplaySignal && previousMichelinStarHistoryNote
+        ? [previousMichelinStarHistoryNote]
+        : undefined,
   })))
   .slice(0, 3);
 const trustSignalLabel = (signal: (typeof trustSignals)[number]) =>
@@ -206,20 +276,6 @@ const trustSignalClassName = (signal: (typeof trustSignals)[number]) =>
     signal.source === "michelin" ? michelinTrustSignalModifier(signal.tier) : null,
     signal.is_current === false ? "place-card-trust-pill--previous" : null,
   ].filter(Boolean).join(" ");
-const normalizedTrustTier = (tier: string | null | undefined) => (tier ?? "").toLowerCase();
-const michelinStarCount = (tier: string | null | undefined) => {
-  const normalized = normalizedTrustTier(tier);
-  if (normalized.includes("3 star")) {
-    return 3;
-  }
-  if (normalized.includes("2 star")) {
-    return 2;
-  }
-  if (normalized.includes("1 star")) {
-    return 1;
-  }
-  return 0;
-};
 const michelinTrustSignalModifier = (tier: string | null | undefined) => {
   const normalized = normalizedTrustTier(tier);
   const starCount = michelinStarCount(tier);
@@ -388,7 +444,7 @@ const hasReservationOptions = reservationLinks.length > 1;
           )}
           {websiteUrl && (
             <a
-              class="place-card-action-link place-card-action-link--website"
+              class="place-card-action-link"
               href={websiteUrl}
               target="_blank"
               rel="noopener noreferrer"
