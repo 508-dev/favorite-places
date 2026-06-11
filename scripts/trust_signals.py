@@ -65,6 +65,7 @@ TRUST_SIGNAL_SOURCE_PRIORITY = {
     "google_search": 6,
 }
 TRUST_SIGNAL_REPLACEABLE_SOURCES = tuple(TRUST_SIGNAL_SOURCE_PRIORITY)
+TRUST_SIGNAL_SEARCH_RESULT_SOURCES = ("timeout", "blog", "web", "brave_search", "google_search")
 TRUST_SIGNAL_CONFIDENCE_PRIORITY = {
     "high": 0,
     "medium": 1,
@@ -785,6 +786,7 @@ def refresh_trust_signals_for_raw_guides(
                     )
                 except (HTTPError, URLError, OSError, ValueError) as exc:
                     provider_failures += 1
+                    failed_replaceable_sources.update(TRUST_SIGNAL_SEARCH_RESULT_SOURCES)
                     print(f"WARNING: Brave trust search failed for {place.name}: {exc}", flush=True)
             if not results and google_fallback_enabled:
                 try:
@@ -797,6 +799,7 @@ def refresh_trust_signals_for_raw_guides(
                     )
                 except (HTTPError, URLError, OSError, ValueError) as exc:
                     provider_failures += 1
+                    failed_replaceable_sources.update(TRUST_SIGNAL_SEARCH_RESULT_SOURCES)
                     print(f"WARNING: Google fallback trust search failed for {place.name}: {exc}", flush=True)
             michelin_signals = signals_from_michelin_region(
                 michelin_restaurants,

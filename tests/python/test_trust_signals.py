@@ -219,6 +219,66 @@ class TrustSignalsTest(unittest.TestCase):
         self.assertEqual(summary.searched_places, 1)
         self.assertEqual(loaded, {"place-1": [tabelog_signal]})
 
+    def test_refresh_preserves_search_rows_when_search_provider_fails(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "trust.sqlite"
+            now = datetime(2026, 1, 15, tzinfo=UTC)
+            existing_signal = TrustSignal(
+                source="timeout",
+                label="Time Out",
+                url="https://www.timeout.com/tokyo/restaurants/coffee-house",
+                title="Coffee House is one of Tokyo's best cafes",
+                fetched_at=now.isoformat(),
+                confidence="high",
+                match_reason="name plus source/location match",
+            )
+            store = TrustSignalStore(sqlite_url_for_path(db_path))
+            store.replace_search_signals(
+                "place-1",
+                [existing_signal],
+                match_signature=trust_match_signature("Coffee House", "Tokyo", "Japan"),
+                now=now,
+            )
+            raw_lists = {
+                "tokyo-japan": RawSavedList(
+                    title="Tokyo, Japan",
+                    places=[
+                        RawPlace(
+                            name="Coffee House",
+                            address="1 Shibuya, Tokyo, Japan",
+                            maps_url="https://maps.google.com/?q=coffee-house",
+                        )
+                    ],
+                )
+            }
+
+            with (
+                patch.dict(
+                    os.environ,
+                    {
+                        "FAVORITE_PLACES_TRUST_CACHE_PATH": str(db_path),
+                        "BRAVE_SEARCH_API_KEY": "brave-key",
+                        "BRAVE_API_KEY": "",
+                        "FAVORITE_PLACES_TRUST_GOOGLE_FALLBACK": "",
+                    },
+                ),
+                patch("scripts.trust_signals.scrape_michelin_region_source", return_value=[]),
+                patch("scripts.trust_signals.tabelog_sources_for_guides", return_value={}),
+                patch("scripts.trust_signals.brave_search", side_effect=OSError("blocked")),
+            ):
+                summary = refresh_trust_signals_for_raw_guides(
+                    root=Path(tmpdir),
+                    raw_lists=raw_lists,
+                    enrichment_caches={"tokyo-japan": {}},
+                    stable_place_ids={("tokyo-japan", 0): "place-1"},
+                    force_refresh=True,
+                )
+
+            loaded = store.load_signals_for_place_keys(["place-1"])
+
+        self.assertEqual(summary.provider_failures, 1)
+        self.assertEqual(loaded, {"place-1": [existing_signal]})
+
     def test_refresh_skips_search_michelin_signal_when_region_signal_has_same_url(self) -> None:
         with TemporaryDirectory() as tmpdir:
             db_path = Path(tmpdir) / "trust.sqlite"
