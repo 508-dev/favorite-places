@@ -195,7 +195,8 @@ describe("guide map interactions", () => {
     expect(placeCard).toContain('class="place-card-marker"');
     expect(placeCard).toContain('class="place-card-map-link"');
     expect(placeCard).toContain("aria-label={`Open ${place.name} in Google Maps`}");
-    expect(placeCard).toContain('<img src="/icons/google-maps.svg" alt="" width="18" height="26"');
+    expect(placeCard).toContain('src="/icons/google-maps.svg"');
+    expect(placeCard).toContain("data-image-component");
     expect(placeCard).toContain('class="place-card-map-link-label"');
     expect(placeCard).toContain("{siteConfig.placeCard.mapsLabel}</span>");
     expect(placeCard).not.toContain("badge badge--featured");

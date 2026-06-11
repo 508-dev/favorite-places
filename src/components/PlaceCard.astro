@@ -165,7 +165,13 @@ const displayedPlaceAttribution = showPlaceAttribution ? placeAttribution : null
 >
   <div class="place-card-photo" aria-hidden={hasPhoto ? undefined : "true"}>
     {hasPhoto ? (
-      <img src={photoSrc!} alt={place.name} loading="lazy" decoding="async" />
+      <img
+        src={photoSrc!}
+        alt={place.name}
+        loading="lazy"
+        decoding="async"
+        data-image-component
+      />
     ) : (
       <div class="place-card-photo-placeholder">
         <div class="place-card-photo-placeholder-copy">
@@ -216,7 +222,15 @@ const displayedPlaceAttribution = showPlaceAttribution ? placeAttribution : null
               aria-label={`Open ${place.name} in Google Maps`}
               title={`Open ${place.name} in Google Maps`}
             >
-              <img src="/icons/google-maps.svg" alt="" width="18" height="26" loading="lazy" decoding="async" />
+              <img
+                src="/icons/google-maps.svg"
+                alt=""
+                width="18"
+                height="26"
+                loading="lazy"
+                decoding="async"
+                data-image-component
+              />
               <span class="place-card-map-link-label" aria-hidden="true">{siteConfig.placeCard.mapsLabel}</span>
             </a>
           )}

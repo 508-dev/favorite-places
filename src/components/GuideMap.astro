@@ -316,7 +316,7 @@ const mapPlaces = places
     const photoUrl = placePhotosEnabled ? safePhotoUrl(place.mainPhotoPath) : null;
     const ratingMeta = popupRatingMeta(place);
     const mapsActionHtml = mapsUrl
-      ? `<a class="guide-map-popup-map-action" href="${escapeHtml(mapsUrl)}" target="_blank" rel="noreferrer" aria-label="Open ${escapeHtml(place.name)} in Google Maps" title="Open in Google Maps"><img src="/icons/google-maps.svg" alt="" width="18" height="26" loading="lazy" decoding="async" /></a>`
+      ? `<a class="guide-map-popup-map-action" href="${escapeHtml(mapsUrl)}" target="_blank" rel="noreferrer" aria-label="Open ${escapeHtml(place.name)} in Google Maps" title="Open in Google Maps"><img src="/icons/google-maps.svg" alt="" width="18" height="26" loading="lazy" decoding="async" data-image-component /></a>`
       : "";
     const detailsActionHtml = `<button class="guide-map-popup-details-action" type="button" data-guide-map-popup-details data-place-id="${escapeHtml(place.id)}" aria-label="Show details for ${escapeHtml(place.name)}">Details</button>`;
     const footerHtml = `<span class="guide-map-popup-footer">${ratingMeta ? `<span class="guide-map-popup-rating" title="${escapeHtml(ratingMeta.title)}">${escapeHtml(ratingMeta.label)}</span>` : ""}<span class="guide-map-popup-actions">${detailsActionHtml}${mapsActionHtml}</span></span>`;
@@ -1373,7 +1373,7 @@ const mapPlaces = places
             )
           : initLeafletRuntime(mapElement, places, handleMarkerSelect, handlePopupDetailsSelect);
 
-      installMapAccessibility(panel ?? mapElement, "Places map");
+      installMapAccessibility(mapElement, "Places map");
       runtime.setVisiblePlaces(currentVisiblePlaceIds);
       mapElement.guideMap = runtime.rawMap;
       element.dataset.initialized = "true";

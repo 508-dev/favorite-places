@@ -1,5 +1,18 @@
-const THIRD_PARTY_IMAGE_PATTERN =
-  /(?:google|gstatic|googleapis|openstreetmap|wikimedia|cartocdn|mapbox|leaflet)/i;
+const MAP_ROOT_SELECTOR = "[data-guide-map], [data-home-guide-map]";
+const GOOGLE_FRAME_PATTERN = /google|gstatic/i;
+
+function mapRoots(root?: HTMLElement | null) {
+  if (root?.matches(MAP_ROOT_SELECTOR)) {
+    return [root];
+  }
+
+  const scopedRoots = root ? Array.from(root.querySelectorAll<HTMLElement>(MAP_ROOT_SELECTOR)) : [];
+  if (scopedRoots.length > 0) {
+    return scopedRoots;
+  }
+
+  return Array.from(document.querySelectorAll<HTMLElement>(MAP_ROOT_SELECTOR));
+}
 
 function anchorAccessibleName(anchor: HTMLAnchorElement): string | null {
   const text = anchor.innerText?.trim();
@@ -22,12 +35,8 @@ function anchorAccessibleName(anchor: HTMLAnchorElement): string | null {
   }
 }
 
-function patchMapAccessibility(root: HTMLElement, label: string) {
-  root.querySelectorAll<HTMLIFrameElement>("iframe:not([title])").forEach((iframe) => {
-    iframe.title = label;
-  });
-
-  root.querySelectorAll<HTMLAnchorElement>("a[href]").forEach((anchor) => {
+function patchAnchors(container: ParentNode) {
+  container.querySelectorAll<HTMLAnchorElement>("a[href]").forEach((anchor) => {
     if (anchor.innerText?.trim() || anchor.getAttribute("aria-label")?.trim()) return;
 
     const imgAlt = anchor.querySelector("img")?.getAttribute("alt")?.trim();
@@ -38,28 +47,60 @@ function patchMapAccessibility(root: HTMLElement, label: string) {
 
     anchor.setAttribute("aria-label", anchorAccessibleName(anchor) ?? "Open map link");
   });
+}
 
-  root.querySelectorAll<HTMLImageElement>("img:not([data-image-component])").forEach((img) => {
-    const src = img.getAttribute("src") || "";
-    if (!src || src.startsWith("data:")) return;
-    if (THIRD_PARTY_IMAGE_PATTERN.test(src)) {
-      img.setAttribute("data-image-component", "");
+function patchMapImages(container: ParentNode) {
+  container.querySelectorAll<HTMLImageElement>("img:not([data-image-component])").forEach((img) => {
+    img.setAttribute("data-image-component", "");
+  });
+}
+
+function patchIframes(label: string, roots: HTMLElement[]) {
+  roots.forEach((root) => {
+    root.querySelectorAll<HTMLIFrameElement>("iframe:not([title])").forEach((iframe) => {
+      iframe.title = label;
+    });
+  });
+
+  document.querySelectorAll<HTMLIFrameElement>("iframe:not([title])").forEach((iframe) => {
+    const src = iframe.getAttribute("src") || "";
+    if (GOOGLE_FRAME_PATTERN.test(src) || iframe.closest(MAP_ROOT_SELECTOR)) {
+      iframe.title = label;
     }
   });
 }
 
+function patchMapAccessibility(label: string, root?: HTMLElement | null) {
+  const roots = mapRoots(root);
+
+  roots.forEach((mapRoot) => {
+    patchAnchors(mapRoot);
+    patchMapImages(mapRoot);
+  });
+
+  patchIframes(label, roots);
+}
+
 export function installMapAccessibility(root: HTMLElement, label: string) {
-  patchMapAccessibility(root, label);
+  const patch = () => patchMapAccessibility(label, root);
 
-  const observer = new MutationObserver(() => {
-    patchMapAccessibility(root, label);
-  });
-  observer.observe(root, {
-    attributes: true,
-    attributeFilter: ["href", "src", "title", "aria-label"],
-    childList: true,
-    subtree: true,
+  patch();
+
+  const observers = mapRoots(root).map((mapRoot) => {
+    const observer = new MutationObserver(patch);
+    observer.observe(mapRoot, {
+      attributes: true,
+      attributeFilter: ["href", "src", "title", "aria-label"],
+      childList: true,
+      subtree: true,
+    });
+    return observer;
   });
 
-  return () => observer.disconnect();
+  const delayedPatchTimers = [250, 1000, 3000].map((delay) => window.setTimeout(patch, delay));
+
+  return () => {
+    observers.forEach((observer) => observer.disconnect());
+    delayedPatchTimers.forEach((timer) => window.clearTimeout(timer));
+  };
 }
