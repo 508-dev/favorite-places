@@ -68,6 +68,8 @@ export interface TrustSignal {
   source: TrustSignalSource;
   label: string;
   tier?: string | null;
+  display_label?: string | null;
+  display_tier?: string | null;
   award_year?: number | null;
   is_current?: boolean | null;
   url?: string | null;

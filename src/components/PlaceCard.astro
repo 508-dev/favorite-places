@@ -126,8 +126,10 @@ const trustSignals = rawTrustSignals
   .slice(0, 3);
 const trustSignalLabel = (signal: (typeof trustSignals)[number]) =>
   [
-    signal.source === "michelin" && signal.is_current === false ? "Previous MICHELIN Guide" : signal.label,
-    signal.tier,
+    signal.source === "michelin" && signal.is_current === false
+      ? "Previous MICHELIN Guide"
+      : signal.display_label ?? signal.label,
+    signal.display_tier ?? signal.tier,
     signal.award_year ? String(signal.award_year) : null,
   ].filter(Boolean).join(" · ");
 const trustSignalTitle = (signal: (typeof trustSignals)[number]) =>

@@ -14,7 +14,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path
-from typing import Any, TypeAlias
+from typing import Any
 
 from gmaps_scraper.models import (
     PLACE_LLM_DISPLAY_TRANSLATION_FIELDS,
@@ -81,7 +81,7 @@ class _NoopLangfuseObservation:
 _LANGFUSE_DEFAULT_TIMEOUT_SECONDS = 2
 _LANGFUSE_DEFAULT_FLUSH_AT = 8
 _LANGFUSE_DEFAULT_FLUSH_INTERVAL_SECONDS = 1.0
-_LANGFUSE_CONFIG: TypeAlias = tuple[str, str, str | None, int, int, float]
+type _LANGFUSE_CONFIG = tuple[str, str, str | None, int, int, float]
 _LANGFUSE_CLIENT_CACHE: dict[_LANGFUSE_CONFIG, Any] = {}
 _LANGFUSE_CLIENT_CACHE_LOCK = threading.Lock()
 

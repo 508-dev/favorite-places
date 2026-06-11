@@ -273,6 +273,8 @@ class TrustSignal(PipelineModel):
     source: TrustSignalSource
     label: str
     tier: str | None = None
+    display_label: str | None = None
+    display_tier: str | None = None
     award_year: int | None = None
     is_current: bool | None = None
     url: str | None = None

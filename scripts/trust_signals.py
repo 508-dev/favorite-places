@@ -43,10 +43,12 @@ BRAVE_SEARCH_API_KEY_ENV = "BRAVE_SEARCH_API_KEY"
 BRAVE_API_KEY_ENV = "BRAVE_API_KEY"
 GOOGLE_FALLBACK_ENV = "FAVORITE_PLACES_TRUST_GOOGLE_FALLBACK"
 MICHELIN_REGION_URLS_ENV = "FAVORITE_PLACES_MICHELIN_REGION_URLS"
+TABELOG_SOURCE_URLS_ENV = "FAVORITE_PLACES_TABELOG_SOURCE_URLS"
 TRUST_SIGNAL_REFRESH_TTL = timedelta(days=90)
 MICHELIN_REGION_REFRESH_TTL = timedelta(days=365)
 MICHELIN_SOURCE_CACHE_VERSION = 3
 MICHELIN_DETAIL_CACHE_VERSION = 2
+TABELOG_SOURCE_CACHE_VERSION = 1
 TRUST_SIGNAL_HTTP_TIMEOUT_SECONDS = 20
 TRUST_SIGNAL_USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
@@ -86,6 +88,9 @@ WIKIPEDIA_MICHELIN_REGION_URLS = {
     ("hong kong", "*"): "https://en.wikipedia.org/wiki/List_of_Michelin-starred_restaurants_in_Hong_Kong_and_Macau",
 }
 MICHELIN_BASE_URL = "https://guide.michelin.com"
+TABELOG_AWARD_RESTAURANTS_URL = "https://award.tabelog.com/en/restaurants"
+TABELOG_HYAKUMEITEN_URL = "https://award.tabelog.com/hyakumeiten"
+TABELOG_SEARCH_BASE_URL = "https://tabelog.com/en/rstLst/"
 RESTAURANT_NAME_STOPWORDS = {
     "bar",
     "bistro",
@@ -178,6 +183,26 @@ class MichelinRegionSource(BaseModel):
     url: str
 
 
+class TabelogRestaurant(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    name: str
+    url: str
+    label: str
+    tier: str | None = None
+    award_year: int | None = None
+    is_current: bool | None = True
+    region_key: str
+
+
+class TabelogSource(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    source_type: Literal["award", "hyakumeiten"]
+    region_key: str
+    url: str
+
+
 class MichelinDetailSnapshot(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
@@ -199,6 +224,7 @@ class TrustSignalRefreshSummary(BaseModel):
     provider_failures: int = 0
     michelin_regions_refreshed: int = 0
     michelin_details_refreshed: int = 0
+    tabelog_sources_refreshed: int = 0
 
 
 class TrustSignalStore:
@@ -337,6 +363,54 @@ class TrustSignalStore:
         row = {
             "source_key": michelin_source_key(source),
             "source_type": f"michelin_{source.source_type}",
+            "region": source.region_key,
+            "url": source.url,
+            "query": None,
+            "fetched_at": now.isoformat(),
+            "refresh_after": refresh_after.isoformat(),
+            "payload_json": json.dumps(
+                [restaurant.model_dump(mode="json") for restaurant in restaurants],
+                ensure_ascii=False,
+            ),
+        }
+        upsert_row(self.engine, trust_source_snapshots, row, ["source_key"])
+
+    def cached_tabelog_restaurants(
+        self,
+        source: TabelogSource,
+        *,
+        now: datetime,
+    ) -> list[TabelogRestaurant] | None:
+        source_key = tabelog_source_key(source)
+        with self.engine.connect() as connection:
+            row = connection.execute(
+                select(
+                    trust_source_snapshots.c.refresh_after,
+                    trust_source_snapshots.c.payload_json,
+                ).where(trust_source_snapshots.c.source_key == source_key)
+            ).fetchone()
+        if row is None:
+            return None
+        refresh_after, payload_json = row
+        parsed_refresh_after = metadata_datetime_or_none(refresh_after)
+        if parsed_refresh_after is None or parsed_refresh_after <= now:
+            return None
+        payload = json.loads(payload_json)
+        if not isinstance(payload, list):
+            return []
+        return [TabelogRestaurant.model_validate(item) for item in payload if isinstance(item, dict)]
+
+    def save_tabelog_restaurants(
+        self,
+        source: TabelogSource,
+        restaurants: list[TabelogRestaurant],
+        *,
+        now: datetime,
+    ) -> None:
+        refresh_after = now + MICHELIN_REGION_REFRESH_TTL
+        row = {
+            "source_key": tabelog_source_key(source),
+            "source_type": f"tabelog_{source.source_type}",
             "region": source.region_key,
             "url": source.url,
             "query": None,
@@ -594,7 +668,9 @@ def refresh_trust_signals_for_raw_guides(
     brave_api_key = os.environ.get(BRAVE_SEARCH_API_KEY_ENV) or os.environ.get(BRAVE_API_KEY_ENV)
     google_fallback_enabled = include_google_fallback or env_flag_enabled(GOOGLE_FALLBACK_ENV)
     michelin_sources_by_guide = michelin_region_sources_for_guides(raw_lists)
+    tabelog_sources_by_guide = tabelog_sources_for_guides(raw_lists)
     michelin_restaurants_by_source: dict[tuple[str, str], list[MichelinRestaurant]] = {}
+    tabelog_restaurants_by_source: dict[tuple[str, str], list[TabelogRestaurant]] = {}
     unique_sources = {
         (source.source_type, source.region_key, source.url): source
         for sources in michelin_sources_by_guide.values()
@@ -608,6 +684,22 @@ def refresh_trust_signals_for_raw_guides(
             summary.michelin_regions_refreshed += 1
         michelin_restaurants_by_source[(source.source_type, source.region_key)] = restaurants
 
+    unique_tabelog_sources = {
+        (source.source_type, source.region_key, source.url): source
+        for sources in tabelog_sources_by_guide.values()
+        for source in sources
+    }
+    for source in sorted(
+        unique_tabelog_sources.values(),
+        key=lambda value: (value.source_type, value.region_key, value.url),
+    ):
+        restaurants = store.cached_tabelog_restaurants(source, now=now)
+        if restaurants is None or force_refresh:
+            restaurants = scrape_tabelog_source(source)
+            store.save_tabelog_restaurants(source, restaurants, now=now)
+            summary.tabelog_sources_refreshed += 1
+        tabelog_restaurants_by_source[(source.source_type, source.region_key)] = restaurants
+
     for slug, raw in sorted(raw_lists.items()):
         city_name = infer_city_name(raw.title or slug)
         country_name = infer_country_name(raw.title or slug)
@@ -617,7 +709,13 @@ def refresh_trust_signals_for_raw_guides(
             for source in michelin_sources_by_guide.get(slug, [])
             for restaurant in michelin_restaurants_by_source.get((source.source_type, source.region_key), [])
         ]
+        tabelog_restaurants = [
+            restaurant
+            for source in tabelog_sources_by_guide.get(slug, [])
+            for restaurant in tabelog_restaurants_by_source.get((source.source_type, source.region_key), [])
+        ]
         guide_has_michelin_sources = bool(michelin_sources_by_guide.get(slug))
+        guide_has_tabelog_sources = bool(tabelog_sources_by_guide.get(slug))
         for index, place in enumerate(raw.places):
             place_id = stable_place_ids.get((slug, index))
             if place_id is None:
@@ -685,15 +783,61 @@ def refresh_trust_signals_for_raw_guides(
             michelin_signals = detail_result.signals
             summary.michelin_details_refreshed += detail_result.fetched_details
             summary.provider_failures += detail_result.provider_failures
-            if not results and not michelin_signals and not brave_api_key and not google_fallback_enabled:
-                if guide_has_michelin_sources:
+            tabelog_signals = signals_from_tabelog_restaurants(
+                tabelog_restaurants,
+                context=MichelinMatchContext(
+                    place_name=place.name,
+                    city_name=city_name,
+                    country_name=country_name,
+                    address=place.address,
+                ),
+                fetched_at=now,
+            )
+            tabelog_search_signals: list[TrustSignal] = []
+            if guide_has_tabelog_sources and tabelog_restaurants:
+                tabelog_query = tabelog_search_query(place.name)
+                try:
+                    tabelog_results = cached_or_fetch_search_results(
+                        store,
+                        "tabelog_search",
+                        tabelog_query,
+                        now=now,
+                        fetch=lambda: tabelog_search(tabelog_query),
+                    )
+                except (HTTPError, URLError, OSError, ValueError) as exc:
+                    provider_failures += 1
+                    print(f"WARNING: Tabelog trust search failed for {place.name}: {exc}", flush=True)
+                else:
+                    tabelog_search_signals = signals_from_tabelog_search_results(
+                        tabelog_restaurants,
+                        tabelog_results,
+                        place_name=place.name,
+                        fetched_at=now,
+                    )
+            if (
+                not results
+                and not michelin_signals
+                and not tabelog_signals
+                and not tabelog_search_signals
+                and not brave_api_key
+                and not google_fallback_enabled
+            ):
+                replaceable_sources = [
+                    source
+                    for source, enabled in (
+                        ("michelin", guide_has_michelin_sources),
+                        ("tabelog", guide_has_tabelog_sources),
+                    )
+                    if enabled
+                ]
+                if replaceable_sources:
                     for key in keys:
                         store.replace_search_signals(
                             key,
                             [],
                             match_signature=trust_match_signature(place.name, city_name, country_name),
                             now=now,
-                            replaceable_sources=("michelin",),
+                            replaceable_sources=replaceable_sources,
                         )
                     summary.searched_places += 1
                     summary.provider_failures += provider_failures
@@ -703,12 +847,17 @@ def refresh_trust_signals_for_raw_guides(
 
             signals = [
                 *michelin_signals,
-                *signals_from_search_results(
-                    results,
-                    place_name=place.name,
-                    city_name=city_name,
-                    country_name=country_name,
-                    fetched_at=now,
+                *tabelog_signals,
+                *tabelog_search_signals,
+                *search_signals_without_duplicate_michelin_urls(
+                    michelin_signals,
+                    signals_from_search_results(
+                        results,
+                        place_name=place.name,
+                        city_name=city_name,
+                        country_name=country_name,
+                        fetched_at=now,
+                    ),
                 ),
             ]
             for key in keys:
@@ -820,6 +969,45 @@ def configured_michelin_region_urls() -> dict[tuple[str, str], str]:
     return result
 
 
+def tabelog_sources_for_guides(
+    raw_lists: Mapping[str, RawSavedList],
+) -> dict[str, list[TabelogSource]]:
+    configured_urls = configured_tabelog_source_urls()
+    sources: dict[str, list[TabelogSource]] = {}
+    for slug, raw in raw_lists.items():
+        country_name = normalize_region_token(infer_country_name(raw.title or slug) or "")
+        lookup_country, _ = michelin_region_lookup_key(slug, raw)
+        if country_name != "japan" and lookup_country != "japan":
+            continue
+        urls = configured_urls or {
+            "award": TABELOG_AWARD_RESTAURANTS_URL,
+            "hyakumeiten": TABELOG_HYAKUMEITEN_URL,
+        }
+        sources[slug] = [
+            TabelogSource(source_type=source_type, region_key="japan", url=url)
+            for source_type, url in urls.items()
+        ]
+    return sources
+
+
+def configured_tabelog_source_urls() -> dict[Literal["award", "hyakumeiten"], str]:
+    raw_value = os.environ.get(TABELOG_SOURCE_URLS_ENV)
+    if not raw_value:
+        return {}
+    try:
+        payload = json.loads(raw_value)
+    except json.JSONDecodeError:
+        return {}
+    if not isinstance(payload, dict):
+        return {}
+    result: dict[Literal["award", "hyakumeiten"], str] = {}
+    for key, value in payload.items():
+        if key not in {"award", "hyakumeiten"} or not isinstance(value, str):
+            continue
+        result[key] = value
+    return result
+
+
 def scrape_michelin_region_source(source: MichelinRegionSource) -> list[MichelinRestaurant]:
     if source.source_type == "wikipedia":
         return scrape_wikipedia_michelin_region(source)
@@ -844,6 +1032,50 @@ def scrape_official_michelin_region(source: MichelinRegionSource) -> list[Michel
         for restaurant in parse_michelin_region_page(body, region_key=source.region_key, page_url=next_url):
             restaurants[(normalize_search_text(restaurant.name), restaurant.url, restaurant.tier or "")] = restaurant
         next_url = michelin_next_page_url(body, page_url=next_url)
+    return sorted(restaurants.values(), key=lambda restaurant: normalize_search_text(restaurant.name))
+
+
+def scrape_tabelog_source(source: TabelogSource) -> list[TabelogRestaurant]:
+    if source.source_type == "hyakumeiten":
+        return scrape_tabelog_hyakumeiten(source)
+    return scrape_tabelog_awards(source)
+
+
+def scrape_tabelog_awards(source: TabelogSource) -> list[TabelogRestaurant]:
+    restaurants: dict[tuple[str, str, str, int | None], TabelogRestaurant] = {}
+    next_url: str | None = source.url
+    seen_pages: set[str] = set()
+    while next_url and next_url not in seen_pages:
+        seen_pages.add(next_url)
+        body = fetch_text(next_url)
+        for restaurant in parse_tabelog_award_page(body, region_key=source.region_key, page_url=next_url):
+            restaurants[
+                (
+                    normalize_search_text(restaurant.name),
+                    canonical_tabelog_url(restaurant.url),
+                    restaurant.tier or "",
+                    restaurant.award_year,
+                )
+            ] = restaurant
+        next_url = tabelog_next_page_url(body, page_url=next_url)
+    return sorted(restaurants.values(), key=lambda restaurant: normalize_search_text(restaurant.name))
+
+
+def scrape_tabelog_hyakumeiten(source: TabelogSource) -> list[TabelogRestaurant]:
+    index_body = fetch_text(source.url)
+    page_urls = tabelog_hyakumeiten_category_urls(index_body, page_url=source.url)
+    restaurants: dict[tuple[str, str, str, int | None], TabelogRestaurant] = {}
+    for page_url in page_urls:
+        body = fetch_text(page_url)
+        for restaurant in parse_tabelog_hyakumeiten_page(body, region_key=source.region_key, page_url=page_url):
+            restaurants[
+                (
+                    normalize_search_text(restaurant.name),
+                    canonical_tabelog_url(restaurant.url),
+                    restaurant.tier or "",
+                    restaurant.award_year,
+                )
+            ] = restaurant
     return sorted(restaurants.values(), key=lambda restaurant: normalize_search_text(restaurant.name))
 
 
@@ -937,18 +1169,50 @@ def fetch_text(url: str) -> str:
         return response.read().decode("utf-8", errors="replace")
 
 
+MICHELIN_REGION_CARD_RE = re.compile(
+    r"<(?:article|div|li)\b[^>]*class=[\"'](?:[^\"']*\s)?card__menu(?:\s[^\"']*)?[\"'][^>]*>",
+    flags=re.IGNORECASE,
+)
+
+
+def michelin_region_card_window(body: str, *, name_start: int, name_end: int) -> str:
+    card_start: int | None = None
+    for card_match in MICHELIN_REGION_CARD_RE.finditer(
+        body,
+        max(0, name_start - 5000),
+        name_start,
+    ):
+        card_start = card_match.start()
+    if card_start is not None:
+        next_card = MICHELIN_REGION_CARD_RE.search(body, name_end)
+        card_end = next_card.start() if next_card else min(len(body), card_start + 6000)
+        return body[card_start:card_end]
+
+    next_name = body.find("data-restaurant-name=", name_end)
+    after_name = body[name_end : next_name if next_name >= 0 else min(len(body), name_end + 4000)]
+    if re.search(r'href="[^"]*/restaurant/[^"]+"', after_name):
+        return after_name
+
+    previous_name = body.rfind("data-restaurant-name=", max(0, name_start - 1200), name_start)
+    before_name = body[(previous_name if previous_name >= 0 else max(0, name_start - 1200)) : name_start]
+    href_matches = list(re.finditer(r'href="[^"]*/restaurant/[^"]+"', before_name))
+    if href_matches:
+        return href_matches[-1].group(0)
+    return body[max(0, name_start - 1200) : min(len(body), name_end + 4000)]
+
+
 def parse_michelin_region_page(
     body: str,
     *,
     region_key: str,
     page_url: str,
 ) -> list[MichelinRestaurant]:
-    restaurants: dict[tuple[str, str], MichelinRestaurant] = {}
+    restaurants: dict[tuple[str, str, str], MichelinRestaurant] = {}
     for match in re.finditer(r'data-restaurant-name="(?P<name>[^"]+)"', body):
         name = strip_html(match.group("name"))
         if not name:
             continue
-        window = body[max(0, match.start() - 1200) : min(len(body), match.end() + 4000)]
+        window = michelin_region_card_window(body, name_start=match.start(), name_end=match.end())
         href_match = re.search(r'href="(?P<href>[^"]*/restaurant/[^"]+)"', window)
         if href_match is None:
             continue
@@ -980,6 +1244,177 @@ def parse_michelin_region_page(
                 region_key=region_key,
             )
     return list(restaurants.values())
+
+
+def parse_tabelog_award_page(
+    body: str,
+    *,
+    region_key: str,
+    page_url: str,
+) -> list[TabelogRestaurant]:
+    award_year = infer_award_year(tabelog_page_title(body) or page_url)
+    restaurants: dict[tuple[str, str, str], TabelogRestaurant] = {}
+    for item_html in html_blocks_by_class(body, "li", "award-rstlst__item"):
+        href = first_href(item_html)
+        name = first_class_text(item_html, "award-rstlst__rst-name")
+        if not href or not name:
+            continue
+        url = canonical_tabelog_url(urljoin(page_url, html.unescape(href)))
+        tiers = tabelog_award_tiers(item_html)
+        for tier in tiers or [None]:
+            restaurants[(normalize_search_text(name), url, tier or "")] = TabelogRestaurant(
+                name=name,
+                url=url,
+                label="The Tabelog Award",
+                tier=tier,
+                award_year=award_year,
+                is_current=True,
+                region_key=region_key,
+            )
+    return list(restaurants.values())
+
+
+def parse_tabelog_hyakumeiten_page(
+    body: str,
+    *,
+    region_key: str,
+    page_url: str,
+) -> list[TabelogRestaurant]:
+    page_title = tabelog_page_title(body) or ""
+    award_year = infer_award_year(page_title or page_url)
+    tier = tabelog_hyakumeiten_tier(page_title)
+    restaurants: dict[tuple[str, str], TabelogRestaurant] = {}
+    for item_html in html_blocks_by_class(body, "div", "hyakumeiten-shop__item"):
+        href = first_href(item_html)
+        name = first_class_text(item_html, "hyakumeiten-shop__name")
+        if not href or not name:
+            continue
+        url = canonical_tabelog_url(urljoin(page_url, html.unescape(href)))
+        restaurants[(normalize_search_text(name), url)] = TabelogRestaurant(
+            name=name,
+            url=url,
+            label="Tabelog Hyakumeiten",
+            tier=tier,
+            award_year=award_year,
+            is_current=True,
+            region_key=region_key,
+        )
+    return list(restaurants.values())
+
+
+def tabelog_hyakumeiten_category_urls(body: str, *, page_url: str) -> list[str]:
+    urls: list[str] = []
+    seen: set[str] = set()
+    for match in re.finditer(r'href="(?P<href>/hyakumeiten/[^"#?]+)"', body):
+        url = urljoin(page_url, html.unescape(match.group("href")))
+        if url == page_url or url in seen:
+            continue
+        seen.add(url)
+        urls.append(url)
+    return urls
+
+
+def tabelog_next_page_url(body: str, *, page_url: str) -> str | None:
+    current_page = tabelog_current_page_number(page_url)
+    candidates: list[tuple[int, str]] = []
+    for match in re.finditer(r'href="(?P<href>[^"]*restaurants[^"]*page=(?P<page>[0-9]+)[^"]*)"', body):
+        page = int(match.group("page"))
+        if page <= current_page:
+            continue
+        candidates.append((page, urljoin(page_url, html.unescape(match.group("href")))))
+    return min(candidates)[1] if candidates else None
+
+
+def tabelog_current_page_number(page_url: str) -> int:
+    values = parse_qs(urlparse(page_url).query).get("page")
+    if not values:
+        return 1
+    try:
+        return int(values[0])
+    except ValueError:
+        return 1
+
+
+def tabelog_page_title(body: str) -> str | None:
+    match = re.search(r"<title\b[^>]*>(?P<title>.*?)</title>", body, flags=re.IGNORECASE | re.DOTALL)
+    if match is None:
+        return None
+    return strip_html(match.group("title"))
+
+
+def tabelog_award_tiers(item_html: str) -> list[str]:
+    tiers: list[str] = []
+    seen: set[str] = set()
+    for match in re.finditer(
+        r'<span\b[^>]*class="[^"]*award-rstlst__award-label[^"]*"[^>]*>(?P<label>.*?)</span>',
+        item_html,
+        flags=re.IGNORECASE | re.DOTALL,
+    ):
+        tier = tabelog_award_tier_from_label(strip_html(match.group("label")))
+        if tier and tier not in seen:
+            seen.add(tier)
+            tiers.append(tier)
+    return tiers
+
+
+def tabelog_award_tier_from_label(value: str) -> str | None:
+    normalized = normalize_search_text(value)
+    if "chef" in normalized and "gold" in normalized:
+        return "Chefs' Gold"
+    if "regional" in normalized:
+        return "Best Regional Restaurants"
+    if "new" in normalized:
+        return "Best New Entry"
+    return tabelog_tier(normalized)
+
+
+def tabelog_hyakumeiten_tier(page_title: str) -> str:
+    title = re.sub(r"\s*\[[^\]]+\]\s*$", "", page_title)
+    title = re.sub(r"^食べログ\s*", "", title)
+    title = re.sub(r"\s*20[0-9]{2}\s*$", "", title)
+    title = strip_html(title)
+    if not title:
+        return "Hyakumeiten"
+    return title
+
+
+def html_blocks_by_class(body: str, tag_name: str, class_name: str) -> list[str]:
+    blocks: list[str] = []
+    pattern = re.compile(
+        rf"<{tag_name}\b[^>]*class=[\"'][^\"']*\b{re.escape(class_name)}\b[^\"']*[\"'][^>]*>",
+        flags=re.IGNORECASE,
+    )
+    for match in pattern.finditer(body):
+        end = find_matching_html_end(body, match.start(), tag_name)
+        if end is not None:
+            blocks.append(body[match.start():end])
+    return blocks
+
+
+def first_class_text(body: str, class_name: str) -> str | None:
+    pattern = re.compile(
+        rf"<[^>]*class=[\"'][^\"']*\b{re.escape(class_name)}\b[^\"']*[\"'][^>]*>(?P<value>.*?)</[^>]+>",
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    match = pattern.search(body)
+    if match is None:
+        return None
+    value = strip_html(match.group("value"))
+    return value or None
+
+
+def first_href(body: str) -> str | None:
+    match = re.search(r'<a\b[^>]*href="(?P<href>[^"]+)"', body, flags=re.IGNORECASE)
+    return html.unescape(match.group("href")) if match else None
+
+
+def first_attr_value(body: str, attr_name: str) -> str | None:
+    match = re.search(
+        rf"\b{re.escape(attr_name)}=[\"'](?P<value>[^\"']+)[\"']",
+        body,
+        flags=re.IGNORECASE,
+    )
+    return html.unescape(match.group("value")) if match else None
 
 
 def parse_michelin_full_list_article_page(
@@ -1093,6 +1528,17 @@ def canonical_michelin_restaurant_url(url: str) -> str:
     elif len(parts) >= 4 and parts[0] == "en" and parts[1] in {"jp", "hk", "mo", "tw"}:
         parts = ["en", *parts[2:]]
     return parsed._replace(path="/" + "/".join(parts), query="", fragment="").geturl()
+
+
+def canonical_tabelog_url(url: str) -> str:
+    parsed = urlparse(url)
+    if not parsed.netloc.lower().endswith("tabelog.com"):
+        return url
+    parts = [part for part in parsed.path.split("/") if part]
+    if parts and parts[0] == "en":
+        parts = parts[1:]
+    path = "/" + "/".join(parts) + ("/" if parts else "")
+    return parsed._replace(path=path, query="", fragment="").geturl()
 
 
 def looks_like_locale_path(country_part: str, language_part: str) -> bool:
@@ -1271,6 +1717,91 @@ def signals_from_michelin_region(
     return sort_trust_signals(dedupe_trust_signals(signals))
 
 
+def signals_from_tabelog_restaurants(
+    restaurants: list[TabelogRestaurant],
+    *,
+    context: MichelinMatchContext | str,
+    fetched_at: datetime,
+) -> list[TrustSignal]:
+    match_context = (
+        MichelinMatchContext(place_name=context)
+        if isinstance(context, str)
+        else context
+    )
+    signals: list[TrustSignal] = []
+    for restaurant in restaurants:
+        match = tabelog_restaurant_match(restaurant, match_context)
+        if match is None:
+            continue
+        confidence, match_reason = match
+        signals.append(
+            TrustSignal(
+                source="tabelog",
+                label=restaurant.label,
+                tier=restaurant.tier,
+                award_year=restaurant.award_year,
+                is_current=restaurant.is_current,
+                url=restaurant.url,
+                title=restaurant.name,
+                fetched_at=fetched_at.isoformat(),
+                confidence=confidence,
+                match_reason=match_reason,
+            )
+        )
+    return sort_trust_signals(dedupe_trust_signals(signals))
+
+
+def signals_from_tabelog_search_results(
+    restaurants: list[TabelogRestaurant],
+    results: list[SearchResult],
+    *,
+    place_name: str,
+    fetched_at: datetime,
+) -> list[TrustSignal]:
+    restaurants_by_url: dict[str, list[TabelogRestaurant]] = {}
+    for restaurant in restaurants:
+        restaurants_by_url.setdefault(canonical_tabelog_url(restaurant.url), []).append(restaurant)
+
+    signals: list[TrustSignal] = []
+    matched_urls: set[str] = set()
+    normalized_place_name = normalize_restaurant_name_for_match(place_name)
+    for result in results:
+        url = canonical_tabelog_url(result.url)
+        matched_restaurants = restaurants_by_url.get(url)
+        if not matched_restaurants or url in matched_urls:
+            continue
+        if not tabelog_search_result_matches_place(result, normalized_place_name):
+            continue
+        matched_urls.add(url)
+        for restaurant in matched_restaurants:
+            signals.append(
+                TrustSignal(
+                    source="tabelog",
+                    label=restaurant.label,
+                    tier=restaurant.tier,
+                    award_year=restaurant.award_year,
+                    is_current=restaurant.is_current,
+                    url=restaurant.url,
+                    title=restaurant.name,
+                    fetched_at=fetched_at.isoformat(),
+                    confidence="high",
+                    match_reason="Tabelog direct search URL match",
+                )
+            )
+    return sort_trust_signals(dedupe_trust_signals(signals))
+
+
+def tabelog_search_result_matches_place(result: SearchResult, normalized_place_name: str) -> bool:
+    result_name = normalize_restaurant_name_for_match(result.title)
+    if not normalized_place_name or not result_name:
+        return False
+    if result_name == normalized_place_name:
+        return True
+    if min(len(normalized_place_name), len(result_name)) <= 4:
+        return False
+    return restaurant_name_similarity(normalized_place_name, result_name) >= 0.92
+
+
 def michelin_restaurant_match(
     restaurant: MichelinRestaurant,
     context: MichelinMatchContext,
@@ -1294,6 +1825,31 @@ def michelin_restaurant_match(
     return None
 
 
+def tabelog_restaurant_match(
+    restaurant: TabelogRestaurant,
+    context: MichelinMatchContext,
+) -> tuple[Literal["high", "medium"], str] | None:
+    place_name = normalize_restaurant_name_for_match(context.place_name)
+    restaurant_name = normalize_restaurant_name_for_match(restaurant.name)
+    if not place_name or not restaurant_name:
+        return None
+    if restaurant_name == place_name:
+        return "high", "Tabelog name exact match"
+    if min(len(place_name), len(restaurant_name)) <= 4:
+        return None
+
+    ratio = restaurant_name_similarity(place_name, restaurant_name)
+    containment = restaurant_name_contains_alias(place_name, restaurant_name)
+    location_bonus = tabelog_match_has_location_context(restaurant, context)
+    if ratio >= 0.92:
+        return "high", "Tabelog name similarity match"
+    if containment and location_bonus:
+        return "medium", "Tabelog name alias plus location match"
+    if ratio >= 0.84 and location_bonus:
+        return "medium", "Tabelog name similarity plus location match"
+    return None
+
+
 def normalize_restaurant_name_for_match(value: str) -> str:
     normalized = normalize_search_text(value)
     normalized = re.sub(r"\b(the|restaurant|ristorante|le|la|les|de|by)\b", " ", normalized)
@@ -1309,7 +1865,11 @@ def restaurant_name_contains_alias(left: str, right: str) -> bool:
     right_tokens = [token for token in right.split() if token not in RESTAURANT_NAME_STOPWORDS]
     if not left_tokens or not right_tokens:
         return False
-    shorter, longer = (left_tokens, right_tokens) if len(left_tokens) <= len(right_tokens) else (right_tokens, left_tokens)
+    shorter, longer = (
+        (left_tokens, right_tokens)
+        if len(left_tokens) <= len(right_tokens)
+        else (right_tokens, left_tokens)
+    )
     if len(shorter) == 1 and len(longer) > 1:
         return False
     return all(token in longer for token in shorter)
@@ -1337,6 +1897,30 @@ def michelin_match_has_location_context(
         if normalized and normalized in haystack:
             return True
     return "/" in restaurant.region_key
+
+
+def tabelog_match_has_location_context(
+    restaurant: TabelogRestaurant,
+    context: MichelinMatchContext,
+) -> bool:
+    haystack = normalize_search_text(
+        " ".join(
+            value
+            for value in [
+                restaurant.region_key,
+                restaurant.url,
+                context.address or "",
+                context.city_name or "",
+                context.country_name or "",
+            ]
+            if value
+        )
+    )
+    for value in (context.city_name, context.country_name):
+        normalized = normalize_search_text(value or "")
+        if normalized and normalized in haystack:
+            return True
+    return "japan" in haystack or "tabelog.com" in haystack
 
 
 def brave_search(query: str, *, api_key: str) -> list[SearchResult]:
@@ -1381,6 +1965,67 @@ def google_search_html(query: str) -> list[SearchResult]:
     with urlopen(request, timeout=TRUST_SIGNAL_HTTP_TIMEOUT_SECONDS) as response:
         body = response.read().decode("utf-8", errors="replace")
     return parse_google_search_results(body)
+
+
+def tabelog_search(query: str) -> list[SearchResult]:
+    params = urlencode({"sw": query})
+    body = fetch_text(f"{TABELOG_SEARCH_BASE_URL}?{params}")
+    return parse_tabelog_search_results(body, page_url=TABELOG_SEARCH_BASE_URL)
+
+
+def parse_tabelog_search_results(body: str, *, page_url: str) -> list[SearchResult]:
+    results: list[SearchResult] = []
+    seen_urls: set[str] = set()
+    for block in html_blocks_by_class(body, "div", "list-rst"):
+        url = first_attr_value(block, "data-detail-url")
+        if url is None:
+            url = first_href(block)
+        if url is None:
+            continue
+        canonical_url = canonical_tabelog_url(urljoin(page_url, html.unescape(url)))
+        if canonical_url in seen_urls:
+            continue
+        title = first_class_text(block, "list-rst__rst-name-target") or first_class_text(
+            block,
+            "cpy-rst-name",
+        )
+        if not title:
+            title = urlparse(canonical_url).netloc
+        seen_urls.add(canonical_url)
+        results.append(SearchResult(title=title, url=canonical_url))
+        if len(results) >= 10:
+            break
+    if results:
+        return results
+
+    item_list_match = re.search(
+        r'<script\b[^>]*type="application/ld\+json"[^>]*>\s*(?P<payload>\{.*?"@type"\s*:\s*"ItemList".*?\})\s*</script>',
+        body,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    if item_list_match is None:
+        return []
+    try:
+        payload = json.loads(html.unescape(item_list_match.group("payload")))
+    except json.JSONDecodeError:
+        return []
+    items = payload.get("itemListElement") if isinstance(payload, dict) else None
+    if not isinstance(items, list):
+        return []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        url = as_nonempty_string(item.get("url"))
+        if not url:
+            continue
+        canonical_url = canonical_tabelog_url(urljoin(page_url, url))
+        if canonical_url in seen_urls:
+            continue
+        seen_urls.add(canonical_url)
+        results.append(SearchResult(title=urlparse(canonical_url).netloc, url=canonical_url))
+        if len(results) >= 10:
+            break
+    return results
 
 
 def parse_google_search_results(body: str) -> list[SearchResult]:
@@ -1454,6 +2099,27 @@ def signals_from_search_results(
     return sort_trust_signals(dedupe_trust_signals(signals))
 
 
+def search_signals_without_duplicate_michelin_urls(
+    michelin_signals: Iterable[TrustSignal],
+    search_signals: Iterable[TrustSignal],
+) -> list[TrustSignal]:
+    michelin_urls = {
+        canonical_michelin_restaurant_url(signal.url)
+        for signal in michelin_signals
+        if signal.source == "michelin" and signal.url
+    }
+    filtered = [
+        signal
+        for signal in search_signals
+        if not (
+            signal.source == "michelin"
+            and signal.url
+            and canonical_michelin_restaurant_url(signal.url) in michelin_urls
+        )
+    ]
+    return sort_trust_signals(dedupe_trust_signals(filtered))
+
+
 def classify_search_result(
     result: SearchResult,
 ) -> tuple[Literal["michelin", "tabelog", "timeout", "blog", "web"] | None, str, str | None, int | None]:
@@ -1491,6 +2157,12 @@ def michelin_tier(normalized_text: str) -> str | None:
 
 
 def tabelog_tier(normalized_text: str) -> str | None:
+    if "chef" in normalized_text and "gold" in normalized_text:
+        return "Chefs' Gold"
+    if "regional" in normalized_text:
+        return "Best Regional Restaurants"
+    if "new" in normalized_text:
+        return "Best New Entry"
     for tier in ("gold", "silver", "bronze"):
         if tier in normalized_text:
             return tier.title()
@@ -1556,6 +2228,10 @@ def trust_search_query(place_name: str, *, city_name: str | None, country_name: 
     return " ".join(term for term in terms if term)
 
 
+def tabelog_search_query(place_name: str) -> str:
+    return place_name.strip()
+
+
 def trust_signal_row(
     place_key: str,
     signal: TrustSignal,
@@ -1614,6 +2290,11 @@ def michelin_source_key(source: MichelinRegionSource) -> str:
 def michelin_detail_source_key(restaurant_url: str) -> str:
     digest = hashlib.sha256(canonical_michelin_restaurant_url(restaurant_url).encode("utf-8")).hexdigest()
     return f"michelin-detail:v{MICHELIN_DETAIL_CACHE_VERSION}:{digest}"
+
+
+def tabelog_source_key(source: TabelogSource) -> str:
+    digest = hashlib.sha256(source.url.encode("utf-8")).hexdigest()
+    return f"tabelog:v{TABELOG_SOURCE_CACHE_VERSION}:{source.source_type}:{source.region_key}:{digest}"
 
 
 def trust_match_signature(place_name: str, city_name: str | None, country_name: str | None) -> str:

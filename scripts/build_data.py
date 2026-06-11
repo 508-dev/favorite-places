@@ -34,6 +34,7 @@ from urllib.request import Request, urlopen
 import pycountry
 from pydantic import TypeAdapter
 from PIL import Image, ImageOps, UnidentifiedImageError, features
+from sqlalchemy.engine import make_url
 
 try:
     from scripts.pipeline_models import (
@@ -2534,9 +2535,17 @@ def build_stable_place_id_index(raw_lists: Mapping[str, RawSavedList]) -> dict[t
 
 
 def trust_store_url_has_readable_cache(store_url: str) -> bool:
-    if not store_url.startswith("sqlite:///"):
+    parsed_url = make_url(store_url)
+    if parsed_url.drivername.split("+", 1)[0] != "sqlite":
         return True
-    sqlite_path = Path(store_url.removeprefix("sqlite:///"))
+    sqlite_database = parsed_url.database
+    if not sqlite_database or sqlite_database == ":memory:":
+        return True
+    if str(parsed_url.query.get("uri", "")).lower() == "true" and sqlite_database.startswith("file:"):
+        sqlite_database = sqlite_database.removeprefix("file:")
+    if sqlite_database == ":memory:":
+        return True
+    sqlite_path = Path(unquote(sqlite_database))
     return sqlite_path.exists()
 
 
@@ -2875,7 +2884,11 @@ def normalize_guide(
 
     for place in raw.places:
         place_id = stable_place_id(place, source_type=raw.configured_source_type)
-        place_trust_signals = trust_signals.get(place_id, []) if trust_signals is not None else []
+        place_trust_signals = (
+            [display_trust_signal(signal) for signal in trust_signals.get(place_id, [])]
+            if trust_signals is not None
+            else []
+        )
         override = place_override_for_ui_copy(slug, place_id, place_override_map.get(place_id, {}))
         enrichment_cache_entry = enrichment_cache.get(place_id)
         enrichment = coerce_enrichment_place(enrichment_cache_entry)
@@ -3426,6 +3439,84 @@ def trust_signal_field(signals: list[TrustSignal]) -> PlaceField:
     ]
     fetched_at = max(fetched_dates).isoformat() if fetched_dates else None
     return PlaceField(value=signals, source="trust_signal", fetched_at=fetched_at)
+
+
+TABELOG_HYAKUMEITEN_GENRE_DISPLAY = {
+    "うどん": "Udon",
+    "うなぎ": "Unagi",
+    "お好み焼き": "Okonomiyaki",
+    "すき焼き・しゃぶしゃぶ": "Sukiyaki and Shabu-Shabu",
+    "そば": "Soba",
+    "とんかつ": "Tonkatsu",
+    "アイス・ジェラート": "Ice Cream and Gelato",
+    "アジア・エスニック": "Asian and Ethnic",
+    "イタリアン": "Italian",
+    "カフェ": "Cafe",
+    "カレー": "Curry",
+    "スイーツ": "Sweets",
+    "ステーキ・鉄板焼き": "Steak and Teppanyaki",
+    "スペイン料理": "Spanish",
+    "ハンバーガー": "Hamburger",
+    "バー": "Bar",
+    "パン": "Bakery",
+    "ピザ": "Pizza",
+    "フレンチ": "French",
+    "ラーメン": "Ramen",
+    "中国料理": "Chinese",
+    "創作料理・イノベーティブ": "Creative and Innovative",
+    "和菓子・甘味処": "Wagashi and Sweets",
+    "喫茶店": "Kissaten",
+    "天ぷら": "Tempura",
+    "寿司": "Sushi",
+    "居酒屋": "Izakaya",
+    "日本料理": "Japanese",
+    "洋食": "Yoshoku",
+    "焼き鳥": "Yakitori",
+    "焼肉": "Yakiniku",
+    "立ち飲み": "Standing Bar",
+    "食堂": "Shokudo",
+    "餃子": "Gyoza",
+    "鳥料理": "Chicken",
+}
+
+def display_trust_signal(signal: TrustSignal) -> TrustSignal:
+    display_label = trust_signal_display_label(signal)
+    display_tier = trust_signal_display_tier(signal)
+    if display_label == signal.label and display_tier == signal.tier:
+        return signal
+    return signal.model_copy(
+        update={
+            "display_label": display_label,
+            "display_tier": display_tier,
+        }
+    )
+
+
+def trust_signal_display_label(signal: TrustSignal) -> str:
+    if signal.source == "tabelog" and signal.label == "Tabelog Hyakumeiten":
+        return "Tabelog 100"
+    return signal.label
+
+
+def trust_signal_display_tier(signal: TrustSignal) -> str | None:
+    if signal.source == "tabelog" and signal.label == "Tabelog Hyakumeiten":
+        return display_tabelog_hyakumeiten_tier(signal.tier)
+    return signal.tier
+
+
+def display_tabelog_hyakumeiten_tier(tier: str | None) -> str | None:
+    if not tier:
+        return None
+    cleaned = re.sub(r"\s*百名店\s*$", "", tier).strip()
+    if not cleaned:
+        return "Selected Restaurants"
+    parts = cleaned.split()
+    if len(parts) >= 2 and parts[-1].isupper():
+        genre = " ".join(parts[:-1])
+    else:
+        genre = cleaned
+    display_genre = TABELOG_HYAKUMEITEN_GENRE_DISPLAY.get(genre, genre)
+    return display_genre
 
 
 def google_list_field(value: Any, raw: RawSavedList) -> PlaceField:
@@ -4880,7 +4971,15 @@ def search_index_guide_entry(guide: Guide) -> dict[str, Any]:
 
 def search_index_place_entry(guide: Guide, place: NormalizedPlace) -> dict[str, Any]:
     trust_signal_labels = [
-        " ".join(part for part in [signal.label, signal.tier, signal.title] if part)
+        " ".join(
+            part
+            for part in [
+                signal.display_label or signal.label,
+                signal.display_tier or signal.tier,
+                signal.title,
+            ]
+            if part
+        )
         for signal in place.trust_signals
         if signal.confidence != "low"
     ]
@@ -4906,6 +5005,8 @@ def search_index_place_entry(guide: Guide, place: NormalizedPlace) -> dict[str, 
             {
                 "label": signal.label,
                 "tier": signal.tier,
+                "display_label": signal.display_label,
+                "display_tier": signal.display_tier,
                 "award_year": signal.award_year,
                 "is_current": signal.is_current,
                 "source": signal.source,
@@ -5576,8 +5677,8 @@ def combine_recommendation_copy(*values: str | None) -> str | None:
 def trust_signal_recommendation_copy(signals: list[TrustSignal]) -> str | None:
     award_entries: list[tuple[str, bool]] = []
     seen_award_labels: set[str] = set()
-    current_award_sources = {
-        signal.source
+    current_award_tiers = {
+        (signal.source, trust_signal_award_tier(signal))
         for signal in signals
         if signal.confidence != "low"
         and signal.source in {"michelin", "tabelog"}
@@ -5588,9 +5689,15 @@ def trust_signal_recommendation_copy(signals: list[TrustSignal]) -> str | None:
             continue
         if signal.source not in {"michelin", "tabelog"}:
             continue
-        if signal.source in current_award_sources and signal.is_current is False:
+        if (
+            (signal.source, trust_signal_award_tier(signal)) in current_award_tiers
+            and signal.is_current is False
+        ):
             continue
-        label_parts = [signal.label, signal.tier]
+        label_parts = [
+            signal.display_label or signal.label,
+            signal.display_tier or signal.tier,
+        ]
         if signal.award_year:
             label_parts.append(str(signal.award_year))
         label = " ".join(part for part in label_parts if part)
@@ -5613,6 +5720,10 @@ def trust_signal_recommendation_copy(signals: list[TrustSignal]) -> str | None:
         return f"Recognized by {second_label} and previously by {first_label}."
     prefix = "Previously recognized by" if first_is_previous and second_is_previous else "Recognized by"
     return f"{prefix} {first_label} and {second_label}."
+
+
+def trust_signal_award_tier(signal: TrustSignal) -> str:
+    return signal.tier or ""
 
 
 def usable_enrichment_recommendation_copy(

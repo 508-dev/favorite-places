@@ -14,6 +14,8 @@ from scripts.trust_signals import (
     MichelinRegionSource,
     MichelinRestaurant,
     MichelinMatchContext,
+    TabelogRestaurant,
+    TabelogSource,
     SearchResult,
     TrustSignalStore,
     default_trust_cache_path,
@@ -22,6 +24,9 @@ from scripts.trust_signals import (
     parse_michelin_full_list_article_page,
     parse_michelin_detail_page_award_year,
     parse_michelin_region_page,
+    parse_tabelog_award_page,
+    parse_tabelog_hyakumeiten_page,
+    parse_tabelog_search_results,
     parse_wikipedia_michelin_starred_page,
     parse_google_search_results,
     refresh_trust_signals_for_raw_guides,
@@ -29,8 +34,12 @@ from scripts.trust_signals import (
     enrich_michelin_signal_award_years,
     infer_award_year,
     signals_from_michelin_region,
+    signals_from_tabelog_restaurants,
+    signals_from_tabelog_search_results,
     signals_from_search_results,
     sqlite_url_for_path,
+    tabelog_hyakumeiten_category_urls,
+    tabelog_sources_for_guides,
     trust_match_signature,
 )
 
@@ -173,6 +182,7 @@ class TrustSignalsTest(unittest.TestCase):
                         )
                     ],
                 ),
+                patch("scripts.trust_signals.tabelog_sources_for_guides", return_value={}),
             ):
                 summary = refresh_trust_signals_for_raw_guides(
                     root=Path(tmpdir),
@@ -185,6 +195,200 @@ class TrustSignalsTest(unittest.TestCase):
 
         self.assertEqual(summary.searched_places, 1)
         self.assertEqual(loaded, {"place-1": [tabelog_signal]})
+
+    def test_refresh_skips_search_michelin_signal_when_region_signal_has_same_url(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "trust.sqlite"
+            raw_lists = {
+                "tokyo-japan": RawSavedList(
+                    title="Tokyo, Japan",
+                    places=[
+                        RawPlace(
+                            name="Coffee House",
+                            address="1 Shibuya, Tokyo, Japan",
+                            maps_url="https://maps.google.com/?q=coffee-house",
+                        )
+                    ],
+                )
+            }
+
+            with (
+                patch.dict(
+                    os.environ,
+                    {
+                        "FAVORITE_PLACES_TRUST_CACHE_PATH": str(db_path),
+                        "BRAVE_SEARCH_API_KEY": "brave-key",
+                        "BRAVE_API_KEY": "",
+                        "FAVORITE_PLACES_TRUST_GOOGLE_FALLBACK": "",
+                    },
+                ),
+                patch(
+                    "scripts.trust_signals.scrape_michelin_region_source",
+                    return_value=[
+                        MichelinRestaurant(
+                            name="Coffee House",
+                            url="https://guide.michelin.com/en/tokyo-region/restaurant/coffee-house",
+                            tier="Selected",
+                            is_current=True,
+                            region_key="japan/tokyo",
+                        )
+                    ],
+                ),
+                patch(
+                    "scripts.trust_signals.brave_search",
+                    return_value=[
+                        SearchResult(
+                            title="Coffee House - Tokyo - MICHELIN Guide",
+                            url="https://guide.michelin.com/en/jp/tokyo-region/restaurant/coffee-house",
+                            snippet="Selected restaurant in Tokyo.",
+                        ),
+                        SearchResult(
+                            title="The Tabelog Award 2026 Bronze Coffee House",
+                            url="https://award.tabelog.com/en/restaurants/coffee-house",
+                            snippet="Restaurant award winner.",
+                        ),
+                    ],
+                ),
+                patch("scripts.trust_signals.tabelog_sources_for_guides", return_value={}),
+            ):
+                refresh_trust_signals_for_raw_guides(
+                    root=Path(tmpdir),
+                    raw_lists=raw_lists,
+                    enrichment_caches={"tokyo-japan": {}},
+                    stable_place_ids={("tokyo-japan", 0): "place-1"},
+                )
+
+            loaded = TrustSignalStore(sqlite_url_for_path(db_path)).load_signals_for_place_keys(["place-1"])
+
+        self.assertEqual([signal.source for signal in loaded["place-1"]], ["michelin", "tabelog"])
+        self.assertEqual(loaded["place-1"][0].title, "Coffee House")
+
+    def test_refresh_writes_tabelog_source_signals_for_japan_without_search_provider(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "trust.sqlite"
+            raw_lists = {
+                "tokyo-japan": RawSavedList(
+                    title="Tokyo, Japan",
+                    places=[
+                        RawPlace(
+                            name="GINZA KOKORO",
+                            address="Ginza, Tokyo, Japan",
+                            maps_url="https://maps.google.com/?q=ginza-kokoro",
+                        )
+                    ],
+                )
+            }
+
+            with (
+                patch.dict(
+                    os.environ,
+                    {
+                        "FAVORITE_PLACES_TRUST_CACHE_PATH": str(db_path),
+                        "FAVORITE_PLACES_TABELOG_SOURCE_URLS": '{"award":"https://award.tabelog.com/en/restaurants"}',
+                        "BRAVE_SEARCH_API_KEY": "",
+                        "BRAVE_API_KEY": "",
+                        "FAVORITE_PLACES_TRUST_GOOGLE_FALLBACK": "",
+                    },
+                ),
+                patch("scripts.trust_signals.scrape_michelin_region_source", return_value=[]),
+                patch(
+                    "scripts.trust_signals.scrape_tabelog_source",
+                    return_value=[
+                        TabelogRestaurant(
+                            name="GINZA KOKORO",
+                            url="https://tabelog.com/tokyo/A1302/A130202/13249117/",
+                            label="The Tabelog Award",
+                            tier="Gold",
+                            award_year=2026,
+                            is_current=True,
+                            region_key="japan",
+                        )
+                    ],
+                ),
+                patch("scripts.trust_signals.tabelog_search", return_value=[]),
+            ):
+                summary = refresh_trust_signals_for_raw_guides(
+                    root=Path(tmpdir),
+                    raw_lists=raw_lists,
+                    enrichment_caches={"tokyo-japan": {}},
+                    stable_place_ids={("tokyo-japan", 0): "place-1"},
+                )
+
+            loaded = TrustSignalStore(sqlite_url_for_path(db_path)).load_signals_for_place_keys(["place-1"])
+
+        self.assertEqual(summary.tabelog_sources_refreshed, 1)
+        self.assertEqual(len(loaded["place-1"]), 1)
+        self.assertEqual(loaded["place-1"][0].source, "tabelog")
+        self.assertEqual(loaded["place-1"][0].label, "The Tabelog Award")
+        self.assertEqual(loaded["place-1"][0].tier, "Gold")
+        self.assertEqual(loaded["place-1"][0].award_year, 2026)
+
+    def test_refresh_matches_tabelog_hyakumeiten_by_direct_tabelog_search_url(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "trust.sqlite"
+            raw_lists = {
+                "tokyo-japan": RawSavedList(
+                    title="Tokyo, Japan",
+                    places=[
+                        RawPlace(
+                            name="Higashiazabu Amamoto",
+                            address="Akabanebashi, Tokyo, Japan",
+                            maps_url="https://maps.google.com/?q=higashiazabu-amamoto",
+                        )
+                    ],
+                )
+            }
+
+            with (
+                patch.dict(
+                    os.environ,
+                    {
+                        "FAVORITE_PLACES_TRUST_CACHE_PATH": str(db_path),
+                        "FAVORITE_PLACES_TABELOG_SOURCE_URLS": '{"hyakumeiten":"https://award.tabelog.com/hyakumeiten"}',
+                        "BRAVE_SEARCH_API_KEY": "",
+                        "BRAVE_API_KEY": "",
+                        "FAVORITE_PLACES_TRUST_GOOGLE_FALLBACK": "",
+                    },
+                ),
+                patch("scripts.trust_signals.scrape_michelin_region_source", return_value=[]),
+                patch(
+                    "scripts.trust_signals.scrape_tabelog_source",
+                    return_value=[
+                        TabelogRestaurant(
+                            name="東麻布 天本",
+                            url="https://tabelog.com/tokyo/A1314/A131401/13196420/",
+                            label="Tabelog Hyakumeiten",
+                            tier="寿司 TOKYO 百名店",
+                            award_year=2025,
+                            is_current=True,
+                            region_key="japan",
+                        )
+                    ],
+                ),
+                patch(
+                    "scripts.trust_signals.tabelog_search",
+                    return_value=[
+                        SearchResult(
+                            title="Higashiazabu Amamoto",
+                            url="https://tabelog.com/en/tokyo/A1314/A131401/13196420/",
+                        )
+                    ],
+                ),
+            ):
+                summary = refresh_trust_signals_for_raw_guides(
+                    root=Path(tmpdir),
+                    raw_lists=raw_lists,
+                    enrichment_caches={"tokyo-japan": {}},
+                    stable_place_ids={("tokyo-japan", 0): "place-1"},
+                )
+
+            loaded = TrustSignalStore(sqlite_url_for_path(db_path)).load_signals_for_place_keys(["place-1"])
+
+        self.assertEqual(summary.tabelog_sources_refreshed, 1)
+        self.assertEqual(len(loaded["place-1"]), 1)
+        self.assertEqual(loaded["place-1"][0].label, "Tabelog Hyakumeiten")
+        self.assertEqual(loaded["place-1"][0].tier, "寿司 TOKYO 百名店")
+        self.assertEqual(loaded["place-1"][0].match_reason, "Tabelog direct search URL match")
 
     def test_normalize_guide_includes_cached_trust_signals(self) -> None:
         raw = RawSavedList(
@@ -256,6 +460,216 @@ class TrustSignalsTest(unittest.TestCase):
         self.assertEqual(signals[1].tier, "Gold")
         self.assertEqual(signals[1].award_year, 2026)
         self.assertTrue(all(signal.confidence == "high" for signal in signals))
+
+    def test_tabelog_sources_only_include_japan_guides(self) -> None:
+        sources = tabelog_sources_for_guides(
+            {
+                "tokyo-japan": RawSavedList(title="Tokyo, Japan", places=[]),
+                "taipei-taiwan": RawSavedList(title="Taipei, Taiwan", places=[]),
+            }
+        )
+
+        self.assertEqual(
+            sources,
+            {
+                "tokyo-japan": [
+                    TabelogSource(
+                        source_type="award",
+                        region_key="japan",
+                        url="https://award.tabelog.com/en/restaurants",
+                    ),
+                    TabelogSource(
+                        source_type="hyakumeiten",
+                        region_key="japan",
+                        url="https://award.tabelog.com/hyakumeiten",
+                    ),
+                ]
+            },
+        )
+
+    def test_parse_tabelog_award_page_extracts_year_tiers_and_restaurants(self) -> None:
+        body = """
+        <html><head><title>The list of award winning stores｜The Tabelog Award 2026 [Tabelog]</title></head>
+        <body>
+          <ul class="award-rstlst__list">
+            <li class="award-rstlst__item js-cassette-4row">
+              <a class="award-rstlst__target" href="https://tabelog.com/en/tokyo/A1302/A130202/13249117/">
+                <span class="award-rstlst__award-label is-gold"><span>GOLD</span></span>
+                <div class="award-rstlst__rst-name">GINZA KOKORO</div>
+              </a>
+            </li>
+            <li class="award-rstlst__item">
+              <a class="award-rstlst__target" href="https://tabelog.com/en/hyogo/A2803/A280302/28000052/">
+                <span class="award-rstlst__award-label is-silver"><span>SILVER</span></span>
+                <span class="award-rstlst__award-label is-regional"><span>BEST REGIONAL RESTAURANTS</span></span>
+                <div class="award-rstlst__rst-name">Kobe Beef House</div>
+              </a>
+            </li>
+          </ul>
+        </body></html>
+        """
+
+        restaurants = parse_tabelog_award_page(
+            body,
+            region_key="japan",
+            page_url="https://award.tabelog.com/en/restaurants",
+        )
+
+        self.assertEqual(
+            [(restaurant.name, restaurant.tier, restaurant.award_year) for restaurant in restaurants],
+            [
+                ("GINZA KOKORO", "Gold", 2026),
+                ("Kobe Beef House", "Silver", 2026),
+                ("Kobe Beef House", "Best Regional Restaurants", 2026),
+            ],
+        )
+        self.assertEqual(restaurants[0].label, "The Tabelog Award")
+        self.assertEqual(
+            restaurants[0].url,
+            "https://tabelog.com/tokyo/A1302/A130202/13249117/",
+        )
+
+    def test_parse_tabelog_hyakumeiten_page_extracts_category_year_and_restaurants(self) -> None:
+        body = """
+        <html><head><title>食べログ カレー TOKYO 百名店 2026 [食べログ]</title></head>
+        <body>
+          <div class="hyakumeiten-shop__item">
+            <a class="hyakumeiten-shop__target" href="https://tabelog.com/tokyo/A1302/A130203/13003029/">
+              <div class="hyakumeiten-shop__name">Delhi</div>
+            </a>
+          </div>
+        </body></html>
+        """
+
+        restaurants = parse_tabelog_hyakumeiten_page(
+            body,
+            region_key="japan",
+            page_url="https://award.tabelog.com/hyakumeiten/curry_tokyo",
+        )
+
+        self.assertEqual(len(restaurants), 1)
+        self.assertEqual(restaurants[0].name, "Delhi")
+        self.assertEqual(restaurants[0].label, "Tabelog Hyakumeiten")
+        self.assertEqual(restaurants[0].tier, "カレー TOKYO 百名店")
+        self.assertEqual(restaurants[0].award_year, 2026)
+
+    def test_parse_tabelog_search_results_extracts_english_restaurant_urls(self) -> None:
+        body = """
+        <div class="list-rst" data-detail-url="https://tabelog.com/en/tokyo/A1314/A131401/13196420/">
+          <h3 class="list-rst__rst-name">
+            <a class="list-rst__rst-name-target" href="https://tabelog.com/en/tokyo/A1314/A131401/13196420/">
+              Higashiazabu Amamoto
+            </a>
+          </h3>
+        </div>
+        """
+
+        results = parse_tabelog_search_results(body, page_url="https://tabelog.com/en/rstLst/")
+
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0].title, "Higashiazabu Amamoto")
+        self.assertEqual(results[0].url, "https://tabelog.com/tokyo/A1314/A131401/13196420/")
+
+    def test_tabelog_hyakumeiten_category_urls_extracts_unique_category_pages(self) -> None:
+        body = """
+        <a href="/hyakumeiten">Top</a>
+        <a href="/hyakumeiten/curry_tokyo">TOKYO</a>
+        <a href="/hyakumeiten/curry_tokyo">Duplicate</a>
+        <a href="/hyakumeiten/ramen_osaka">OSAKA</a>
+        """
+
+        self.assertEqual(
+            tabelog_hyakumeiten_category_urls(
+                body,
+                page_url="https://award.tabelog.com/hyakumeiten",
+            ),
+            [
+                "https://award.tabelog.com/hyakumeiten/curry_tokyo",
+                "https://award.tabelog.com/hyakumeiten/ramen_osaka",
+            ],
+        )
+
+    def test_tabelog_restaurants_match_japan_places(self) -> None:
+        signals = signals_from_tabelog_restaurants(
+            [
+                TabelogRestaurant(
+                    name="GINZA KOKORO",
+                    url="https://tabelog.com/tokyo/A1302/A130202/13249117/",
+                    label="The Tabelog Award",
+                    tier="Gold",
+                    award_year=2026,
+                    is_current=True,
+                    region_key="japan",
+                )
+            ],
+            context=MichelinMatchContext(
+                place_name="GINZA KOKORO",
+                city_name="Tokyo",
+                country_name="Japan",
+                address="Ginza, Tokyo, Japan",
+            ),
+            fetched_at=datetime(2026, 1, 15, tzinfo=UTC),
+        )
+
+        self.assertEqual(len(signals), 1)
+        self.assertEqual(signals[0].source, "tabelog")
+        self.assertEqual(signals[0].label, "The Tabelog Award")
+        self.assertEqual(signals[0].tier, "Gold")
+        self.assertEqual(signals[0].award_year, 2026)
+        self.assertTrue(signals[0].is_current)
+
+    def test_tabelog_search_results_match_snapshot_urls(self) -> None:
+        signals = signals_from_tabelog_search_results(
+            [
+                TabelogRestaurant(
+                    name="東麻布 天本",
+                    url="https://tabelog.com/tokyo/A1314/A131401/13196420/",
+                    label="Tabelog Hyakumeiten",
+                    tier="寿司 TOKYO 百名店",
+                    award_year=2025,
+                    is_current=True,
+                    region_key="japan",
+                )
+            ],
+            [
+                SearchResult(
+                    title="Higashiazabu Amamoto",
+                    url="https://tabelog.com/en/tokyo/A1314/A131401/13196420/",
+                )
+            ],
+            place_name="Higashiazabu Amamoto",
+            fetched_at=datetime(2026, 1, 15, tzinfo=UTC),
+        )
+
+        self.assertEqual(len(signals), 1)
+        self.assertEqual(signals[0].label, "Tabelog Hyakumeiten")
+        self.assertEqual(signals[0].tier, "寿司 TOKYO 百名店")
+        self.assertEqual(signals[0].award_year, 2025)
+        self.assertEqual(signals[0].match_reason, "Tabelog direct search URL match")
+
+    def test_tabelog_restaurants_do_not_fuzzy_match_short_names(self) -> None:
+        signals = signals_from_tabelog_restaurants(
+            [
+                TabelogRestaurant(
+                    name="KAI",
+                    url="https://tabelog.com/kagoshima/A4602/A460204/46016438/",
+                    label="The Tabelog Award",
+                    tier="Bronze",
+                    award_year=2026,
+                    is_current=True,
+                    region_key="japan",
+                )
+            ],
+            context=MichelinMatchContext(
+                place_name="Kabi",
+                city_name="Tokyo",
+                country_name="Japan",
+                address="Meguro, Tokyo, Japan",
+            ),
+            fetched_at=datetime(2026, 1, 15, tzinfo=UTC),
+        )
+
+        self.assertEqual(signals, [])
 
     def test_michelin_region_sources_only_include_relevant_guides(self) -> None:
         sources = michelin_region_sources_for_guides(
@@ -424,6 +838,28 @@ class TrustSignalsTest(unittest.TestCase):
             "https://guide.michelin.com/en/tokyo-region/restaurant/esterre-by-alain-ducasse",
         )
 
+    def test_parse_michelin_region_page_binds_preceding_href_to_same_card(self) -> None:
+        body = """
+        <div class="card__menu">
+          <a href="/en/tokyo-region/restaurant/previous">Open</a>
+          <div data-dtm-distinction="1 star" data-restaurant-name="Previous"></div>
+        </div>
+        <div class="card__menu">
+          <a href="/en/tokyo-region/restaurant/current">Open</a>
+          <div data-dtm-distinction="Bib Gourmand" data-restaurant-name="Current"></div>
+        </div>
+        """
+
+        restaurants = parse_michelin_region_page(
+            body,
+            region_key="japan/tokyo",
+            page_url="https://guide.michelin.com/en/jp/tokyo-region/restaurants",
+        )
+
+        current = next(restaurant for restaurant in restaurants if restaurant.name == "Current")
+        self.assertEqual(current.url, "https://guide.michelin.com/en/tokyo-region/restaurant/current")
+        self.assertEqual(current.tier, "Bib Gourmand")
+
     def test_scrape_official_michelin_region_preserves_co_awards(self) -> None:
         body = """
         <div class="card__menu">
@@ -560,6 +996,26 @@ class TrustSignalsTest(unittest.TestCase):
             restaurants[0].url,
             "https://guide.michelin.com/en/tokyo-region/tokyo/restaurant/kabi",
         )
+
+    def test_trust_store_url_has_readable_cache_uses_sqlalchemy_sqlite_paths(self) -> None:
+        previous_cwd = Path.cwd()
+        with TemporaryDirectory() as tmpdir:
+            try:
+                os.chdir(tmpdir)
+                Path("relative trust.sqlite").touch()
+
+                self.assertTrue(
+                    build_data.trust_store_url_has_readable_cache(
+                        "sqlite:///relative%20trust.sqlite?mode=ro"
+                    )
+                )
+                self.assertFalse(
+                    build_data.trust_store_url_has_readable_cache(
+                        "sqlite:///missing%20trust.sqlite?mode=ro"
+                    )
+                )
+            finally:
+                os.chdir(previous_cwd)
 
     def test_michelin_region_restaurants_match_places(self) -> None:
         restaurants = parse_michelin_region_page(
@@ -773,6 +1229,29 @@ class TrustSignalsTest(unittest.TestCase):
             "Previously recognized by MICHELIN Guide 1 star 2025.",
         )
 
+    def test_tabelog_hyakumeiten_display_uses_english_copy(self) -> None:
+        signal = build_data.display_trust_signal(
+            TrustSignal(
+                source="tabelog",
+                label="Tabelog Hyakumeiten",
+                tier="寿司 TOKYO 百名店",
+                award_year=2025,
+                is_current=True,
+                fetched_at="2026-01-15T00:00:00+00:00",
+                confidence="high",
+                match_reason="Tabelog direct search URL match",
+            )
+        )
+
+        self.assertEqual(signal.label, "Tabelog Hyakumeiten")
+        self.assertEqual(signal.tier, "寿司 TOKYO 百名店")
+        self.assertEqual(signal.display_label, "Tabelog 100")
+        self.assertEqual(signal.display_tier, "Sushi")
+        self.assertEqual(
+            build_data.trust_signal_recommendation_copy([signal]),
+            "Recognized by Tabelog 100 Sushi 2025.",
+        )
+
     def test_trust_signal_recommendation_copy_skips_previous_when_current_exists(self) -> None:
         self.assertEqual(
             build_data.trust_signal_recommendation_copy(
@@ -829,6 +1308,35 @@ class TrustSignalsTest(unittest.TestCase):
                 ]
             ),
             "Recognized by The Tabelog Award Bronze 2025 and previously by MICHELIN Guide 1 star 2023.",
+        )
+
+    def test_trust_signal_recommendation_copy_preserves_previous_michelin_star_when_current_tier_differs(self) -> None:
+        self.assertEqual(
+            build_data.trust_signal_recommendation_copy(
+                [
+                    TrustSignal(
+                        source="michelin",
+                        label="MICHELIN Guide",
+                        tier="Selected",
+                        award_year=2026,
+                        is_current=True,
+                        fetched_at="2026-01-15T00:00:00+00:00",
+                        confidence="high",
+                        match_reason="Michelin name exact match",
+                    ),
+                    TrustSignal(
+                        source="michelin",
+                        label="MICHELIN Guide",
+                        tier="1 star",
+                        award_year=2024,
+                        is_current=False,
+                        fetched_at="2026-01-15T00:00:00+00:00",
+                        confidence="high",
+                        match_reason="Michelin name exact match",
+                    ),
+                ]
+            ),
+            "Recognized by MICHELIN Guide Selected 2026 and previously by MICHELIN Guide 1 star 2024.",
         )
 
 
