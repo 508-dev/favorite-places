@@ -49,12 +49,6 @@ function patchAnchors(container: ParentNode) {
   });
 }
 
-function patchMapImages(container: ParentNode) {
-  container.querySelectorAll<HTMLImageElement>("img:not([data-image-component])").forEach((img) => {
-    img.setAttribute("data-image-component", "");
-  });
-}
-
 function patchIframes(label: string, roots: HTMLElement[]) {
   roots.forEach((root) => {
     root.querySelectorAll<HTMLIFrameElement>("iframe:not([title])").forEach((iframe) => {
@@ -75,7 +69,6 @@ function patchMapAccessibility(label: string, root?: HTMLElement | null) {
 
   roots.forEach((mapRoot) => {
     patchAnchors(mapRoot);
-    patchMapImages(mapRoot);
   });
 
   patchIframes(label, roots);

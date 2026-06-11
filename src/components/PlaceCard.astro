@@ -170,7 +170,6 @@ const displayedPlaceAttribution = showPlaceAttribution ? placeAttribution : null
         alt={place.name}
         loading="lazy"
         decoding="async"
-        data-image-component
       />
     ) : (
       <div class="place-card-photo-placeholder">
@@ -197,6 +196,15 @@ const displayedPlaceAttribution = showPlaceAttribution ? placeAttribution : null
       <div class="place-card-name-row">
         <h3 class="ui-card-title" title={place.name}>{place.name}</h3>
         <div class="place-card-title-actions">
+          <button
+            type="button"
+            class="place-card-map-select"
+            data-place-card-map-select
+            aria-label={`Show ${place.name} on the guide map`}
+            title="Show on guide map"
+          >
+            <span class="place-card-map-select-icon" aria-hidden="true" set:html={markerSvg} />
+          </button>
           {isTemporarilyClosed && (
             <button
               type="button"
@@ -229,7 +237,6 @@ const displayedPlaceAttribution = showPlaceAttribution ? placeAttribution : null
                 height="26"
                 loading="lazy"
                 decoding="async"
-                data-image-component
               />
               <span class="place-card-map-link-label" aria-hidden="true">{siteConfig.placeCard.mapsLabel}</span>
             </a>
