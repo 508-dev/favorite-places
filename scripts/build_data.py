@@ -46,9 +46,10 @@ try:
         ListAuthor,
         MarkerIcon,
         NormalizedPlace,
-        PlacesSettings,
         PlaceField,
         PlaceProvenance,
+        PlaceReservationLink,
+        PlacesSettings,
         RawPlace,
         RawSavedList,
         SourceConfig,
@@ -70,9 +71,10 @@ except ModuleNotFoundError:
         ListAuthor,
         MarkerIcon,
         NormalizedPlace,
-        PlacesSettings,
         PlaceField,
         PlaceProvenance,
+        PlaceReservationLink,
+        PlacesSettings,
         RawPlace,
         RawSavedList,
         SourceConfig,
@@ -543,6 +545,7 @@ PLACES_FIELD_MASK = ",".join(
         "places.primaryTypeDisplayName",
         "places.types",
         "places.businessStatus",
+        "places.websiteUri",
     ]
 )
 VIBE_TAG_KEYWORDS: dict[str, tuple[str, ...]] = {
@@ -3134,6 +3137,8 @@ def normalize_guide(
                 country_name=country_name,
             )
             or display_price_range_for_raw_place(place),
+            website=as_http_url(enrichment.website),
+            reservation_links=enrichment.reservation_links,
             neighborhood=neighborhood,
             note=note,
             why_recommended=why_recommended,
@@ -3318,6 +3323,13 @@ def build_place_provenance(
         )
     if primary_category_localized:
         provenance.primary_category_localized = google_places_field(primary_category_localized, enrichment_cache_entry)
+    if normalized.website:
+        provenance.website = google_places_field(normalized.website, enrichment_cache_entry)
+    if normalized.reservation_links:
+        provenance.reservation_links = google_places_field(
+            [link.model_dump(mode="json") for link in normalized.reservation_links],
+            enrichment_cache_entry,
+        )
     provenance.tags = build_tag_provenance(
         raw=raw,
         raw_place=raw_place,
@@ -4601,6 +4613,8 @@ def canonicalize_enrichment_place(place: EnrichmentPlace | None) -> EnrichmentPl
     place.category_display_en = sanitize_enrichment_primary_category(place.category_display_en)
     place.description = sanitize_place_page_description(place.description)
     place.search_result_description = sanitize_place_page_description(place.search_result_description)
+    place.website = as_http_url(place.website)
+    place.reservation_links = coerce_place_reservation_links(place.reservation_links)
     place.phone = sanitize_place_page_phone(place.phone)
     place.plus_code = sanitize_place_page_plus_code(place.plus_code)
     place.main_photo_url = sanitize_place_photo_url(place.main_photo_url)
@@ -5853,6 +5867,40 @@ def as_string(value: Any) -> str | None:
     return None
 
 
+def as_http_url(value: Any) -> str | None:
+    normalized = as_string(value)
+    if normalized is None:
+        return None
+    parts = urlsplit(normalized)
+    if parts.scheme not in {"http", "https"} or not parts.netloc:
+        return None
+    return urlunsplit(parts)
+
+
+def coerce_place_reservation_links(value: Any) -> list[PlaceReservationLink]:
+    if not isinstance(value, list):
+        return []
+
+    links: list[PlaceReservationLink] = []
+    seen_urls: set[str] = set()
+    for item in value:
+        if isinstance(item, PlaceReservationLink):
+            label = as_string(item.label)
+            url = as_http_url(item.url)
+        elif isinstance(item, dict):
+            label = as_string(item.get("label")) or as_string(item.get("provider"))
+            url = as_http_url(item.get("url"))
+        else:
+            continue
+
+        if label is None or url is None or url in seen_urls:
+            continue
+        links.append(PlaceReservationLink(label=label[:80], url=url))
+        seen_urls.add(url)
+
+    return links
+
+
 def as_float(value: Any) -> float | None:
     if isinstance(value, int | float):
         return float(value)
@@ -6672,10 +6720,13 @@ def merge_page_place_into_api_entry(
         "search_result_url",
         "main_photo_url",
         "photo_url",
+        "website",
     ):
         if getattr(api_place, field_name) in (None, "", []):
             setattr(api_place, field_name, getattr(page_place, field_name))
 
+    if not api_place.reservation_links:
+        api_place.reservation_links = page_place.reservation_links
     if not api_place.review_topics:
         api_place.review_topics = page_place.review_topics
     if not api_place.reviews:
@@ -8636,6 +8687,9 @@ def suppress_uncertain_place_page_identity_fields(
         if as_string(getattr(enrichment_place, field_name)) is not None:
             setattr(enrichment_place, field_name, None)
             suppressed_fields.append(field_name)
+    if enrichment_place.reservation_links:
+        enrichment_place.reservation_links = []
+        suppressed_fields.append("reservation_links")
 
     if resolved_google_maps_url_is_place_page(enrichment_place.google_maps_uri):
         enrichment_place.google_maps_uri = None
@@ -9372,6 +9426,7 @@ def normalize_place_page_enrichment(details: Any) -> EnrichmentPlace:
     rating = as_float(getattr(details, "rating", None))
     user_rating_count = as_int(getattr(details, "review_count", None))
     website = as_string(getattr(details, "website", None))
+    reservation_links = coerce_place_reservation_links(getattr(details, "reservation_links", None))
     phone = sanitize_place_page_phone(getattr(details, "phone", None))
     plus_code = sanitize_place_page_plus_code(getattr(details, "plus_code", None))
     if formatted_address is None and plus_code and any(
@@ -9403,6 +9458,7 @@ def normalize_place_page_enrichment(details: Any) -> EnrichmentPlace:
             rating is not None,
             user_rating_count is not None,
             website,
+            reservation_links,
             phone,
             plus_code,
             description,
@@ -9435,7 +9491,8 @@ def normalize_place_page_enrichment(details: Any) -> EnrichmentPlace:
         category_display_en_confidence=as_string(getattr(details, "category_display_en_confidence", None)),
         types=types,
         business_status=normalize_place_page_business_status(as_string(getattr(details, "status", None))),
-        website=website,
+        website=as_http_url(website),
+        reservation_links=reservation_links,
         phone=phone,
         plus_code=plus_code,
         address_parts=coerce_enrichment_address_parts(getattr(details, "address_parts", None)),
@@ -11581,6 +11638,7 @@ def normalize_enrichment_match(candidate: dict[str, Any]) -> EnrichmentPlace:
         primary_type_display_name_localized=primary_type_display_name_localized,
         types=types,
         business_status=as_string(candidate.get("businessStatus")),
+        website=as_http_url(candidate.get("websiteUri")),
     )
 
 

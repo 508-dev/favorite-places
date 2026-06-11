@@ -197,6 +197,11 @@ class RawSavedList(PipelineModel):
     places: list[RawPlace] = Field(default_factory=list)
 
 
+class PlaceReservationLink(PipelineModel):
+    label: str
+    url: str
+
+
 class EnrichmentPlace(PipelineModel):
     google_place_id: str | None = None
     google_place_resource_name: str | None = None
@@ -220,6 +225,7 @@ class EnrichmentPlace(PipelineModel):
     types: list[str] = Field(default_factory=list)
     business_status: str | None = None
     website: str | None = None
+    reservation_links: list[PlaceReservationLink] = Field(default_factory=list)
     phone: str | None = None
     plus_code: str | None = None
     address_parts: AddressParts | None = None
@@ -333,6 +339,8 @@ class PlaceProvenance(PipelineModel):
     user_rating_count: PlaceField | None = None
     primary_category: PlaceField | None = None
     primary_category_localized: PlaceField | None = None
+    website: PlaceField | None = None
+    reservation_links: PlaceField | None = None
     tags: list[PlaceField] = Field(default_factory=list)
     neighborhood: PlaceField | None = None
     note: PlaceField | None = None
@@ -365,6 +373,8 @@ class NormalizedPlace(PipelineModel):
     visible_tags: list[str] = Field(default_factory=list)
     vibe_tags: list[str] = Field(default_factory=list)
     price_range: str | None = None
+    website: str | None = None
+    reservation_links: list[PlaceReservationLink] = Field(default_factory=list)
     neighborhood: str | None = None
     note: str | None = None
     why_recommended: str | None = None

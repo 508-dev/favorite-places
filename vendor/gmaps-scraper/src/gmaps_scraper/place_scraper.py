@@ -23,6 +23,7 @@ from gmaps_scraper.models import (
     PlaceDetails,
     PlaceExtractionDiagnostics,
     PlaceLLMRepairRequest,
+    PlaceReservationLink,
     PlaceReview,
     PlaceScrapeResult,
     ReviewTopic,
@@ -990,6 +991,76 @@ _PLACE_JS_EXTRACTOR = r"""
     }
     return prices;
   };
+  const providerLabelFromUrl = (href) => {
+    try {
+      const host = new URL(href).hostname.replace(/^www\./, "");
+      const base = host.split(".")[0] || host;
+      return base
+        .replace(/[-_]+/g, " ")
+        .replace(/\b\w/g, (char) => char.toUpperCase());
+    } catch {
+      return "Find a Table";
+    }
+  };
+  const reservationLabel = (element, href) => {
+    const actionPrefixPattern = new RegExp(
+      "^(?:find a table|reserve|make a reservation|book(?: a table)?)"
+        + "(?:\\s+(?:with|on|at|via))?\\s*",
+      "i",
+    );
+    const raw = cleanLine(
+      element.innerText
+      || element.textContent
+      || element.getAttribute("aria-label")
+      || element.getAttribute("title")
+      || "",
+    );
+    const cleaned = raw
+      .replace(actionPrefixPattern, "")
+      .replace(/\s+(?:opens in new tab|website)$/i, "")
+      .trim();
+    return cleaned || providerLabelFromUrl(href);
+  };
+  const collectReservationLinks = () => {
+    const links = [];
+    const seen = new Set();
+    const reservationPattern = new RegExp(
+      String.raw`\b(find a table|reserve|reservation|book(?: a table)?|booking)\b`,
+      "i",
+    );
+    const providerHostPattern = new RegExp(
+      "(opentable|resy|sevenrooms|thefork|tock|quandoo|yelp|inline|"
+        + "tablecheck|exploretock|omakase|pocket-concierge|pocketconcierge|"
+        + "tabelog|hotpepper|gnavi|gurunavi|ikyu|jpneazy|byfood|autoreserve)",
+      "i",
+    );
+    for (const element of panel.querySelectorAll("a[href]")) {
+      const href = element.href || element.getAttribute("href") || "";
+      if (!/^https?:\/\//i.test(href) || seen.has(href)) {
+        continue;
+      }
+      const evidence = [
+        element.innerText,
+        element.textContent,
+        element.getAttribute("aria-label"),
+        element.getAttribute("title"),
+        element.getAttribute("data-item-id"),
+        href,
+      ].filter(Boolean).join(" ");
+      if (!reservationPattern.test(evidence) && !providerHostPattern.test(evidence)) {
+        continue;
+      }
+      seen.add(href);
+      links.push({
+        label: reservationLabel(element, href),
+        url: href,
+      });
+      if (links.length >= 8) {
+        break;
+      }
+    }
+    return links;
+  };
   const roomOverlayPrice = () => {
     const selectors = [
       ".rlmNhf button[aria-label]",
@@ -1120,6 +1191,7 @@ _PLACE_JS_EXTRACTOR = r"""
     located_in: itemValue("locatedin"),
     status: firstText(["div.OqCZI .ZDu9vd", "div.OqCZI .o0Svhf"]),
     website: firstAttr(["a[data-item-id='authority']"], "href", document) || itemValue("authority"),
+    reservation_links: collectReservationLinks(),
     phone: firstText([
       "button[data-item-id^='phone:'] .Io6YTe",
       "button[data-item-id^='phone:']",
@@ -1187,6 +1259,138 @@ _PLACE_REVIEW_SIGNAL_JS = r"""
     }
   }
   return false;
+}
+"""
+_PLACE_RESERVATION_BUTTON_CLICK_JS = r"""
+() => {
+""" + _PLACE_PANEL_HELPERS_JS + r"""
+
+  const root = placePanelRoot().root;
+  const reservationPattern = /\b(find a table|reserve|reservation|book(?: a table)?|booking)\b/i;
+  const candidates = [
+    ...root.querySelectorAll("button, div[role='button']"),
+  ];
+  for (const element of candidates) {
+    const text = cleanLine(element.innerText || element.textContent || "");
+    const ariaLabel = cleanLine(element.getAttribute("aria-label") || "");
+    const title = cleanLine(element.getAttribute("title") || "");
+    const itemId = cleanLine(element.getAttribute("data-item-id") || "");
+    const evidence = `${text} ${ariaLabel} ${title} ${itemId}`;
+    if (!reservationPattern.test(evidence)) {
+      continue;
+    }
+    const {rect, visibleArea} = visibleRect(element);
+    if (visibleArea <= 0 || rect.width <= 0 || rect.height <= 0) {
+      continue;
+    }
+    element.click();
+    return true;
+  }
+  return false;
+}
+"""
+_PLACE_RESERVATION_DIALOG_JS = r"""
+() => {
+""" + _PLACE_PANEL_HELPERS_JS + r"""
+
+  const providerLabelFromUrl = (href) => {
+    try {
+      const host = new URL(href).hostname.replace(/^www\./, "");
+      const base = host.split(".")[0] || host;
+      return base
+        .replace(/[-_]+/g, " ")
+        .replace(/\b\w/g, (char) => char.toUpperCase());
+    } catch {
+      return "Find a Table";
+    }
+  };
+  const cleanReservationLabel = (value, href) => {
+    const actionPrefixPattern = new RegExp(
+      "^(?:find a table|reserve|make a reservation|book(?: a table)?)"
+        + "(?:\\s+(?:with|on|at|via))?\\s*",
+      "i",
+    );
+    const cleaned = cleanLine(value)
+      .replace(actionPrefixPattern, "")
+      .replace(/\s+(?:opens in new tab|website)$/i, "")
+      .trim();
+    return cleaned || providerLabelFromUrl(href);
+  };
+  const providerHostPattern = new RegExp(
+    "(opentable|resy|sevenrooms|thefork|tock|quandoo|yelp|inline|"
+      + "tablecheck|exploretock|omakase|pocket-concierge|pocketconcierge|"
+      + "tabelog|hotpepper|gnavi|gurunavi|ikyu|jpneazy|byfood|autoreserve)",
+    "i",
+  );
+  const rejectHostPattern = new RegExp(
+    String.raw`(^|\.)google(?:\.[a-z]{2,}){1,2}$`
+      + String.raw`|(^|\.)gstatic\.com$`
+      + String.raw`|(^|\.)googleusercontent\.com$`,
+    "i",
+  );
+  const dialogs = [
+    ...document.querySelectorAll("[role='dialog'], [aria-modal='true']"),
+  ].filter((element) => {
+    const {rect, visibleArea} = visibleRect(element);
+    return visibleArea > 0 && rect.width >= 120 && rect.height >= 80;
+  });
+  const roots = dialogs.length ? dialogs : [document.body];
+  const links = [];
+  const seen = new Set();
+  for (const root of roots) {
+    for (const element of root.querySelectorAll("a[href]")) {
+      const href = element.href || element.getAttribute("href") || "";
+      if (!/^https?:\/\//i.test(href) || seen.has(href)) {
+        continue;
+      }
+      let host = "";
+      try {
+        host = new URL(href).hostname;
+      } catch {
+        continue;
+      }
+      const rawLabel = [
+        element.innerText,
+        element.textContent,
+        element.getAttribute("aria-label"),
+        element.getAttribute("title"),
+      ].filter(Boolean).join(" ");
+      const evidence = `${rawLabel} ${href}`;
+      if (rejectHostPattern.test(host) && !/\/maps\/reserve\b/i.test(href)) {
+        continue;
+      }
+      if (!dialogs.length && !providerHostPattern.test(evidence)) {
+        continue;
+      }
+      seen.add(href);
+      links.push({
+        label: cleanReservationLabel(rawLabel, href),
+        url: href,
+      });
+      if (links.length >= 8) {
+        break;
+      }
+    }
+    if (links.length >= 8) {
+      break;
+    }
+  }
+  for (const dialog of dialogs) {
+    for (const button of dialog.querySelectorAll("button, div[role='button']")) {
+      const label = cleanLine(
+        button.getAttribute("aria-label")
+        || button.getAttribute("title")
+        || button.innerText
+        || button.textContent
+        || "",
+      );
+      if (/^(close|閉じる|關閉|关闭|닫기)$/i.test(label)) {
+        button.click();
+        return links;
+      }
+    }
+  }
+  return links;
 }
 """
 _PLACE_REVIEW_TAB_CLICK_JS = r"""
@@ -2206,6 +2410,10 @@ def _collect_place_snapshot_with_context(
         page.wait_for_timeout(settle_time_ms)
         resolved_url = _normalize_response_url(getattr(page, "url", None))
         dom_snapshot = page.evaluate(_PLACE_JS_EXTRACTOR)
+        if isinstance(dom_snapshot, Mapping):
+            reservation_snapshot = _collect_reservation_dialog_snapshot(page, timeout_ms=timeout_ms)
+            if reservation_snapshot:
+                dom_snapshot = _merge_reservation_links(dom_snapshot, reservation_snapshot)
         if overview_screenshot_path is not None:
             _write_place_screenshot(page, overview_screenshot_path)
         if collect_reviews and isinstance(dom_snapshot, Mapping):
@@ -2472,6 +2680,47 @@ def _collect_review_panel_snapshot(page: Any, *, timeout_ms: int) -> dict[str, o
     return result
 
 
+def _collect_reservation_dialog_snapshot(page: Any, *, timeout_ms: int) -> dict[str, object]:
+    try:
+        clicked = page.evaluate(_PLACE_RESERVATION_BUTTON_CLICK_JS)
+    except Exception:
+        return {}
+    if clicked is not True:
+        return {}
+    page.wait_for_timeout(min(max(timeout_ms // 20, 500), 1_500))
+    try:
+        links = page.evaluate(_PLACE_RESERVATION_DIALOG_JS)
+    except Exception:
+        return {}
+    if not isinstance(links, list):
+        return {}
+    return {"reservation_links": links}
+
+
+def _merge_reservation_links(
+    snapshot: Mapping[str, object],
+    reservation_snapshot: Mapping[str, object],
+) -> dict[str, object]:
+    merged = dict(snapshot)
+    links: list[object] = []
+    seen_urls: set[str] = set()
+    for source in (
+        snapshot.get("reservation_links"),
+        reservation_snapshot.get("reservation_links"),
+    ):
+        if not isinstance(source, list):
+            continue
+        for item in source:
+            url = item.get("url") if isinstance(item, Mapping) else None
+            if not isinstance(url, str) or url in seen_urls:
+                continue
+            seen_urls.add(url)
+            links.append(item)
+    if links:
+        merged["reservation_links"] = links
+    return merged
+
+
 def _collect_about_panel_snapshot(page: Any, *, timeout_ms: int) -> dict[str, object]:
     try:
         clicked = page.evaluate(_PLACE_ABOUT_TAB_CLICK_JS)
@@ -2584,6 +2833,7 @@ def _build_place_details(
         located_in=_clean_text(snapshot.get("located_in")),
         status=_clean_text(snapshot.get("status")) or _extract_status_from_lines(combined_lines),
         website=_normalize_website(snapshot.get("website")),
+        reservation_links=_normalize_reservation_links(snapshot.get("reservation_links")),
         phone=_normalize_phone_candidate(snapshot.get("phone"))
         or _extract_phone_from_lines(combined_lines),
         plus_code=_clean_plus_code_text(snapshot.get("plus_code"))
@@ -4525,6 +4775,92 @@ def _normalize_website(value: object) -> str | None:
     if text is None:
         return None
     return _normalize_preview_website(text)
+
+
+def _normalize_reservation_links(value: object) -> list[PlaceReservationLink]:
+    if not isinstance(value, list):
+        return []
+    links: list[PlaceReservationLink] = []
+    seen_urls: set[str] = set()
+    for item in value:
+        if not isinstance(item, Mapping):
+            continue
+        raw_label = item.get("label")
+        raw_url = item.get("url")
+        url = _clean_text(raw_url)
+        if url is None:
+            continue
+        parsed = urlparse(url)
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            continue
+        normalized_url = _normalize_preview_website(url) if "google.com" in parsed.netloc else url
+        if normalized_url is None:
+            normalized_url = url if parsed.netloc.endswith("google.com") else None
+        if normalized_url is None or normalized_url in seen_urls:
+            continue
+        label = _clean_reservation_label(raw_label, normalized_url)
+        links.append(PlaceReservationLink(label=label[:80], url=normalized_url))
+        seen_urls.add(normalized_url)
+    return links
+
+
+def _clean_reservation_label(value: object, url: str) -> str:
+    fallback = _reservation_provider_label_from_url(url)
+    label = _clean_text(value)
+    if label is None:
+        return fallback
+    label = re.sub(r"[\ue000-\uf8ff]", " ", label)
+    label = re.sub(
+        r"^(?:find a table|reserve|make a reservation|book(?: a table)?)"
+        r"(?:\s+(?:with|on|at|via))?\s*",
+        "",
+        label,
+        flags=re.IGNORECASE,
+    )
+    label = re.sub(r"\s+(?:opens in new tab|website)$", "", label, flags=re.IGNORECASE)
+    label = _clean_text(label)
+    if label is None:
+        return fallback
+
+    tokens = label.split()
+    unique_tokens = list(dict.fromkeys(token.casefold() for token in tokens))
+    if len(unique_tokens) == 1 and len(tokens) > 1:
+        label = tokens[0]
+    if "." in label or re.fullmatch(r"(?:https?://)?[A-Za-z0-9.-]+/?", label):
+        return fallback
+    return label
+
+
+def _reservation_provider_label_from_url(url: str) -> str:
+    host = (urlparse(url).hostname or "").lower().removeprefix("www.")
+    known_hosts = (
+        ("tablecheck.", "TableCheck"),
+        ("resy.", "Resy"),
+        ("opentable.", "OpenTable"),
+        ("sevenrooms.", "SevenRooms"),
+        ("thefork.", "TheFork"),
+        ("exploretock.", "Tock"),
+        ("tock.", "Tock"),
+        ("quandoo.", "Quandoo"),
+        ("omakase.", "Omakase"),
+        ("pocket-concierge.", "Pocket Concierge"),
+        ("pocketconcierge.", "Pocket Concierge"),
+        ("tabelog.", "Tabelog"),
+        ("hotpepper.", "Hot Pepper"),
+        ("gnavi.", "Gurunavi"),
+        ("gurunavi.", "Gurunavi"),
+        ("ikyu.", "Ikyu"),
+        ("jpneazy.", "JPNEAZY"),
+        ("byfood.", "ByFood"),
+        ("autoreserve.", "AutoReserve"),
+    )
+    for marker, label in known_hosts:
+        if marker in host:
+            return label
+    base = host.split(".")[0] if host else ""
+    if not base:
+        return "Find a Table"
+    return base.replace("-", " ").replace("_", " ").title()
 
 
 def _extract_coordinate_from_url(url: str, *, index: int) -> float | None:

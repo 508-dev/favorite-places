@@ -51,6 +51,8 @@ export interface PlaceProvenance {
   user_rating_count?: PlaceField<number> | null;
   primary_category?: PlaceField<string> | null;
   primary_category_localized?: PlaceField<string> | null;
+  website?: PlaceField<string> | null;
+  reservation_links?: PlaceField<PlaceReservationLink[]> | null;
   tags: PlaceField<string>[];
   locality_path?: PlaceField<string[]> | null;
   neighborhood?: PlaceField<string> | null;
@@ -80,6 +82,11 @@ export interface TrustSignal {
   match_reason: string;
 }
 
+export interface PlaceReservationLink {
+  label: string;
+  url: string;
+}
+
 export interface Place {
   id: string;
   name: string;
@@ -100,6 +107,8 @@ export interface Place {
   visible_tags: string[];
   vibe_tags: string[];
   price_range: string | null;
+  website?: string | null;
+  reservation_links?: PlaceReservationLink[];
   locality_path: string[];
   neighborhood: string | null;
   note: string | null;
