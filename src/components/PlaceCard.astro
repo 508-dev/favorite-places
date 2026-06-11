@@ -405,7 +405,7 @@ const reservationLink = (place.reservation_links ?? [])
               class="place-card-action-link place-card-action-link--website"
               href={websiteUrl}
               target="_blank"
-              rel="noreferrer"
+              rel="noopener noreferrer"
               aria-label={`Open ${place.name} website`}
               title={`Open ${place.name} website`}
             >
@@ -423,7 +423,7 @@ const reservationLink = (place.reservation_links ?? [])
               class="place-card-action-link place-card-action-link--reservation"
               href={reservationLink.url}
               target="_blank"
-              rel="noreferrer"
+              rel="noopener noreferrer"
               aria-label={`Find a table at ${place.name}${reservationLink.label ? ` via ${reservationLink.label}` : ""}`}
               title={`Find a table${reservationLink.label ? ` · ${reservationLink.label}` : ""}`}
             >

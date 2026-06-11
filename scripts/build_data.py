@@ -5890,6 +5890,9 @@ def coerce_place_reservation_links(value: Any) -> list[PlaceReservationLink]:
         elif isinstance(item, dict):
             label = as_string(item.get("label")) or as_string(item.get("provider"))
             url = as_http_url(item.get("url"))
+        elif hasattr(item, "label") and hasattr(item, "url"):
+            label = as_string(getattr(item, "label", None))
+            url = as_http_url(getattr(item, "url", None))
         else:
             continue
 
@@ -5898,7 +5901,16 @@ def coerce_place_reservation_links(value: Any) -> list[PlaceReservationLink]:
         links.append(PlaceReservationLink(label=label[:80], url=url))
         seen_urls.add(url)
 
+    if any(not place_reservation_link_is_google_reserve(link) for link in links):
+        links = [link for link in links if not place_reservation_link_is_google_reserve(link)]
+
     return links
+
+
+def place_reservation_link_is_google_reserve(link: PlaceReservationLink) -> bool:
+    parts = urlsplit(link.url)
+    host = parts.netloc.lower()
+    return host in {"www.google.com", "google.com", "maps.google.com"} and parts.path.startswith("/maps/reserve")
 
 
 def as_float(value: Any) -> float | None:
@@ -8815,7 +8827,7 @@ def build_place_page_candidate_urls(
         localized_maps_url=localized_maps_url,
         search_url=search_url,
     ):
-        candidates = [cid_url, search_url, localized_maps_url]
+        candidates = [search_url, localized_maps_url, cid_url]
         return dedupe_urls([*priority_candidates, *[url for url in candidates if url is not None]])
 
     candidates: list[str] = []

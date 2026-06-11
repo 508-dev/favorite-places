@@ -4801,7 +4801,18 @@ def _normalize_reservation_links(value: object) -> list[PlaceReservationLink]:
         label = _clean_reservation_label(raw_label, normalized_url)
         links.append(PlaceReservationLink(label=label[:80], url=normalized_url))
         seen_urls.add(normalized_url)
+    if any(not _reservation_link_is_google_reserve(link.url) for link in links):
+        links = [link for link in links if not _reservation_link_is_google_reserve(link.url)]
     return links
+
+
+def _reservation_link_is_google_reserve(url: str) -> bool:
+    parsed = urlparse(url)
+    host = parsed.netloc.lower()
+    return (
+        host in {"www.google.com", "google.com", "maps.google.com"}
+        and parsed.path.startswith("/maps/reserve")
+    )
 
 
 def _clean_reservation_label(value: object, url: str) -> str:

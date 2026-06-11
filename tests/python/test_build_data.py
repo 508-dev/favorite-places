@@ -1576,12 +1576,12 @@ class BuildDataTests(unittest.TestCase):
                 country_name="Japan",
             ),
             [
-                "https://maps.google.com/?cid=6924437521980544303&hl=en&gl=us",
                 (
                     "https://www.google.com/maps/search/?api=1"
                     "&query=Locale%2C+Tokyo%2C+Japan&hl=en&gl=us"
                 ),
                 "https://www.google.com/maps/search/?api=1&query=Locale&hl=en&gl=us",
+                "https://maps.google.com/?cid=6924437521980544303&hl=en&gl=us",
             ],
         )
 
@@ -1734,7 +1734,12 @@ class BuildDataTests(unittest.TestCase):
 
         self.assertEqual(
             called_urls,
-            ["https://maps.google.com/?cid=6924437521980544303&hl=en&gl=us"],
+            [
+                (
+                    "https://www.google.com/maps/search/?api=1"
+                    "&query=Locale%2C+Tokyo%2C+Japan&hl=en&gl=us"
+                )
+            ],
         )
         self.assertTrue(entry.matched)
         self.assertIsNotNone(entry.place)
@@ -3721,6 +3726,10 @@ class BuildDataTests(unittest.TestCase):
         )
 
     def test_normalize_place_page_enrichment_carries_reservation_links(self) -> None:
+        scraper_link = SimpleNamespace(
+            label="TableCheck",
+            url="https://www.tablecheck.com/open-kitchen/reserve",
+        )
         enrichment = build_data.normalize_place_page_enrichment(
             SimpleNamespace(
                 source_url="https://www.google.com/maps/place/Open+Kitchen",
@@ -3733,6 +3742,8 @@ class BuildDataTests(unittest.TestCase):
                 website="https://openkitchen.example/",
                 reservation_links=[
                     {"label": "Resy", "url": "https://resy.com/cities/lisbon/open-kitchen"},
+                    scraper_link,
+                    {"label": "Reserve a table", "url": "https://www.google.com/maps/reserve/v/dine/c/example"},
                     {"label": "Bad", "url": "javascript:alert(1)"},
                 ],
                 phone="+351 21 000 0000",
@@ -3746,7 +3757,10 @@ class BuildDataTests(unittest.TestCase):
         self.assertEqual(enrichment.website, "https://openkitchen.example/")
         self.assertEqual(
             [link.model_dump(mode="json") for link in enrichment.reservation_links],
-            [{"label": "Resy", "url": "https://resy.com/cities/lisbon/open-kitchen"}],
+            [
+                {"label": "Resy", "url": "https://resy.com/cities/lisbon/open-kitchen"},
+                {"label": "TableCheck", "url": "https://www.tablecheck.com/open-kitchen/reserve"},
+            ],
         )
 
     def test_normalize_place_page_enrichment_carries_optional_panel_cache_fields(self) -> None:

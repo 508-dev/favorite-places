@@ -2757,6 +2757,10 @@ class PlaceScraperTests(unittest.TestCase):
                     "label": "autoreserve.com autoreserve.com autoreserve.com",
                     "url": "https://autoreserve.com/restaurants/example",
                 },
+                {
+                    "label": "Reserve a table",
+                    "url": "https://www.google.com/maps/reserve/v/dine/c/example",
+                },
             ]
         )
 
