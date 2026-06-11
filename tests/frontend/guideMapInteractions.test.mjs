@@ -203,6 +203,12 @@ describe("guide map interactions", () => {
     expect(placeCard).toContain("aria-label={`Show ${place.name} on the guide map`}");
     expect(placeCard).toContain("place-card-map-link");
     expect(placeCard).toContain("place-card-action-link--maps");
+    expect(placeCard).toContain(
+      "const reservationLink = reservationLinks.length === 1 ? reservationLinks[0] : null;",
+    );
+    expect(placeCard).toContain("const hasReservationOptions = reservationLinks.length > 1;");
+    expect(placeCard).toContain('class="place-card-reservation-list"');
+    expect(placeCard).toContain('class="place-card-reservation-option"');
     expect(placeCard).toContain("aria-label={`Open ${place.name} in Google Maps`}");
     expect(placeCard).toContain('src="/icons/google-maps.svg"');
     expect(placeCard).not.toContain("data-image-component");
@@ -214,6 +220,8 @@ describe("guide map interactions", () => {
     expectCssToContain(css, ".place-card-map-link");
     expectCssToContain(css, ".place-card-map-link img");
     expectCssToContain(css, ".place-card-map-link-label");
+    expectCssToContain(css, ".place-card-reservation-list");
+    expectCssToContain(css, ".place-card-reservation-option");
     expectCssToContain(css, ".place-card-name-row");
     expectCssToContain(css, "display: inline-flex;");
     expectCssToContain(css, "width: 2.45rem;");

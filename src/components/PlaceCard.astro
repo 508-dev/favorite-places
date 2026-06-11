@@ -300,9 +300,12 @@ const showPlaceAttribution = Boolean(
 );
 const displayedPlaceAttribution = showPlaceAttribution ? placeAttribution : null;
 const websiteUrl = safeHttpUrl(place.website);
-const reservationLink = (place.reservation_links ?? [])
+const reservationLinks = Array.from(new Map((place.reservation_links ?? [])
   .map((link) => ({ label: link.label.trim() || "Find a Table", url: safeHttpUrl(link.url) }))
-  .find((link) => link.url);
+  .filter((link): link is { label: string; url: string } => link.url !== null)
+  .map((link) => [`${link.label.toLowerCase()}:${link.url}`, link])).values());
+const reservationLink = reservationLinks.length === 1 ? reservationLinks[0] : null;
+const hasReservationOptions = reservationLinks.length > 1;
 ---
 
 <article
@@ -495,6 +498,22 @@ const reservationLink = (place.reservation_links ?? [])
           </div>
         )}
       </div>
+      {hasReservationOptions && (
+        <div class="place-card-reservation-list">
+          <span class="place-card-reservation-list-label">Find a table</span>
+          {reservationLinks.map((link) => (
+            <a
+              class="place-card-reservation-option"
+              href={link.url}
+              target="_blank"
+              rel="noopener noreferrer"
+              aria-label={`Find a table at ${place.name} via ${link.label}`}
+            >
+              {link.label}
+            </a>
+          ))}
+        </div>
+      )}
     </div>
     {badges.length > 0 && (
       <div class="place-card-badges">

@@ -1334,7 +1334,23 @@ _PLACE_RESERVATION_DIALOG_JS = r"""
     const {rect, visibleArea} = visibleRect(element);
     return visibleArea > 0 && rect.width >= 120 && rect.height >= 80;
   });
-  const roots = dialogs.length ? dialogs : [document.body];
+  const providerPanels = [
+    ...document.querySelectorAll("div, section"),
+  ].filter((element) => {
+    const {rect, visibleArea} = visibleRect(element);
+    if (visibleArea <= 0 || rect.width < 120 || rect.height < 80) {
+      return false;
+    }
+    const text = cleanLine(element.innerText || element.textContent || "");
+    return /\bcontinue with\b/i.test(text) && /\babout these providers\b/i.test(text);
+  }).sort((left, right) => {
+    const leftRect = left.getBoundingClientRect();
+    const rightRect = right.getBoundingClientRect();
+    return (leftRect.width * leftRect.height) - (rightRect.width * rightRect.height);
+  });
+  const providerRoots = dialogs.length ? dialogs : providerPanels.slice(0, 1);
+  const roots = providerRoots.length ? providerRoots : [document.body];
+  const hasTrustedProviderRoot = providerRoots.length > 0;
   const links = [];
   const seen = new Set();
   for (const root of roots) {
@@ -1359,7 +1375,7 @@ _PLACE_RESERVATION_DIALOG_JS = r"""
       if (rejectHostPattern.test(host) && !/\/maps\/reserve\b/i.test(href)) {
         continue;
       }
-      if (!dialogs.length && !providerHostPattern.test(evidence)) {
+      if (!hasTrustedProviderRoot && !providerHostPattern.test(evidence)) {
         continue;
       }
       seen.add(href);
@@ -4864,6 +4880,7 @@ def _reservation_provider_label_from_url(url: str) -> str:
         ("jpneazy.", "JPNEAZY"),
         ("byfood.", "ByFood"),
         ("autoreserve.", "AutoReserve"),
+        ("sg-management.", "SG Management"),
     )
     for marker, label in known_hosts:
         if marker in host:

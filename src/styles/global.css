@@ -1594,6 +1594,56 @@
     background: color-mix(in srgb, var(--accent-soft) 52%, var(--surface));
   }
 
+  .place-card-reservation-list {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.4rem;
+  }
+
+  .place-card-reservation-list-label,
+  .place-card-reservation-option {
+    min-height: 1.75rem;
+    display: inline-flex;
+    align-items: center;
+    border-radius: 999px;
+    font-size: 0.72rem;
+    font-weight: 800;
+    line-height: 1;
+    white-space: nowrap;
+  }
+
+  .place-card-reservation-list-label {
+    color: var(--muted);
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+  }
+
+  .place-card-reservation-option {
+    max-width: 100%;
+    padding: 0.22rem 0.55rem;
+    border: 1px solid color-mix(in srgb, var(--accent) 24%, var(--line));
+    background: color-mix(in srgb, var(--accent-soft) 42%, var(--surface));
+    color: var(--accent-strong);
+    text-decoration: none;
+    transition:
+      border-color 160ms ease,
+      background-color 160ms ease,
+      color 160ms ease;
+  }
+
+  .place-card-reservation-option:hover,
+  .place-card-reservation-option:focus-visible {
+    border-color: color-mix(in srgb, var(--accent) 38%, var(--line));
+    background: #ffffff;
+    color: var(--accent);
+  }
+
+  .place-card-reservation-option:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
+
   .place-card-action-link svg {
     width: 1.05rem;
     height: 1.05rem;

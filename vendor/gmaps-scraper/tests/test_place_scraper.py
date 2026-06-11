@@ -195,6 +195,11 @@ class PlaceScraperTests(unittest.TestCase):
         )
         self.assertEqual(page.waited, [1_500])
 
+    def test_reservation_dialog_extractor_trusts_provider_popup_without_dialog_role(self) -> None:
+        self.assertIn("continue with", _PLACE_RESERVATION_DIALOG_JS)
+        self.assertIn("about these providers", _PLACE_RESERVATION_DIALOG_JS)
+        self.assertIn("hasTrustedProviderRoot", _PLACE_RESERVATION_DIALOG_JS)
+
     def test_collect_reservation_dialog_snapshot_skips_when_no_button(self) -> None:
         class _FakePage:
             def __init__(self) -> None:
@@ -2758,6 +2763,10 @@ class PlaceScraperTests(unittest.TestCase):
                     "url": "https://autoreserve.com/restaurants/example",
                 },
                 {
+                    "label": "\ue157 sg-management.jp \ue157sg-management.jp sg-management.jp",
+                    "url": "https://sg-management.jp/reserve/",
+                },
+                {
                     "label": "Reserve a table",
                     "url": "https://www.google.com/maps/reserve/v/dine/c/example",
                 },
@@ -2770,6 +2779,7 @@ class PlaceScraperTests(unittest.TestCase):
                 {"label": "TableCheck", "url": "https://www.tablecheck.com/markstokyo/reserve"},
                 {"label": "Ikyu", "url": "https://restaurant.ikyu.com/112767/?ikgo=2"},
                 {"label": "AutoReserve", "url": "https://autoreserve.com/restaurants/example"},
+                {"label": "SG Management", "url": "https://sg-management.jp/reserve/"},
             ],
         )
 
