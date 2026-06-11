@@ -120,6 +120,7 @@ const isSafeExternalUrl = (value: string | null | undefined): value is string =>
 type CardTrustSignal = TrustSignal & {
   url: string | null;
   groupedTrustSignalLabels?: string[];
+  groupedTrustSignalConfidenceNotes?: string[];
 };
 const trustSignalBaseLabel = (signal: TrustSignal) =>
   [
@@ -129,6 +130,25 @@ const trustSignalBaseLabel = (signal: TrustSignal) =>
     signal.display_tier ?? signal.tier,
     signal.award_year ? String(signal.award_year) : null,
   ].filter(Boolean).join(" · ");
+const trustSignalConfidenceNote = (signal: TrustSignal) => {
+  if (signal.confidence !== "medium") {
+    return null;
+  }
+  const normalizedReason = signal.match_reason.toLowerCase();
+  if (normalizedReason.includes("alias") && normalizedReason.includes("location")) {
+    return "Matched by alternate name and location";
+  }
+  if (normalizedReason.includes("similarity") && normalizedReason.includes("location")) {
+    return "Matched by similar name and location";
+  }
+  if (normalizedReason.includes("similarity")) {
+    return "Matched by similar name";
+  }
+  if (normalizedReason.includes("location")) {
+    return "Matched by name and location";
+  }
+  return "Matched with medium confidence";
+};
 const combineTabelogTrustSignals = (signals: CardTrustSignal[]) => {
   const tabelogSignals = signals.filter((signal) => signal.source === "tabelog");
   if (tabelogSignals.length <= 1) {
@@ -140,7 +160,9 @@ const combineTabelogTrustSignals = (signals: CardTrustSignal[]) => {
   const combinedTabelogSignal = {
     ...tabelogSignals[0],
     groupedTrustSignalLabels: tabelogSignals.map(trustSignalBaseLabel),
-    match_reason: Array.from(new Set(tabelogSignals.map((signal) => signal.match_reason).filter(Boolean))).join(" · "),
+    groupedTrustSignalConfidenceNotes: Array.from(
+      new Set(tabelogSignals.map(trustSignalConfidenceNote).filter(Boolean)),
+    ),
   };
 
   return [
@@ -159,7 +181,10 @@ const trustSignals = combineTabelogTrustSignals(rawTrustSignals
 const trustSignalLabel = (signal: (typeof trustSignals)[number]) =>
   signal.groupedTrustSignalLabels?.join(" + ") ?? trustSignalBaseLabel(signal);
 const trustSignalTitle = (signal: (typeof trustSignals)[number]) =>
-  [trustSignalLabel(signal), signal.match_reason].filter(Boolean).join(" · ");
+  [
+    trustSignalLabel(signal),
+    ...(signal.groupedTrustSignalConfidenceNotes ?? [trustSignalConfidenceNote(signal)]),
+  ].filter(Boolean).join(" · ");
 const trustSignalClassName = (signal: (typeof trustSignals)[number]) =>
   [
     "stat-pill ui-pill place-card-trust-pill",

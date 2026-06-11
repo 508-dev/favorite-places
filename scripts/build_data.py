@@ -3494,7 +3494,7 @@ def display_trust_signal(signal: TrustSignal) -> TrustSignal:
 
 def trust_signal_display_label(signal: TrustSignal) -> str:
     if signal.source == "tabelog" and signal.label == "The Tabelog Award":
-        return "Tabelog Award"
+        return "Tabelog"
     if signal.source == "tabelog" and signal.label == "Tabelog Hyakumeiten":
         return "Tabelog 100"
     return signal.label

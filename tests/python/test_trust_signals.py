@@ -1267,10 +1267,10 @@ class TrustSignalsTest(unittest.TestCase):
         )
 
         self.assertEqual(signal.label, "The Tabelog Award")
-        self.assertEqual(signal.display_label, "Tabelog Award")
+        self.assertEqual(signal.display_label, "Tabelog")
         self.assertEqual(
             build_data.trust_signal_recommendation_copy([signal]),
-            "Recognized by Tabelog Award Gold 2026.",
+            "Recognized by Tabelog Gold 2026.",
         )
 
     def test_trust_signal_recommendation_copy_skips_previous_when_current_exists(self) -> None:
@@ -1328,7 +1328,7 @@ class TrustSignalsTest(unittest.TestCase):
                     ),
                 ]
             ),
-            "Recognized by Tabelog Award Bronze 2025 and previously by MICHELIN Guide 1 star 2023.",
+            "Recognized by Tabelog Bronze 2025 and previously by MICHELIN Guide 1 star 2023.",
         )
 
     def test_trust_signal_recommendation_copy_preserves_previous_michelin_star_when_current_tier_differs(self) -> None:
