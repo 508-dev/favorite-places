@@ -1,7 +1,6 @@
 ---
 
 import { siteConfig } from "../data/site";
-import { buildMapMarkerSvg, getMapMarkerColors } from "../lib/mapMarkerIcons";
 import { getDisplayGuideTags, getDisplayPlaceTags, getTagComparisonValue } from "../lib/placeTags";
 import { renderRichText } from "../lib/renderRichText";
 import type { ListAuthor, Place, TrustSignal } from "../lib/types";
@@ -40,6 +39,18 @@ function authorsReferToSamePerson(left: ListAuthor | null | undefined, right: Li
   return leftName.toLowerCase() === rightName.toLowerCase();
 }
 
+function safeHttpUrl(value: string | null | undefined): string | null {
+  if (!value) {
+    return null;
+  }
+  try {
+    const url = new URL(value);
+    return url.protocol === "https:" || url.protocol === "http:" ? url.toString() : null;
+  } catch {
+    return null;
+  }
+}
+
 const {
   bestHit = false,
   featured = false,
@@ -66,7 +77,6 @@ const whyRecommendedHtml = renderRichText(place.why_recommended ?? place.note);
 const placePhotosEnabled = (import.meta.env.PUBLIC_PLACE_PHOTOS || "on").toLowerCase() !== "off";
 const photoSrc = place.main_photo_path ?? (guidePhotoMode === "remote_url" ? place.photo_url : null);
 const hasPhoto = Boolean(siteConfig.placeCard.showPhoto && placePhotosEnabled && photoSrc);
-const hasMapCoordinates = place.lat !== null && place.lng !== null;
 const ratingValue = typeof place.rating === "number" ? place.rating : null;
 const reviewCount = typeof place.user_rating_count === "number" ? place.user_rating_count : null;
 const priceRange = typeof place.price_range === "string" && place.price_range.trim().length > 0 ? place.price_range.trim() : null;
@@ -127,13 +137,79 @@ const trustSignalBaseLabel = (signal: TrustSignal) =>
     signal.award_year ? String(signal.award_year) : null,
   ].filter(Boolean).join(" · ");
 const trustSignalAwardTierKey = (signal: TrustSignal) => signal.display_tier ?? signal.tier ?? "";
+const normalizedTrustTier = (tier: string | null | undefined) => (tier ?? "").toLowerCase();
+const michelinStarCount = (tier: string | null | undefined) => {
+  const normalized = normalizedTrustTier(tier);
+  if (normalized.includes("3 star")) {
+    return 3;
+  }
+  if (normalized.includes("2 star")) {
+    return 2;
+  }
+  if (normalized.includes("1 star")) {
+    return 1;
+  }
+  return 0;
+};
+const trustSignalMichelinStarCount = (signal: TrustSignal) => michelinStarCount(signal.display_tier ?? signal.tier);
+const previousMichelinStarSignals = rawTrustSignals.filter(
+  (signal) => signal.source === "michelin" && signal.is_current === false && trustSignalMichelinStarCount(signal) > 0,
+);
+const currentMichelinStarSignals = rawTrustSignals.filter(
+  (signal) => signal.source === "michelin" && signal.is_current === true && trustSignalMichelinStarCount(signal) > 0,
+);
+const previousMichelinStarDisplaySignal = previousMichelinStarSignals.reduce<TrustSignal | null>((best, signal) => {
+  if (!best) {
+    return signal;
+  }
+  if ((signal.award_year ?? 0) !== (best.award_year ?? 0)) {
+    return (signal.award_year ?? 0) > (best.award_year ?? 0) ? signal : best;
+  }
+  const signalStars = trustSignalMichelinStarCount(signal);
+  const bestStars = trustSignalMichelinStarCount(best);
+  return signalStars > bestStars ? signal : best;
+}, null);
+const previousMichelinStarPeakSignal = previousMichelinStarSignals.reduce<TrustSignal | null>((best, signal) => {
+  if (!best) {
+    return signal;
+  }
+  const signalStars = trustSignalMichelinStarCount(signal);
+  const bestStars = trustSignalMichelinStarCount(best);
+  if (signalStars !== bestStars) {
+    return signalStars > bestStars ? signal : best;
+  }
+  return (signal.award_year ?? 0) > (best.award_year ?? 0) ? signal : best;
+}, null);
+const previousMichelinStarHistoryNote =
+  previousMichelinStarDisplaySignal &&
+  previousMichelinStarPeakSignal &&
+  trustSignalMichelinStarCount(previousMichelinStarPeakSignal) >
+    trustSignalMichelinStarCount(previousMichelinStarDisplaySignal)
+    ? [
+        `At most ${trustSignalMichelinStarCount(previousMichelinStarPeakSignal)} MICHELIN stars`,
+        previousMichelinStarPeakSignal.award_year ? `in ${previousMichelinStarPeakSignal.award_year}` : null,
+      ].filter(Boolean).join(" ")
+    : null;
 const currentAwardKeys = new Set(
   rawTrustSignals
     .filter((signal) => (signal.source === "michelin" || signal.source === "tabelog") && signal.is_current === true)
     .map((signal) => `${signal.source}:${trustSignalAwardTierKey(signal)}`),
 );
-const shouldHidePreviousTrustSignal = (signal: TrustSignal) =>
-  signal.is_current === false && currentAwardKeys.has(`${signal.source}:${trustSignalAwardTierKey(signal)}`);
+const shouldHidePreviousTrustSignal = (signal: TrustSignal) => {
+  if (signal.is_current !== false) {
+    return false;
+  }
+  if (currentAwardKeys.has(`${signal.source}:${trustSignalAwardTierKey(signal)}`)) {
+    return true;
+  }
+  if (signal.source === "michelin" && trustSignalMichelinStarCount(signal) > 0) {
+    if (currentMichelinStarSignals.length > 0) {
+      return true;
+    }
+    return previousMichelinStarDisplaySignal !== null && signal !== previousMichelinStarDisplaySignal;
+  }
+  return false;
+};
 const trustSignalConfidenceNote = (signal: TrustSignal) => {
   if (signal.confidence !== "medium") {
     return null;
@@ -180,6 +256,10 @@ const trustSignals = combineTabelogTrustSignals(rawTrustSignals
   .map((signal) => ({
     ...signal,
     url: isSafeExternalUrl(signal.url) ? signal.url : null,
+    groupedTrustSignalConfidenceNotes:
+      signal === previousMichelinStarDisplaySignal && previousMichelinStarHistoryNote
+        ? [previousMichelinStarHistoryNote]
+        : undefined,
   })))
   .slice(0, 3);
 const trustSignalLabel = (signal: (typeof trustSignals)[number]) =>
@@ -196,20 +276,6 @@ const trustSignalClassName = (signal: (typeof trustSignals)[number]) =>
     signal.source === "michelin" ? michelinTrustSignalModifier(signal.tier) : null,
     signal.is_current === false ? "place-card-trust-pill--previous" : null,
   ].filter(Boolean).join(" ");
-const normalizedTrustTier = (tier: string | null | undefined) => (tier ?? "").toLowerCase();
-const michelinStarCount = (tier: string | null | undefined) => {
-  const normalized = normalizedTrustTier(tier);
-  if (normalized.includes("3 star")) {
-    return 3;
-  }
-  if (normalized.includes("2 star")) {
-    return 2;
-  }
-  if (normalized.includes("1 star")) {
-    return 1;
-  }
-  return 0;
-};
 const michelinTrustSignalModifier = (tier: string | null | undefined) => {
   const normalized = normalizedTrustTier(tier);
   const starCount = michelinStarCount(tier);
@@ -267,10 +333,6 @@ const metaParts = [
   siteConfig.placeCard.showCategory ? (place.primary_category ?? siteConfig.placeCard.savedPlaceLabel) : null,
   siteConfig.placeCard.showNeighborhood ? place.neighborhood : null,
 ].filter(Boolean);
-const markerSvg = buildMapMarkerSvg(
-  place.marker_icon,
-  getMapMarkerColors(place.marker_icon, { topPick: featured || place.top_pick }),
-);
 const showTopPickBadge = siteConfig.placeCard.showTopPickBadge && (featured || place.top_pick);
 const badges = [
   ...(showTopPickBadge ? [{ className: "badge", label: siteConfig.placeCard.topPickLabel }] : []),
@@ -287,6 +349,13 @@ const showPlaceAttribution = Boolean(
   (siteConfig.placeCard.showGuideAuthorAttribution || !authorsReferToSamePerson(placeAttribution, guideAuthor)),
 );
 const displayedPlaceAttribution = showPlaceAttribution ? placeAttribution : null;
+const websiteUrl = safeHttpUrl(place.website);
+const reservationLinks = Array.from(new Map((place.reservation_links ?? [])
+  .map((link) => ({ label: link.label.trim() || "Find a Table", url: safeHttpUrl(link.url) }))
+  .filter((link): link is { label: string; url: string } => link.url !== null)
+  .map((link) => [`${link.label.toLowerCase()}:${link.url}`, link])).values());
+const reservationLink = reservationLinks.length === 1 ? reservationLinks[0] : null;
+const hasReservationOptions = reservationLinks.length > 1;
 ---
 
 <article
@@ -318,6 +387,8 @@ const displayedPlaceAttribution = showPlaceAttribution ? placeAttribution : null
     place.primary_category ?? "",
     place.neighborhood ?? "",
     (place.locality_path ?? []).join(" "),
+    place.website ?? "",
+    (place.reservation_links ?? []).map((link) => link.label).join(" "),
     placeTags.join(" "),
     placeVibeTags.join(" "),
   ].join(" ").toLowerCase()}
@@ -355,17 +426,6 @@ const displayedPlaceAttribution = showPlaceAttribution ? placeAttribution : null
       <div class="place-card-name-row">
         <h3 class="ui-card-title" title={place.name}>{place.name}</h3>
         <div class="place-card-title-actions">
-          {hasMapCoordinates && (
-            <button
-              type="button"
-              class="place-card-map-select"
-              data-place-card-map-select
-              aria-label={`Show ${place.name} on the guide map`}
-              title="Show on guide map"
-            >
-              <span class="place-card-map-select-icon" aria-hidden="true" set:html={markerSvg} />
-            </button>
-          )}
           {isTemporarilyClosed && (
             <button
               type="button"
@@ -382,9 +442,94 @@ const displayedPlaceAttribution = showPlaceAttribution ? placeAttribution : null
               <span class="place-card-status-tooltip" aria-hidden="true">Temporarily closed · check before visiting</span>
             </button>
           )}
+          {websiteUrl && (
+            <a
+              class="place-card-action-link"
+              href={websiteUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              aria-label={`Open ${place.name} website`}
+              title={`Open ${place.name} website`}
+            >
+              <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" focusable="false">
+                <path
+                  fill="currentColor"
+                  d="M12 2.8a9.2 9.2 0 1 1 0 18.4 9.2 9.2 0 0 1 0-18.4Zm0 1.8c-.8.8-1.5 2-1.9 3.5h3.8c-.4-1.5-1.1-2.7-1.9-3.5Zm-3.8 3.5c.3-1.1.8-2.1 1.4-3A7.5 7.5 0 0 0 5.2 8.1h3Zm7.6 0h3a7.5 7.5 0 0 0-4.4-3c.6.9 1.1 1.9 1.4 3Zm-6.1 1.8a14 14 0 0 0 0 4.2h4.6a14 14 0 0 0 0-4.2H9.7Zm-1.8 0H4.6a7.6 7.6 0 0 0 0 4.2h3.3a16.1 16.1 0 0 1 0-4.2Zm8.2 0a16.1 16.1 0 0 1 0 4.2h3.3a7.6 7.6 0 0 0 0-4.2h-3.3Zm-6 6c.4 1.5 1.1 2.7 1.9 3.5.8-.8 1.5-2 1.9-3.5h-3.8Zm-4.9 0a7.5 7.5 0 0 0 4.4 3c-.6-.9-1.1-1.9-1.4-3h-3Zm10.6 0c-.3 1.1-.8 2.1-1.4 3a7.5 7.5 0 0 0 4.4-3h-3Z"
+                />
+              </svg>
+              <span class="visually-hidden">Open website</span>
+            </a>
+          )}
+          {reservationLink && (
+            <a
+              class="place-card-action-link place-card-action-link--reservation"
+              href={reservationLink.url}
+              target="_blank"
+              rel="noopener noreferrer"
+              aria-label={`Find a table at ${place.name} via ${reservationLink.label}`}
+              title={`Find a Table - ${reservationLink.label}`}
+            >
+              <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" focusable="false">
+                <path
+                  fill="currentColor"
+                  d="M7.4 3.2c.5 0 .9.4.9.9v6.1c0 1.1-.7 2.1-1.8 2.4v6.7a.9.9 0 1 1-1.8 0v-6.7a2.5 2.5 0 0 1-1.8-2.4V4.1a.9.9 0 1 1 1.8 0v5.7h.9V4.1c0-.5.4-.9.9-.9Zm4.6.4a6.8 6.8 0 0 1 6.8 6.8v8.9a.9.9 0 1 1-1.8 0v-4.1h-5a5.8 5.8 0 0 1 0-11.6Zm0 1.8a4 4 0 0 0 0 8h5v-3a5 5 0 0 0-5-5Z"
+                />
+              </svg>
+              <span class="visually-hidden">Find a table</span>
+            </a>
+          )}
+          {hasReservationOptions && (
+            <details class="place-card-reservation-menu">
+              <summary
+                class="place-card-action-link place-card-action-link--reservation"
+                aria-label={`Show reservation options for ${place.name}`}
+                title="Find a Table"
+              >
+                <span class="place-card-reservation-menu-icon" aria-hidden="true">
+                  <svg
+                    class="place-card-reservation-menu-symbol"
+                    viewBox="0 0 24 24"
+                    width="16"
+                    height="16"
+                    aria-hidden="true"
+                    focusable="false"
+                  >
+                    <path
+                      fill="currentColor"
+                      d="M7.4 3.2c.5 0 .9.4.9.9v6.1c0 1.1-.7 2.1-1.8 2.4v6.7a.9.9 0 1 1-1.8 0v-6.7a2.5 2.5 0 0 1-1.8-2.4V4.1a.9.9 0 1 1 1.8 0v5.7h.9V4.1c0-.5.4-.9.9-.9Zm4.6.4a6.8 6.8 0 0 1 6.8 6.8v8.9a.9.9 0 1 1-1.8 0v-4.1h-5a5.8 5.8 0 0 1 0-11.6Zm0 1.8a4 4 0 0 0 0 8h5v-3a5 5 0 0 0-5-5Z"
+                    />
+                  </svg>
+                  <svg
+                    class="place-card-reservation-caret"
+                    viewBox="0 0 16 16"
+                    width="9"
+                    height="9"
+                    aria-hidden="true"
+                    focusable="false"
+                  >
+                    <path fill="currentColor" d="M4.1 5.7 8 9.6l3.9-3.9 1.1 1.1-5 5-5-5 1.1-1.1Z" />
+                  </svg>
+                </span>
+                <span class="visually-hidden">Find a table</span>
+              </summary>
+              <div class="place-card-reservation-options">
+                {reservationLinks.map((link) => (
+                  <a
+                    class="place-card-reservation-option"
+                    href={link.url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    aria-label={`Find a table at ${place.name} via ${link.label}`}
+                  >
+                    {link.label}
+                  </a>
+                ))}
+              </div>
+            </details>
+          )}
           {siteConfig.placeCard.showMapLink && (
             <a
-              class="place-card-map-link"
+              class="place-card-map-link place-card-action-link place-card-action-link--maps"
               href={place.maps_url}
               target="_blank"
               rel="noopener noreferrer"
@@ -405,12 +550,6 @@ const displayedPlaceAttribution = showPlaceAttribution ? placeAttribution : null
         </div>
       </div>
       <div class="place-card-meta-row">
-        <span
-          class="place-card-marker"
-          aria-hidden="true"
-          title={place.primary_category ?? siteConfig.placeCard.savedPlaceLabel}
-          set:html={markerSvg}
-        />
         {metaParts.length > 0 && <p class="meta-copy">{metaParts.join(" · ")}</p>}
         {hasMetaPills && (
           <div class="stats-row ui-meta-row place-card-stats place-card-meta-stats">

@@ -15,6 +15,8 @@ from gmaps_scraper.place_scraper import (
     _PLACE_ABOUT_TAB_CLICK_JS,
     _PLACE_DETAIL_READY_JS,
     _PLACE_JS_EXTRACTOR,
+    _PLACE_RESERVATION_BUTTON_CLICK_JS,
+    _PLACE_RESERVATION_DIALOG_JS,
     _PLACE_REVIEW_TAB_CLICK_JS,
     _PLACE_REVIEW_TOPIC_JS,
     _PLACE_SEARCH_RESULT_CLICK_JS,
@@ -26,6 +28,7 @@ from gmaps_scraper.place_scraper import (
     _clean_category_text,
     _clean_description_text,
     _clean_name_text,
+    _collect_reservation_dialog_snapshot,
     _extract_address_from_lines,
     _extract_admission_price_from_lines,
     _extract_preview_address,
@@ -40,10 +43,12 @@ from gmaps_scraper.place_scraper import (
     _looks_like_google_maps_place_url,
     _merge_llm_place_fields,
     _merge_place_sources,
+    _merge_reservation_links,
     _normalize_google_place_id,
     _normalize_phone_candidate,
     _normalize_photo_url,
     _normalize_preview_website,
+    _normalize_reservation_links,
     _normalize_review_topics,
     _normalize_reviews,
     _normalize_website,
@@ -166,6 +171,83 @@ class PlaceScraperTests(unittest.TestCase):
             self.assertGreaterEqual(context.page.evaluate_calls, 2)
             review_signal.assert_not_called()
             self.assertEqual(screenshot_path.read_bytes(), b"screenshot")
+
+    def test_collect_reservation_dialog_snapshot_clicks_and_reads_provider_links(self) -> None:
+        class _FakePage:
+            def __init__(self) -> None:
+                self.waited: list[int] = []
+
+            def evaluate(self, script: object) -> object:
+                if script == _PLACE_RESERVATION_BUTTON_CLICK_JS:
+                    return True
+                if script == _PLACE_RESERVATION_DIALOG_JS:
+                    return [{"label": "TableCheck", "url": "https://www.tablecheck.com/example"}]
+                return None
+
+            def wait_for_timeout(self, value: int) -> None:
+                self.waited.append(value)
+
+        page = _FakePage()
+
+        self.assertEqual(
+            _collect_reservation_dialog_snapshot(page, timeout_ms=30_000),
+            {"reservation_links": [{"label": "TableCheck", "url": "https://www.tablecheck.com/example"}]},
+        )
+        self.assertEqual(page.waited, [1_500])
+
+    def test_reservation_dialog_extractor_trusts_provider_popup_without_dialog_role(self) -> None:
+        self.assertIn("continue with", _PLACE_RESERVATION_DIALOG_JS)
+        self.assertIn("about these providers", _PLACE_RESERVATION_DIALOG_JS)
+        self.assertIn("hasTrustedProviderRoot", _PLACE_RESERVATION_DIALOG_JS)
+        self.assertIn("closeProviderRoot", _PLACE_RESERVATION_DIALOG_JS)
+        self.assertIn("KeyboardEvent", _PLACE_RESERVATION_DIALOG_JS)
+
+    def test_reservation_extractors_do_not_match_generic_booking_copy(self) -> None:
+        for script in (
+            _PLACE_JS_EXTRACTOR,
+            _PLACE_RESERVATION_BUTTON_CLICK_JS,
+            _PLACE_RESERVATION_DIALOG_JS,
+        ):
+            self.assertIn("book a table", script)
+            self.assertNotIn("|booking", script)
+            self.assertNotIn("book(?: a table)?", script)
+
+    def test_collect_reservation_dialog_snapshot_skips_when_no_button(self) -> None:
+        class _FakePage:
+            def __init__(self) -> None:
+                self.waited: list[int] = []
+
+            def evaluate(self, script: object) -> object:
+                if script == _PLACE_RESERVATION_BUTTON_CLICK_JS:
+                    return False
+                raise AssertionError("dialog should not be read")
+
+            def wait_for_timeout(self, value: int) -> None:
+                self.waited.append(value)
+
+        page = _FakePage()
+
+        self.assertEqual(_collect_reservation_dialog_snapshot(page, timeout_ms=30_000), {})
+        self.assertEqual(page.waited, [])
+
+    def test_merge_reservation_links_dedupes_overview_and_dialog_links(self) -> None:
+        merged = _merge_reservation_links(
+            {"reservation_links": [{"label": "Resy", "url": "https://resy.com/example"}]},
+            {
+                "reservation_links": [
+                    {"label": "Resy duplicate", "url": "https://resy.com/example"},
+                    {"label": "TableCheck", "url": "https://www.tablecheck.com/example"},
+                ]
+            },
+        )
+
+        self.assertEqual(
+            merged["reservation_links"],
+            [
+                {"label": "Resy", "url": "https://resy.com/example"},
+                {"label": "TableCheck", "url": "https://www.tablecheck.com/example"},
+            ],
+        )
 
     def test_collect_place_snapshot_wraps_browser_launch_failures(self) -> None:
         with patch(
@@ -2156,6 +2238,29 @@ class PlaceScraperTests(unittest.TestCase):
             "https://lh3.googleusercontent.com/p/example=s680-w680-h510",
         )
 
+    def test_build_place_details_preserves_reservation_links(self) -> None:
+        details = _build_place_details(
+            "https://www.google.com/maps/place/Open+Kitchen",
+            resolved_url="https://www.google.com/maps/place/Open+Kitchen",
+            snapshot={
+                "name": "Open Kitchen",
+                "reservation_links": [
+                    {"label": "TableCheck", "url": "https://www.tablecheck.com/example"},
+                    {"label": "Bad", "url": "javascript:alert(1)"},
+                ],
+                "body_text": "Open Kitchen",
+            },
+        )
+
+        self.assertEqual(
+            [link.to_dict() for link in details.reservation_links],
+            [{"label": "TableCheck", "url": "https://www.tablecheck.com/example"}],
+        )
+        self.assertEqual(
+            details.to_dict()["reservation_links"],
+            [{"label": "TableCheck", "url": "https://www.tablecheck.com/example"}],
+        )
+
     def test_build_place_details_preserves_google_place_id(self) -> None:
         details = _build_place_details(
             "https://www.google.com/maps/place/Den",
@@ -2639,6 +2744,56 @@ class PlaceScraperTests(unittest.TestCase):
         self.assertIsNone(_normalize_website("javascript:alert(1)"))
         self.assertIsNone(_normalize_website("mailto:test@example.com"))
         self.assertIsNone(_normalize_website("example.com"))
+
+    def test_normalize_reservation_links_keeps_http_provider_links(self) -> None:
+        links = _normalize_reservation_links(
+            [
+                {"label": "Resy", "url": "https://resy.com/cities/lisbon/example"},
+                {"label": "Duplicate", "url": "https://resy.com/cities/lisbon/example"},
+                {"label": "Bad", "url": "javascript:alert(1)"},
+            ]
+        )
+
+        self.assertEqual(
+            [link.to_dict() for link in links],
+            [{"label": "Resy", "url": "https://resy.com/cities/lisbon/example"}],
+        )
+
+    def test_normalize_reservation_links_cleans_google_dialog_labels(self) -> None:
+        links = _normalize_reservation_links(
+            [
+                {
+                    "label": "\ue878 Find a table tablecheck.com",
+                    "url": "https://www.tablecheck.com/markstokyo/reserve",
+                },
+                {
+                    "label": "ikyu.com ikyu.com ikyu.com",
+                    "url": "https://restaurant.ikyu.com/112767/?ikgo=2",
+                },
+                {
+                    "label": "autoreserve.com autoreserve.com autoreserve.com",
+                    "url": "https://autoreserve.com/restaurants/example",
+                },
+                {
+                    "label": "\ue157 sg-management.jp \ue157sg-management.jp sg-management.jp",
+                    "url": "https://sg-management.jp/reserve/",
+                },
+                {
+                    "label": "Reserve a table",
+                    "url": "https://www.google.com/maps/reserve/v/dine/c/example",
+                },
+            ]
+        )
+
+        self.assertEqual(
+            [link.to_dict() for link in links],
+            [
+                {"label": "TableCheck", "url": "https://www.tablecheck.com/markstokyo/reserve"},
+                {"label": "Ikyu", "url": "https://restaurant.ikyu.com/112767/?ikgo=2"},
+                {"label": "AutoReserve", "url": "https://autoreserve.com/restaurants/example"},
+                {"label": "SG Management", "url": "https://sg-management.jp/reserve/"},
+            ],
+        )
 
     def test_merge_place_sources_only_backfills_missing_fields(self) -> None:
         merged = _merge_place_sources(

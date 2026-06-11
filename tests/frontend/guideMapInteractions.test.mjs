@@ -138,9 +138,8 @@ describe("guide map interactions", () => {
       'card.scrollIntoView({ behavior: "smooth", block: "center", inline: "nearest" });',
     );
     expect(guideMap).toContain("selectPlace(placeId, { expandCollapsed: true });");
-    expect(guideMap).toContain(
-      'card.querySelectorAll<HTMLButtonElement>("[data-place-card-map-select]")',
-    );
+    expect(guideMap).not.toContain("data-place-card-map-select");
+    expect(guideMap).toContain("a, button, input, select, textarea, summary, [role='button']");
   });
 
   it("tightens the mobile guide chrome to save vertical space", () => {
@@ -188,21 +187,31 @@ describe("guide map interactions", () => {
     const placeCard = readSource("src/components/PlaceCard.astro");
     const css = readSource("src/styles/global.css");
 
-    expect(placeCard).toContain(
-      'import { buildMapMarkerSvg, getMapMarkerColors } from "../lib/mapMarkerIcons";',
-    );
-    expect(placeCard).toContain(
-      "getMapMarkerColors(place.marker_icon, { topPick: featured || place.top_pick })",
-    );
-    expect(placeCard).toContain(
-      "const hasMapCoordinates = place.lat !== null && place.lng !== null;",
-    );
+    expect(placeCard).not.toContain("buildMapMarkerSvg");
+    expect(placeCard).not.toContain("getMapMarkerColors");
+    expect(placeCard).not.toContain("data-place-card-map-select");
     expect(placeCard).toContain('class="place-card-name-row"');
-    expect(placeCard).toContain('class="place-card-marker"');
-    expect(placeCard).toContain("{hasMapCoordinates && (");
-    expect(placeCard).toContain("data-place-card-map-select");
-    expect(placeCard).toContain("aria-label={`Show ${place.name} on the guide map`}");
-    expect(placeCard).toContain('class="place-card-map-link"');
+    expect(placeCard).toContain("place-card-map-link");
+    expect(placeCard).toContain("place-card-action-link--maps");
+    expect(placeCard).toContain(
+      "const reservationLink = reservationLinks.length === 1 ? reservationLinks[0] : null;",
+    );
+    expect(placeCard).toContain("const hasReservationOptions = reservationLinks.length > 1;");
+    expect(placeCard).not.toContain("place-card-action-link--website");
+    expect(placeCard).toContain("title={`Find a Table - ${reservationLink.label}`}");
+    expect(placeCard).toContain('class="place-card-reservation-menu"');
+    expect(placeCard).toContain('class="place-card-reservation-caret"');
+    expect(placeCard).toContain('class="place-card-reservation-options"');
+    expect(placeCard).toContain('class="place-card-reservation-option"');
+    expect(placeCard).toContain(
+      "const previousMichelinStarDisplaySignal = previousMichelinStarSignals.reduce",
+    );
+    expect(placeCard).toContain(
+      "const previousMichelinStarPeakSignal = previousMichelinStarSignals.reduce",
+    );
+    expect(placeCard).toContain(
+      "At most ${trustSignalMichelinStarCount(previousMichelinStarPeakSignal)} MICHELIN stars",
+    );
     expect(placeCard).toContain("aria-label={`Open ${place.name} in Google Maps`}");
     expect(placeCard).toContain('src="/icons/google-maps.svg"');
     expect(placeCard).not.toContain("data-image-component");
@@ -210,13 +219,16 @@ describe("guide map interactions", () => {
     expect(placeCard).toContain("{siteConfig.placeCard.mapsLabel}</span>");
     expect(placeCard).not.toContain("badge badge--featured");
     expect(placeCard).not.toContain(">Open in Google Maps<");
-    expect(placeCard).toContain("set:html={markerSvg}");
+    expect(placeCard).not.toContain("set:html={markerSvg}");
     expectCssToContain(css, ".place-card-map-link");
     expectCssToContain(css, ".place-card-map-link img");
     expectCssToContain(css, ".place-card-map-link-label");
-    expectCssToContain(css, ".place-card-marker");
+    expectCssToContain(css, ".place-card-reservation-menu");
+    expectCssToContain(css, ".place-card-reservation-caret");
+    expectCssToContain(css, ".place-card-reservation-options");
+    expectCssToContain(css, ".place-card-reservation-option");
+    expect(css).not.toContain(".place-card-map-select");
     expectCssToContain(css, ".place-card-name-row");
-    expectCssToContain(css, "width: 1.8rem;");
     expectCssToContain(css, "display: inline-flex;");
     expectCssToContain(css, "width: 2.45rem;");
     expectCssToContain(css, "justify-content: center;");

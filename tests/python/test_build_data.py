@@ -24,6 +24,7 @@ from scripts.pipeline_models import (
     Guide,
     ListAuthor,
     NormalizedPlace,
+    PlaceReservationLink,
     RawPlace,
     RawSavedList,
     SourceConfig,
@@ -168,6 +169,50 @@ class BuildDataTests(unittest.TestCase):
         self.assertEqual(guide.author.name, "Curator Name")
         self.assertEqual(guide.author.photo_url, "https://example.com/curator.jpg")
         self.assertEqual(guide.author.profile_id, "curator-id")
+
+    def test_normalize_guide_exposes_website_and_reservation_links(self) -> None:
+        raw = RawSavedList(
+            configured_source_type="google_list_url",
+            title="Lisbon, Portugal",
+            places=[
+                RawPlace(
+                    name="Open Kitchen",
+                    maps_url="https://maps.google.com/?cid=111",
+                    cid="111",
+                )
+            ],
+        )
+        place_id = build_data.stable_place_id(raw.places[0], source_type=raw.configured_source_type)
+        enrichment_cache = {
+            place_id: EnrichmentCacheEntry(
+                fetched_at="2026-04-20T00:00:00+00:00",
+                source="google_maps_page",
+                query="Open Kitchen, Lisbon, Portugal",
+                matched=True,
+                place=EnrichmentPlace(
+                    display_name="Open Kitchen",
+                    google_maps_uri="https://www.google.com/maps/place/Open+Kitchen",
+                    website="https://openkitchen.example/",
+                    reservation_links=[
+                        PlaceReservationLink(
+                            label="Resy",
+                            url="https://resy.com/cities/lisbon/open-kitchen",
+                        )
+                    ],
+                ),
+            )
+        }
+
+        with patch.object(build_data, "read_json", return_value={}):
+            guide = build_data.normalize_guide("lisbon-portugal", raw, enrichment_cache=enrichment_cache)
+
+        self.assertEqual(guide.places[0].website, "https://openkitchen.example/")
+        self.assertEqual(
+            [link.model_dump(mode="json") for link in guide.places[0].reservation_links],
+            [{"label": "Resy", "url": "https://resy.com/cities/lisbon/open-kitchen"}],
+        )
+        self.assertIsNotNone(guide.places[0].provenance.website)
+        self.assertIsNotNone(guide.places[0].provenance.reservation_links)
 
     def test_normalize_guide_allows_author_override(self) -> None:
         raw = RawSavedList(
@@ -1689,7 +1734,9 @@ class BuildDataTests(unittest.TestCase):
 
         self.assertEqual(
             called_urls,
-            ["https://maps.google.com/?cid=6924437521980544303&hl=en&gl=us"],
+            [
+                "https://maps.google.com/?cid=6924437521980544303&hl=en&gl=us",
+            ],
         )
         self.assertTrue(entry.matched)
         self.assertIsNotNone(entry.place)
@@ -3673,6 +3720,44 @@ class BuildDataTests(unittest.TestCase):
         self.assertEqual(
             enrichment.photo_url,
             "https://lh3.googleusercontent.com/p/example=s680-w680-h510",
+        )
+
+    def test_normalize_place_page_enrichment_carries_reservation_links(self) -> None:
+        scraper_link = SimpleNamespace(
+            label="TableCheck",
+            url="https://www.tablecheck.com/open-kitchen/reserve",
+        )
+        enrichment = build_data.normalize_place_page_enrichment(
+            SimpleNamespace(
+                source_url="https://www.google.com/maps/place/Open+Kitchen",
+                resolved_url="https://www.google.com/maps/place/Open+Kitchen",
+                name="Open Kitchen",
+                category="Restaurant",
+                rating=4.7,
+                review_count=120,
+                address="1 Example St, Lisbon",
+                website="https://openkitchen.example/",
+                reservation_links=[
+                    {"label": "Resy", "url": "https://resy.com/cities/lisbon/open-kitchen"},
+                    scraper_link,
+                    {"label": "Reserve a table", "url": "https://www.google.com/maps/reserve/v/dine/c/example"},
+                    {"label": "Bad", "url": "javascript:alert(1)"},
+                ],
+                phone="+351 21 000 0000",
+                plus_code=None,
+                description=None,
+                limited_view=False,
+                status=None,
+            )
+        )
+
+        self.assertEqual(enrichment.website, "https://openkitchen.example/")
+        self.assertEqual(
+            [link.model_dump(mode="json") for link in enrichment.reservation_links],
+            [
+                {"label": "Resy", "url": "https://resy.com/cities/lisbon/open-kitchen"},
+                {"label": "TableCheck", "url": "https://www.tablecheck.com/open-kitchen/reserve"},
+            ],
         )
 
     def test_normalize_place_page_enrichment_carries_optional_panel_cache_fields(self) -> None:
@@ -6188,9 +6273,16 @@ class BuildDataTests(unittest.TestCase):
                     display_name="Coffee House",
                     formatted_address="1 Shibuya, Tokyo, Japan",
                     google_maps_uri="https://www.google.com/maps/place/Coffee+House",
+                    website="https://coffee-house.example/",
                     primary_type="coffee_shop",
                     primary_type_display_name="Coffee shop",
                     types=["coffee_shop"],
+                    reservation_links=[
+                        PlaceReservationLink(
+                            label="TableCheck",
+                            url="https://www.tablecheck.com/coffee-house/reserve",
+                        )
+                    ],
                 ),
             )
         }
@@ -6200,11 +6292,66 @@ class BuildDataTests(unittest.TestCase):
 
         self.assertEqual(place.maps_url, "https://www.google.com/maps/place/Coffee+House")
         self.assertEqual(place.provenance.maps_url.source, "google_maps_page")
+        self.assertEqual(place.website, "https://coffee-house.example/")
+        self.assertIsNotNone(place.provenance.website)
+        assert place.provenance.website is not None
+        self.assertEqual(place.provenance.website.source, "google_maps_page")
         self.assertEqual(place.provenance.primary_category.source, "google_maps_page")
         self.assertIn(
             "google_maps_page",
             {field.source for field in place.provenance.tags},
         )
+        self.assertIsNotNone(place.provenance.reservation_links)
+        assert place.provenance.reservation_links is not None
+        self.assertEqual(place.provenance.reservation_links.source, "google_maps_page")
+
+    def test_merged_page_enrichment_uses_google_maps_page_contact_provenance(self) -> None:
+        raw = RawSavedList(
+            title="Tokyo, Japan",
+            places=[
+                RawPlace(
+                    name="Coffee House",
+                    address="1 Shibuya, Tokyo, Japan",
+                    maps_url="https://maps.google.com/?cid=1",
+                    cid="111",
+                ),
+            ],
+        )
+        place_id = build_data.stable_place_id(raw.places[0])
+        enrichment_cache = {
+            place_id: EnrichmentCacheEntry(
+                fetched_at="2026-04-01T00:00:00+00:00",
+                refresh_after="2026-04-08T00:00:00+00:00",
+                source="google_places_api",
+                merged_sources=["google_maps_page", "google_places_api"],
+                query="Coffee House, Tokyo",
+                matched=True,
+                score=45,
+                place=EnrichmentPlace(
+                    display_name="Coffee House",
+                    formatted_address="1 Shibuya, Tokyo, Japan",
+                    google_maps_uri="https://www.google.com/maps/place/Coffee+House",
+                    website="https://coffee-house.example/",
+                    reservation_links=[
+                        PlaceReservationLink(
+                            label="TableCheck",
+                            url="https://www.tablecheck.com/coffee-house/reserve",
+                        )
+                    ],
+                ),
+            )
+        }
+
+        guide = build_data.normalize_guide("tokyo-japan", raw, enrichment_cache=enrichment_cache)
+        place = guide.places[0]
+
+        self.assertEqual(place.website, "https://coffee-house.example/")
+        self.assertIsNotNone(place.provenance.website)
+        assert place.provenance.website is not None
+        self.assertEqual(place.provenance.website.source, "google_maps_page")
+        self.assertIsNotNone(place.provenance.reservation_links)
+        assert place.provenance.reservation_links is not None
+        self.assertEqual(place.provenance.reservation_links.source, "google_maps_page")
 
     def test_vibe_tags_match_snake_case_enrichment_types(self) -> None:
         vibes = build_data.derive_vibe_tags(
@@ -11402,6 +11549,44 @@ class BuildDataTests(unittest.TestCase):
             )
 
         self.assertNotEqual(minimal_signature, richer_signature)
+
+    def test_cache_refresh_reason_invalidates_pre_contact_field_policy_entries(self) -> None:
+        place = RawPlace(
+            name="Bilmonte",
+            address=None,
+            maps_url="https://www.google.com/maps/search/?api=1&query=Bilmonte",
+            cid="1343378048703211865",
+            lat=41.3894089,
+            lng=2.1636435,
+        )
+        with patch.object(build_data, "ENRICHMENT_CONTACT_FIELDS_VERSION", 0):
+            legacy_signature = build_data.enrichment_input_signature(
+                place,
+                city_name="Barcelona",
+                country_name="Spain",
+            )
+        cache_entry = EnrichmentCacheEntry(
+            fetched_at=datetime.now(UTC).isoformat(),
+            refresh_after=(datetime.now(UTC) + timedelta(days=30)).isoformat(),
+            source="google_places_api",
+            query="Bilmonte, Barcelona, Spain",
+            input_signature=legacy_signature,
+            matched=True,
+            score=build_data.STRONG_MATCH_SCORE,
+            place=EnrichmentPlace(
+                display_name="Bilmonte",
+                formatted_address="Carrer de Mallorca, Barcelona, Spain",
+            ),
+        )
+
+        refresh_reason = build_data.cache_refresh_reason(
+            place,
+            cache_entry,
+            city_name="Barcelona",
+            country_name="Spain",
+        )
+
+        self.assertEqual(refresh_reason, "raw-place-changed")
 
     def test_cache_refresh_reason_invalidates_legacy_unbiased_name_only_search_entry(self) -> None:
         place = RawPlace(
