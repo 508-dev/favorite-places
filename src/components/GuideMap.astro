@@ -1,6 +1,5 @@
 ---
 
-import { getImage } from "astro:assets";
 import { siteConfig } from "../data/site";
 import type { Place } from "../lib/types";
 
@@ -15,41 +14,22 @@ const placePhotosEnabled = (import.meta.env.PUBLIC_PLACE_PHOTOS || "on").toLower
 const mapProvider =
   requestedMapProvider === "leaflet" ? "leaflet" : configuredGoogleMapsApiKey ? "google" : "leaflet";
 const googleMapsApiKey = mapProvider === "google" ? configuredGoogleMapsApiKey : "";
-const resolveMapPhotoPath = async (photoPath: string | null | undefined) => {
-  if (!photoPath) return null;
-  if (/^https?:\/\//i.test(photoPath)) return photoPath;
-
-  try {
-    const optimized = await getImage({
-      src: photoPath,
-      width: 480,
-      height: 320,
-      format: "webp",
-    });
-    return optimized.src;
-  } catch {
-    return photoPath;
-  }
-};
-
-const mapPlaces = await Promise.all(
-  places
-    .filter((place) => place.lat !== null && place.lng !== null)
-    .map(async (place) => ({
-      id: place.id,
-      name: place.name,
-      category: place.primary_category ?? "Saved place",
-      markerIcon: place.marker_icon,
-      neighborhood: place.neighborhood,
-      lat: place.lat,
-      lng: place.lng,
-      mapsUrl: place.maps_url,
-      mainPhotoPath: await resolveMapPhotoPath(place.main_photo_path),
-      rating: place.rating,
-      userRatingCount: place.user_rating_count,
-      topPick: place.top_pick,
-    })),
-);
+const mapPlaces = places
+  .filter((place) => place.lat !== null && place.lng !== null)
+  .map((place) => ({
+    id: place.id,
+    name: place.name,
+    category: place.primary_category ?? "Saved place",
+    markerIcon: place.marker_icon,
+    neighborhood: place.neighborhood,
+    lat: place.lat,
+    lng: place.lng,
+    mapsUrl: place.maps_url,
+    mainPhotoPath: place.main_photo_path,
+    rating: place.rating,
+    userRatingCount: place.user_rating_count,
+    topPick: place.top_pick,
+  }));
 ---
 
 {
@@ -92,13 +72,14 @@ const mapPlaces = await Promise.all(
         ></p>
       </div>
       <div class="map-stage">
-        <div
+        <section
           class="guide-map"
           data-guide-map
           data-map-provider={mapProvider}
           data-google-maps-api-key={googleMapsApiKey}
           data-place-photos-enabled={placePhotosEnabled ? "true" : "false"}
           data-places={JSON.stringify(mapPlaces)}
+          aria-label="Places map"
         />
 
         <noscript>
@@ -118,6 +99,7 @@ const mapPlaces = await Promise.all(
 <script>
   import L from "leaflet";
   import "leaflet/dist/leaflet.css";
+  import { installMapAccessibility } from "../lib/mapAccessibility";
   import {
     buildMapMarkerDataUrl,
     buildMapMarkerSvg,
@@ -1391,6 +1373,7 @@ const mapPlaces = await Promise.all(
             )
           : initLeafletRuntime(mapElement, places, handleMarkerSelect, handlePopupDetailsSelect);
 
+      installMapAccessibility(panel ?? mapElement, "Places map");
       runtime.setVisiblePlaces(currentVisiblePlaceIds);
       mapElement.guideMap = runtime.rawMap;
       element.dataset.initialized = "true";

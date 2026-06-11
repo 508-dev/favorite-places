@@ -1,6 +1,5 @@
 ---
 
-import { Image } from "astro:assets";
 import "../styles/global.css";
 import "favorite-places:site-theme";
 import { siteConfig } from "../data/site";
@@ -73,18 +72,7 @@ const jsonLdEntries = (Array.isArray(jsonLd) ? jsonLd : jsonLd ? [jsonLd] : []).
       {
         siteConfig.logo ? (
           <a class="ui-site-title" href={siteConfig.logo.href} aria-label={siteConfig.logo.alt}>
-            {/^https?:\/\//i.test(siteConfig.logo.src) ? (
-              <img src={siteConfig.logo.src} alt={siteConfig.logo.alt} loading="eager" decoding="async" />
-            ) : (
-              <Image
-                src={siteConfig.logo.src}
-                alt={siteConfig.logo.alt}
-                width={168}
-                height={48}
-                loading="eager"
-                decoding="async"
-              />
-            )}
+            <img src={siteConfig.logo.src} alt={siteConfig.logo.alt} loading="eager" decoding="async" />
           </a>
         ) : (
           <a class="ui-site-title ui-site-title-text" href="/" aria-label={siteConfig.siteName}>
