@@ -3326,10 +3326,22 @@ def build_place_provenance(
     if normalized.website:
         provenance.website = google_places_field(normalized.website, enrichment_cache_entry)
     if normalized.reservation_links:
-        provenance.reservation_links = google_places_field(
-            [link.model_dump(mode="json") for link in normalized.reservation_links],
-            enrichment_cache_entry,
-        )
+        reservation_link_values = [link.model_dump(mode="json") for link in normalized.reservation_links]
+        if enrichment_cache_entry is not None and (
+            enrichment_cache_entry.source == "google_maps_page"
+            or "google_maps_page" in enrichment_cache_entry.merged_sources
+        ):
+            provenance.reservation_links = PlaceField(
+                value=reservation_link_values,
+                source="google_maps_page",
+                fetched_at=enrichment_cache_entry.fetched_at,
+                expires_at=enrichment_cache_entry.refresh_after,
+            )
+        else:
+            provenance.reservation_links = google_places_field(
+                reservation_link_values,
+                enrichment_cache_entry,
+            )
     provenance.tags = build_tag_provenance(
         raw=raw,
         raw_place=raw_place,
@@ -8827,7 +8839,7 @@ def build_place_page_candidate_urls(
         localized_maps_url=localized_maps_url,
         search_url=search_url,
     ):
-        candidates = [search_url, localized_maps_url, cid_url]
+        candidates = [cid_url, search_url, localized_maps_url]
         return dedupe_urls([*priority_candidates, *[url for url in candidates if url is not None]])
 
     candidates: list[str] = []

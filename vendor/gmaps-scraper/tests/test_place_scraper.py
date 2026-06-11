@@ -199,6 +199,8 @@ class PlaceScraperTests(unittest.TestCase):
         self.assertIn("continue with", _PLACE_RESERVATION_DIALOG_JS)
         self.assertIn("about these providers", _PLACE_RESERVATION_DIALOG_JS)
         self.assertIn("hasTrustedProviderRoot", _PLACE_RESERVATION_DIALOG_JS)
+        self.assertIn("closeProviderRoot", _PLACE_RESERVATION_DIALOG_JS)
+        self.assertIn("KeyboardEvent", _PLACE_RESERVATION_DIALOG_JS)
 
     def test_collect_reservation_dialog_snapshot_skips_when_no_button(self) -> None:
         class _FakePage:

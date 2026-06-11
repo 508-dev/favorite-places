@@ -1351,6 +1351,24 @@ _PLACE_RESERVATION_DIALOG_JS = r"""
   const providerRoots = dialogs.length ? dialogs : providerPanels.slice(0, 1);
   const roots = providerRoots.length ? providerRoots : [document.body];
   const hasTrustedProviderRoot = providerRoots.length > 0;
+  const closeProviderRoot = (root) => {
+    const closePattern = /(^|\b)(close|dismiss|cancel|modal-close|閉じ|關閉|关闭|닫기|닫|×)(\b|$)/i;
+    const closeCandidates = "button, div[role='button'], [aria-label], [title]";
+    for (const button of root.querySelectorAll(closeCandidates)) {
+      const label = cleanLine([
+        button.getAttribute("aria-label"),
+        button.getAttribute("title"),
+        button.innerText,
+        button.textContent,
+        button.className,
+      ].filter(Boolean).join(" "));
+      if (closePattern.test(label)) {
+        button.click();
+        return true;
+      }
+    }
+    return false;
+  };
   const links = [];
   const seen = new Set();
   for (const root of roots) {
@@ -1391,21 +1409,13 @@ _PLACE_RESERVATION_DIALOG_JS = r"""
       break;
     }
   }
-  for (const dialog of dialogs) {
-    for (const button of dialog.querySelectorAll("button, div[role='button']")) {
-      const label = cleanLine(
-        button.getAttribute("aria-label")
-        || button.getAttribute("title")
-        || button.innerText
-        || button.textContent
-        || "",
-      );
-      if (/^(close|閉じる|關閉|关闭|닫기)$/i.test(label)) {
-        button.click();
-        return links;
-      }
+  for (const root of providerRoots) {
+    if (closeProviderRoot(root)) {
+      return links;
     }
   }
+  document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+  window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
   return links;
 }
 """

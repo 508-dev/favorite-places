@@ -1576,12 +1576,12 @@ class BuildDataTests(unittest.TestCase):
                 country_name="Japan",
             ),
             [
+                "https://maps.google.com/?cid=6924437521980544303&hl=en&gl=us",
                 (
                     "https://www.google.com/maps/search/?api=1"
                     "&query=Locale%2C+Tokyo%2C+Japan&hl=en&gl=us"
                 ),
                 "https://www.google.com/maps/search/?api=1&query=Locale&hl=en&gl=us",
-                "https://maps.google.com/?cid=6924437521980544303&hl=en&gl=us",
             ],
         )
 
@@ -1735,10 +1735,7 @@ class BuildDataTests(unittest.TestCase):
         self.assertEqual(
             called_urls,
             [
-                (
-                    "https://www.google.com/maps/search/?api=1"
-                    "&query=Locale%2C+Tokyo%2C+Japan&hl=en&gl=us"
-                )
+                "https://maps.google.com/?cid=6924437521980544303&hl=en&gl=us",
             ],
         )
         self.assertTrue(entry.matched)
@@ -6279,6 +6276,12 @@ class BuildDataTests(unittest.TestCase):
                     primary_type="coffee_shop",
                     primary_type_display_name="Coffee shop",
                     types=["coffee_shop"],
+                    reservation_links=[
+                        PlaceReservationLink(
+                            label="TableCheck",
+                            url="https://www.tablecheck.com/coffee-house/reserve",
+                        )
+                    ],
                 ),
             )
         }
@@ -6293,6 +6296,9 @@ class BuildDataTests(unittest.TestCase):
             "google_maps_page",
             {field.source for field in place.provenance.tags},
         )
+        self.assertIsNotNone(place.provenance.reservation_links)
+        assert place.provenance.reservation_links is not None
+        self.assertEqual(place.provenance.reservation_links.source, "google_maps_page")
 
     def test_vibe_tags_match_snake_case_enrichment_types(self) -> None:
         vibes = build_data.derive_vibe_tags(

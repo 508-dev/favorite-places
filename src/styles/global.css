@@ -1035,6 +1035,11 @@
       transform 160ms ease;
   }
 
+  .place-card:has(.place-card-reservation-menu[open]) {
+    overflow: visible;
+    z-index: 4;
+  }
+
   .place-card[hidden] {
     display: none;
   }
@@ -1553,7 +1558,6 @@
     white-space: nowrap;
   }
 
-  .place-card-map-select,
   .place-card-action-link {
     width: 2.45rem;
     min-height: 2.3rem;
@@ -1580,10 +1584,6 @@
       transform 160ms ease;
   }
 
-  .place-card-map-select {
-    color: var(--accent-strong);
-  }
-
   .place-card-action-link--maps {
     border-color: rgba(18, 73, 160, 0.14);
     color: #18457a;
@@ -1594,48 +1594,54 @@
     background: color-mix(in srgb, var(--accent-soft) 52%, var(--surface));
   }
 
-  .place-card-reservation-list {
+  .place-card-reservation-menu {
+    position: relative;
+    flex: 0 0 auto;
+  }
+
+  .place-card-reservation-menu summary {
+    list-style: none;
+  }
+
+  .place-card-reservation-menu summary::-webkit-details-marker {
+    display: none;
+  }
+
+  .place-card-reservation-options {
+    position: absolute;
+    z-index: 5;
+    top: calc(100% + 0.45rem);
+    right: 0;
+    min-width: 10rem;
+    max-width: min(17rem, 78vw);
+    display: grid;
+    gap: 0.28rem;
+    padding: 0.38rem;
+    border: 1px solid color-mix(in srgb, var(--accent) 22%, var(--line));
+    border-radius: var(--radius-md);
+    background: color-mix(in srgb, var(--surface) 96%, white);
+    box-shadow: 0 18px 34px rgba(31, 37, 34, 0.18);
+  }
+
+  .place-card-reservation-option {
+    min-height: 2rem;
     display: flex;
-    flex-wrap: wrap;
     align-items: center;
-    gap: 0.4rem;
-  }
-
-  .place-card-reservation-list-label,
-  .place-card-reservation-option {
-    min-height: 1.75rem;
-    display: inline-flex;
-    align-items: center;
-    border-radius: 999px;
-    font-size: 0.72rem;
-    font-weight: 800;
-    line-height: 1;
-    white-space: nowrap;
-  }
-
-  .place-card-reservation-list-label {
-    color: var(--muted);
-    letter-spacing: 0.04em;
-    text-transform: uppercase;
-  }
-
-  .place-card-reservation-option {
-    max-width: 100%;
-    padding: 0.22rem 0.55rem;
-    border: 1px solid color-mix(in srgb, var(--accent) 24%, var(--line));
-    background: color-mix(in srgb, var(--accent-soft) 42%, var(--surface));
+    padding: 0.44rem 0.58rem;
+    border-radius: 0.48rem;
     color: var(--accent-strong);
+    font-size: 0.78rem;
+    font-weight: 800;
+    line-height: 1.15;
     text-decoration: none;
     transition:
-      border-color 160ms ease,
       background-color 160ms ease,
       color 160ms ease;
   }
 
   .place-card-reservation-option:hover,
   .place-card-reservation-option:focus-visible {
-    border-color: color-mix(in srgb, var(--accent) 38%, var(--line));
-    background: #ffffff;
+    background: color-mix(in srgb, var(--accent-soft) 54%, var(--surface));
     color: var(--accent);
   }
 
@@ -1657,17 +1663,6 @@
     flex: 0 0 auto;
   }
 
-  .place-card-map-select-icon {
-    height: 1rem;
-  }
-
-  .place-card-map-select-icon svg {
-    display: block;
-    width: 100%;
-    height: 100%;
-    overflow: visible;
-  }
-
   .place-card-map-link-label {
     display: none;
     font-size: 0.72rem;
@@ -1677,8 +1672,6 @@
     line-height: 1;
   }
 
-  .place-card-map-select:hover,
-  .place-card-map-select:focus-visible,
   .place-card-action-link:hover,
   .place-card-action-link:focus-visible {
     border-color: color-mix(in srgb, var(--accent) 34%, var(--line));
@@ -1697,7 +1690,6 @@
     transform: translateY(-1px);
   }
 
-  .place-card-map-select:focus-visible,
   .place-card-action-link:focus-visible {
     outline: 2px solid var(--accent);
     outline-offset: 2px;

@@ -1,7 +1,6 @@
 ---
 
 import { siteConfig } from "../data/site";
-import { buildMapMarkerSvg, getMapMarkerColors } from "../lib/mapMarkerIcons";
 import { getDisplayGuideTags, getDisplayPlaceTags, getTagComparisonValue } from "../lib/placeTags";
 import { renderRichText } from "../lib/renderRichText";
 import type { ListAuthor, Place, TrustSignal } from "../lib/types";
@@ -78,7 +77,6 @@ const whyRecommendedHtml = renderRichText(place.why_recommended ?? place.note);
 const placePhotosEnabled = (import.meta.env.PUBLIC_PLACE_PHOTOS || "on").toLowerCase() !== "off";
 const photoSrc = place.main_photo_path ?? (guidePhotoMode === "remote_url" ? place.photo_url : null);
 const hasPhoto = Boolean(siteConfig.placeCard.showPhoto && placePhotosEnabled && photoSrc);
-const hasMapCoordinates = place.lat !== null && place.lng !== null;
 const ratingValue = typeof place.rating === "number" ? place.rating : null;
 const reviewCount = typeof place.user_rating_count === "number" ? place.user_rating_count : null;
 const priceRange = typeof place.price_range === "string" && place.price_range.trim().length > 0 ? place.price_range.trim() : null;
@@ -279,10 +277,6 @@ const metaParts = [
   siteConfig.placeCard.showCategory ? (place.primary_category ?? siteConfig.placeCard.savedPlaceLabel) : null,
   siteConfig.placeCard.showNeighborhood ? place.neighborhood : null,
 ].filter(Boolean);
-const markerSvg = buildMapMarkerSvg(
-  place.marker_icon,
-  getMapMarkerColors(place.marker_icon, { topPick: featured || place.top_pick }),
-);
 const showTopPickBadge = siteConfig.placeCard.showTopPickBadge && (featured || place.top_pick);
 const badges = [
   ...(showTopPickBadge ? [{ className: "badge", label: siteConfig.placeCard.topPickLabel }] : []),
@@ -304,8 +298,7 @@ const reservationLinks = Array.from(new Map((place.reservation_links ?? [])
   .map((link) => ({ label: link.label.trim() || "Find a Table", url: safeHttpUrl(link.url) }))
   .filter((link): link is { label: string; url: string } => link.url !== null)
   .map((link) => [`${link.label.toLowerCase()}:${link.url}`, link])).values());
-const reservationLink = reservationLinks.length === 1 ? reservationLinks[0] : null;
-const hasReservationOptions = reservationLinks.length > 1;
+const hasReservationLinks = reservationLinks.length > 0;
 ---
 
 <article
@@ -376,17 +369,6 @@ const hasReservationOptions = reservationLinks.length > 1;
       <div class="place-card-name-row">
         <h3 class="ui-card-title" title={place.name}>{place.name}</h3>
         <div class="place-card-title-actions">
-          {hasMapCoordinates && (
-            <button
-              type="button"
-              class="place-card-map-select"
-              data-place-card-map-select
-              aria-label={`Show ${place.name} on the guide map`}
-              title="Show on guide map"
-            >
-              <span class="place-card-map-select-icon" aria-hidden="true" set:html={markerSvg} />
-            </button>
-          )}
           {isTemporarilyClosed && (
             <button
               type="button"
@@ -421,23 +403,35 @@ const hasReservationOptions = reservationLinks.length > 1;
               <span class="visually-hidden">Open website</span>
             </a>
           )}
-          {reservationLink && (
-            <a
-              class="place-card-action-link place-card-action-link--reservation"
-              href={reservationLink.url}
-              target="_blank"
-              rel="noopener noreferrer"
-              aria-label={`Find a table at ${place.name}${reservationLink.label ? ` via ${reservationLink.label}` : ""}`}
-              title={`Find a table${reservationLink.label ? ` · ${reservationLink.label}` : ""}`}
-            >
-              <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" focusable="false">
-                <path
-                  fill="currentColor"
-                  d="M7.4 3.2c.5 0 .9.4.9.9v6.1c0 1.1-.7 2.1-1.8 2.4v6.7a.9.9 0 1 1-1.8 0v-6.7a2.5 2.5 0 0 1-1.8-2.4V4.1a.9.9 0 1 1 1.8 0v5.7h.9V4.1c0-.5.4-.9.9-.9Zm4.6.4a6.8 6.8 0 0 1 6.8 6.8v8.9a.9.9 0 1 1-1.8 0v-4.1h-5a5.8 5.8 0 0 1 0-11.6Zm0 1.8a4 4 0 0 0 0 8h5v-3a5 5 0 0 0-5-5Z"
-                />
-              </svg>
-              <span class="visually-hidden">Find a table</span>
-            </a>
+          {hasReservationLinks && (
+            <details class="place-card-reservation-menu">
+              <summary
+                class="place-card-action-link place-card-action-link--reservation"
+                aria-label={`Show reservation options for ${place.name}`}
+                title="Find a table"
+              >
+                <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" focusable="false">
+                  <path
+                    fill="currentColor"
+                    d="M7.4 3.2c.5 0 .9.4.9.9v6.1c0 1.1-.7 2.1-1.8 2.4v6.7a.9.9 0 1 1-1.8 0v-6.7a2.5 2.5 0 0 1-1.8-2.4V4.1a.9.9 0 1 1 1.8 0v5.7h.9V4.1c0-.5.4-.9.9-.9Zm4.6.4a6.8 6.8 0 0 1 6.8 6.8v8.9a.9.9 0 1 1-1.8 0v-4.1h-5a5.8 5.8 0 0 1 0-11.6Zm0 1.8a4 4 0 0 0 0 8h5v-3a5 5 0 0 0-5-5Z"
+                  />
+                </svg>
+                <span class="visually-hidden">Find a table</span>
+              </summary>
+              <div class="place-card-reservation-options">
+                {reservationLinks.map((link) => (
+                  <a
+                    class="place-card-reservation-option"
+                    href={link.url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    aria-label={`Find a table at ${place.name} via ${link.label}`}
+                  >
+                    {link.label}
+                  </a>
+                ))}
+              </div>
+            </details>
           )}
           {siteConfig.placeCard.showMapLink && (
             <a
@@ -498,22 +492,6 @@ const hasReservationOptions = reservationLinks.length > 1;
           </div>
         )}
       </div>
-      {hasReservationOptions && (
-        <div class="place-card-reservation-list">
-          <span class="place-card-reservation-list-label">Find a table</span>
-          {reservationLinks.map((link) => (
-            <a
-              class="place-card-reservation-option"
-              href={link.url}
-              target="_blank"
-              rel="noopener noreferrer"
-              aria-label={`Find a table at ${place.name} via ${link.label}`}
-            >
-              {link.label}
-            </a>
-          ))}
-        </div>
-      )}
     </div>
     {badges.length > 0 && (
       <div class="place-card-badges">
