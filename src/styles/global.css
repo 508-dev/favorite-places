@@ -1207,6 +1207,101 @@
     white-space: nowrap;
   }
 
+  .place-card-trust-pill {
+    width: 1.7rem;
+    height: 1.7rem;
+    min-height: 1.7rem;
+    padding: 0;
+    border-color: color-mix(in srgb, var(--accent) 24%, var(--line));
+    background: color-mix(in srgb, var(--surface-strong) 88%, var(--accent) 12%);
+    color: var(--ink);
+    font-size: 0.72rem;
+    font-weight: 850;
+    line-height: 1;
+    text-decoration: none;
+    white-space: nowrap;
+  }
+
+  .place-card-trust-pill--michelin {
+    border-color: color-mix(in srgb, #bd1f2d 42%, var(--line));
+    background: color-mix(in srgb, var(--surface) 84%, #bd1f2d 16%);
+    color: #bd1f2d;
+  }
+
+  .place-card-trust-pill--michelin-stars-2 {
+    width: 2.75rem;
+    min-width: 2.75rem;
+    padding-inline: 0.2rem;
+  }
+
+  .place-card-trust-pill--michelin-stars-3 {
+    width: 3.65rem;
+    min-width: 3.65rem;
+    padding-inline: 0.24rem;
+  }
+
+  .place-card-trust-pill--michelin-bib {
+    background: color-mix(in srgb, var(--surface) 88%, #bd1f2d 12%);
+  }
+
+  .place-card-trust-pill--michelin-green {
+    border-color: color-mix(in srgb, #649f42 46%, var(--line));
+    background: color-mix(in srgb, var(--surface) 84%, #649f42 16%);
+    color: #3f762a;
+  }
+
+  .place-card-trust-pill--michelin-selected {
+    border-color: color-mix(in srgb, #bd1f2d 22%, var(--line));
+    background: color-mix(in srgb, var(--surface) 92%, #bd1f2d 8%);
+  }
+
+  .place-card-trust-pill--previous {
+    border-style: dashed;
+    border-color: color-mix(in srgb, var(--muted) 38%, var(--line));
+    background: color-mix(in srgb, var(--surface) 92%, var(--muted) 8%);
+    color: var(--muted);
+  }
+
+  .place-card-trust-icon {
+    display: inline-flex;
+    width: 1rem;
+    height: 1rem;
+    flex: 0 0 1rem;
+    align-items: center;
+    justify-content: center;
+    color: currentcolor;
+  }
+
+  .place-card-trust-icon--michelin-stars {
+    width: auto;
+    gap: 0.06rem;
+  }
+
+  .place-card-trust-icon svg {
+    display: block;
+  }
+
+  .place-card-trust-icon img {
+    display: block;
+    width: 100%;
+    height: 100%;
+  }
+
+  .place-card-trust-pill:hover {
+    border-color: color-mix(in srgb, var(--accent) 42%, var(--line));
+    color: var(--accent-strong);
+  }
+
+  .place-card-trust-pill--michelin:hover {
+    border-color: color-mix(in srgb, #bd1f2d 70%, var(--line));
+    color: #9f1722;
+  }
+
+  .place-card-trust-pill--previous:hover {
+    border-color: color-mix(in srgb, var(--muted) 54%, var(--line));
+    color: var(--ink-soft);
+  }
+
   .place-card[data-has-photo="false"] .place-card-stats,
   .place-card[data-has-photo="false"] .tag-row {
     gap: 0.45rem;
@@ -3427,6 +3522,34 @@
   z-index: 30;
   display: flex;
   justify-content: end;
+}
+
+@layer legacy {
+  .place-card-stats .place-card-trust-pill {
+    width: 1.7rem !important;
+    min-width: 1.7rem !important;
+    height: 1.7rem !important;
+    min-height: 1.7rem !important;
+    padding: 0 !important;
+    justify-content: center;
+  }
+
+  .place-card-stats .place-card-trust-pill--michelin-stars-2 {
+    width: 2.75rem !important;
+    min-width: 2.75rem !important;
+    padding-inline: 0.2rem !important;
+  }
+
+  .place-card-stats .place-card-trust-pill--michelin-stars-3 {
+    width: 3.65rem !important;
+    min-width: 3.65rem !important;
+    padding-inline: 0.24rem !important;
+  }
+
+  .place-card-stats .place-card-trust-pill--previous .place-card-trust-icon {
+    filter: grayscale(1);
+    opacity: 0.68;
+  }
 }
 
 .floating-scroll-controls[data-anchor="left"] {

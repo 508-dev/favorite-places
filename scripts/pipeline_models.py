@@ -256,6 +256,35 @@ class EnrichmentCacheEntry(PipelineModel):
     place: EnrichmentPlace | None = None
 
 
+TrustSignalSource = Literal[
+    "michelin",
+    "tabelog",
+    "timeout",
+    "blog",
+    "web",
+    "brave_search",
+    "google_search",
+]
+
+TrustSignalConfidence = Literal["high", "medium", "low"]
+
+
+class TrustSignal(PipelineModel):
+    source: TrustSignalSource
+    label: str
+    tier: str | None = None
+    display_label: str | None = None
+    display_tier: str | None = None
+    award_year: int | None = None
+    is_current: bool | None = None
+    url: str | None = None
+    title: str | None = None
+    published_at: str | None = None
+    fetched_at: str
+    confidence: TrustSignalConfidence
+    match_reason: str
+
+
 FieldSource = Literal[
     "manual",
     "google_list",
@@ -264,6 +293,7 @@ FieldSource = Literal[
     "osm",
     "wikidata",
     "website",
+    "trust_signal",
 ]
 
 MarkerIcon = Literal[
@@ -312,6 +342,7 @@ class PlaceProvenance(PipelineModel):
     hidden: PlaceField | None = None
     manual_rank: PlaceField | None = None
     status: PlaceField | None = None
+    trust_signals: PlaceField | None = None
 
 
 class NormalizedPlace(PipelineModel):
@@ -344,6 +375,7 @@ class NormalizedPlace(PipelineModel):
     hidden: bool = False
     manual_rank: int = 0
     status: str
+    trust_signals: list[TrustSignal] = Field(default_factory=list)
     provenance: PlaceProvenance = Field(default_factory=PlaceProvenance)
 
 

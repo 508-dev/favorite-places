@@ -18,7 +18,7 @@ import time
 import unicodedata
 import uuid
 from collections import Counter
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import UTC, datetime, timedelta
 from dataclasses import dataclass
@@ -34,6 +34,7 @@ from urllib.request import Request, urlopen
 import pycountry
 from pydantic import TypeAdapter
 from PIL import Image, ImageOps, UnidentifiedImageError, features
+from sqlalchemy.engine import make_url
 
 try:
     from scripts.pipeline_models import (
@@ -51,6 +52,13 @@ try:
         RawPlace,
         RawSavedList,
         SourceConfig,
+        TrustSignal,
+    )
+    from scripts.trust_signals import (
+        TrustSignalStore,
+        load_trust_signals_for_places,
+        refresh_trust_signals_for_raw_guides,
+        resolve_trust_store_url,
     )
 except ModuleNotFoundError:
     from pipeline_models import (
@@ -68,6 +76,13 @@ except ModuleNotFoundError:
         RawPlace,
         RawSavedList,
         SourceConfig,
+        TrustSignal,
+    )
+    from trust_signals import (
+        TrustSignalStore,
+        load_trust_signals_for_places,
+        refresh_trust_signals_for_raw_guides,
+        resolve_trust_store_url,
     )
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -1727,6 +1742,19 @@ def build_parser() -> argparse.ArgumentParser:
         help="Download missing local optimized place photos from cached enrichment photo URLs.",
     )
     parser.add_argument(
+        "--refresh-trust-signals",
+        action="store_true",
+        help=(
+            "Refresh cached trust signals from configured/search providers. Normal builds only read the local "
+            "trust cache and never perform live trust-signal searches."
+        ),
+    )
+    parser.add_argument(
+        "--trust-google-fallback",
+        action="store_true",
+        help="Allow the trust-signal resolver to fall back to parsing Google Search HTML when Brave Search is unavailable or empty.",
+    )
+    parser.add_argument(
         "--export-cache-json",
         action="store_true",
         help="Export the current SQLite-backed enrichment cache into per-guide JSON files for debugging.",
@@ -2389,6 +2417,7 @@ def stable_generated_at(
     enrichment_cache: dict[str, EnrichmentCacheEntry],
     *,
     photo_paths: list[str | None] | None = None,
+    trust_signals: Iterable[TrustSignal] | None = None,
 ) -> str:
     candidates: list[datetime] = []
 
@@ -2411,6 +2440,11 @@ def stable_generated_at(
         if absolute_path is None or not absolute_path.exists():
             continue
         candidates.append(datetime.fromtimestamp(absolute_path.stat().st_mtime, tz=UTC))
+
+    for signal in trust_signals or []:
+        fetched_at = metadata_datetime_or_none(signal.fetched_at)
+        if fetched_at is not None:
+            candidates.append(fetched_at)
 
     if not candidates:
         return STABLE_GENERATED_AT_FALLBACK
@@ -2440,6 +2474,12 @@ def rebuild_generated_data(
         enrichment_caches[raw_path.stem] = enrichment_cache
 
     hydrate_shared_enrichment_photo_urls(enrichment_caches)
+    stable_place_ids = build_stable_place_id_index(raw_lists)
+    trust_signal_maps = load_all_trust_signal_maps(
+        raw_lists=raw_lists,
+        enrichment_caches=enrichment_caches,
+        stable_place_ids=stable_place_ids,
+    )
 
     for raw_path in sorted(RAW_DIR.glob("*.json")):
         raw = raw_lists[raw_path.stem]
@@ -2447,6 +2487,7 @@ def rebuild_generated_data(
             raw_path.stem,
             raw,
             enrichment_cache=enrichment_caches[raw_path.stem],
+            trust_signals=trust_signal_maps.get(raw_path.stem, {}),
         )
         guides.append(guide)
 
@@ -2462,6 +2503,11 @@ def rebuild_generated_data(
             raw_lists[guide.slug],
             enrichment_caches.get(guide.slug, {}),
             photo_paths=[place.main_photo_path for place in guide.places],
+            trust_signals=[
+                signal
+                for place in guide.places
+                for signal in place.trust_signals
+            ],
         )
     rebuild_places_sqlite(
         raw_lists=raw_lists,
@@ -2478,6 +2524,87 @@ def rebuild_generated_data(
     write_json(GENERATED_DIR / "manifests.json", manifests)
     write_json(GENERATED_DIR / "search-index.json", search_index)
     write_json(PUBLIC_DATA_DIR / "search-index.json", search_index, compact=True)
+
+
+def build_stable_place_id_index(raw_lists: Mapping[str, RawSavedList]) -> dict[tuple[str, int], str]:
+    result: dict[tuple[str, int], str] = {}
+    for slug, raw in raw_lists.items():
+        for index, place in enumerate(raw.places):
+            result[(slug, index)] = stable_place_id(place, source_type=raw.configured_source_type)
+    return result
+
+
+def trust_store_url_has_readable_cache(store_url: str) -> bool:
+    parsed_url = make_url(store_url)
+    if parsed_url.drivername.split("+", 1)[0] != "sqlite":
+        return True
+    sqlite_database = parsed_url.database
+    if not sqlite_database or sqlite_database == ":memory:":
+        return True
+    if str(parsed_url.query.get("uri", "")).lower() == "true" and sqlite_database.startswith("file:"):
+        sqlite_database = sqlite_database.removeprefix("file:")
+    if sqlite_database == ":memory:":
+        return True
+    sqlite_path = Path(unquote(sqlite_database))
+    return sqlite_path.exists()
+
+
+def load_all_trust_signal_maps(
+    *,
+    raw_lists: dict[str, RawSavedList],
+    enrichment_caches: dict[str, dict[str, EnrichmentCacheEntry]],
+    stable_place_ids: dict[tuple[str, int], str],
+) -> dict[str, dict[str, list[TrustSignal]]]:
+    store_url = resolve_trust_store_url(ROOT)
+    if not trust_store_url_has_readable_cache(store_url):
+        return {}
+
+    store = TrustSignalStore(store_url, initialize=False)
+    trust_signal_maps: dict[str, dict[str, list[TrustSignal]]] = {}
+    for slug, raw in raw_lists.items():
+        trust_signal_maps[slug] = load_trust_signals_for_places(
+            store,
+            slug,
+            raw,
+            enrichment_caches.get(slug, {}),
+            stable_place_ids=stable_place_ids,
+        )
+    return trust_signal_maps
+
+
+def refresh_trust_signals(
+    *,
+    include_google_fallback: bool,
+) -> None:
+    sync_local_csv_sources()
+    raw_lists: dict[str, RawSavedList] = {}
+    enrichment_caches: dict[str, dict[str, EnrichmentCacheEntry]] = {}
+    for raw_path in sorted(RAW_DIR.glob("*.json")):
+        raw = RawSavedList.model_validate_json(raw_path.read_text(encoding="utf-8"))
+        raw_lists[raw_path.stem] = raw
+        enrichment_caches[raw_path.stem] = load_places_cache(raw_path.stem)
+
+    stable_place_ids = build_stable_place_id_index(raw_lists)
+    guide_location_contexts = {
+        slug: guide_location_context(slug, raw)
+        for slug, raw in raw_lists.items()
+    }
+    summary = refresh_trust_signals_for_raw_guides(
+        root=ROOT,
+        raw_lists=raw_lists,
+        enrichment_caches=enrichment_caches,
+        stable_place_ids=stable_place_ids,
+        guide_location_contexts=guide_location_contexts,
+        include_google_fallback=include_google_fallback,
+    )
+    print(
+        "Refreshed trust signals: "
+        f"Michelin regions {summary.michelin_regions_refreshed}, "
+        f"Michelin details {summary.michelin_details_refreshed}, "
+        f"searched {summary.searched_places}, skipped {summary.skipped_places}, "
+        f"wrote {summary.signals_written}, provider failures {summary.provider_failures}.",
+        flush=True,
+    )
 
 
 def refresh_generated_guide_photos(
@@ -2723,7 +2850,13 @@ def coerce_guide_place_photo_mode(value: Any) -> Literal["local_cache", "remote_
     return normalized
 
 
-def normalize_guide(slug: str, raw: RawSavedList, *, enrichment_cache: dict[str, EnrichmentCacheEntry]) -> Guide:
+def normalize_guide(
+    slug: str,
+    raw: RawSavedList,
+    *,
+    enrichment_cache: dict[str, EnrichmentCacheEntry],
+    trust_signals: dict[str, list[TrustSignal]] | None = None,
+) -> Guide:
     list_override = read_json(LIST_OVERRIDES_DIR / f"{slug}.json")
     place_override_map = read_json(PLACE_OVERRIDES_DIR / f"{slug}.json")
 
@@ -2756,6 +2889,11 @@ def normalize_guide(slug: str, raw: RawSavedList, *, enrichment_cache: dict[str,
 
     for place in raw.places:
         place_id = stable_place_id(place, source_type=raw.configured_source_type)
+        place_trust_signals = (
+            [display_trust_signal(signal) for signal in trust_signals.get(place_id, [])]
+            if trust_signals is not None
+            else []
+        )
         override = place_override_for_ui_copy(slug, place_id, place_override_map.get(place_id, {}))
         enrichment_cache_entry = enrichment_cache.get(place_id)
         enrichment = coerce_enrichment_place(enrichment_cache_entry)
@@ -2911,10 +3049,11 @@ def normalize_guide(slug: str, raw: RawSavedList, *, enrichment_cache: dict[str,
             if use_semantic_descriptions
             else None
         )
-        why_recommended = (
-            manual_note
-            or semantic_description
-            or base_recommendation
+        award_recommendation_copy = trust_signal_recommendation_copy(place_trust_signals)
+        base_why_recommended = semantic_description or base_recommendation
+        why_recommended = manual_note or combine_recommendation_copy(
+            award_recommendation_copy,
+            base_why_recommended,
         )
         if "vibe_tags" in override:
             override_vibe_tags = coerce_string_list(override.get("vibe_tags"))
@@ -3005,6 +3144,7 @@ def normalize_guide(slug: str, raw: RawSavedList, *, enrichment_cache: dict[str,
             hidden=hidden,
             manual_rank=manual_rank,
             status=status,
+            trust_signals=place_trust_signals,
         )
         normalized.provenance = build_place_provenance(
             raw=raw,
@@ -3022,6 +3162,7 @@ def normalize_guide(slug: str, raw: RawSavedList, *, enrichment_cache: dict[str,
             top_pick_override=top_pick_override,
             status=status,
             prefer_enrichment_names=prefer_enrichment_names,
+            trust_signals=place_trust_signals,
         )
         normalized_places.append(normalized)
         if primary_category and not place_is_permanently_closed(normalized):
@@ -3102,6 +3243,7 @@ def build_place_provenance(
     top_pick_override: bool | None,
     status: str,
     prefer_enrichment_names: bool,
+    trust_signals: list[TrustSignal],
 ) -> PlaceProvenance:
     manual_name = as_string(override.get("name"))
     manual_category = as_string(override.get("primary_category"))
@@ -3224,6 +3366,8 @@ def build_place_provenance(
         provenance.status = google_places_field(status, enrichment_cache_entry)
     elif raw_place.business_status:
         provenance.status = google_list_field(status, raw)
+    if trust_signals:
+        provenance.trust_signals = trust_signal_field(trust_signals)
     return provenance
 
 
@@ -3290,6 +3434,96 @@ def source_place_field(value: Any, source_field: PlaceField | None) -> PlaceFiel
 
 def manual_place_field(value: Any) -> PlaceField:
     return PlaceField(value=value, source="manual")
+
+
+def trust_signal_field(signals: list[TrustSignal]) -> PlaceField:
+    fetched_dates = [
+        parsed
+        for signal in signals
+        if (parsed := metadata_datetime_or_none(signal.fetched_at)) is not None
+    ]
+    fetched_at = max(fetched_dates).isoformat() if fetched_dates else None
+    return PlaceField(value=signals, source="trust_signal", fetched_at=fetched_at)
+
+
+TABELOG_HYAKUMEITEN_GENRE_DISPLAY = {
+    "うどん": "Udon",
+    "うなぎ": "Unagi",
+    "お好み焼き": "Okonomiyaki",
+    "すき焼き・しゃぶしゃぶ": "Sukiyaki and Shabu-Shabu",
+    "そば": "Soba",
+    "とんかつ": "Tonkatsu",
+    "アイス・ジェラート": "Ice Cream and Gelato",
+    "アジア・エスニック": "Asian and Ethnic",
+    "イタリアン": "Italian",
+    "カフェ": "Cafe",
+    "カレー": "Curry",
+    "スイーツ": "Sweets",
+    "ステーキ・鉄板焼き": "Steak and Teppanyaki",
+    "スペイン料理": "Spanish",
+    "ハンバーガー": "Hamburger",
+    "バー": "Bar",
+    "パン": "Bakery",
+    "ピザ": "Pizza",
+    "フレンチ": "French",
+    "ラーメン": "Ramen",
+    "中国料理": "Chinese",
+    "創作料理・イノベーティブ": "Creative and Innovative",
+    "和菓子・甘味処": "Wagashi and Sweets",
+    "喫茶店": "Kissaten",
+    "天ぷら": "Tempura",
+    "寿司": "Sushi",
+    "居酒屋": "Izakaya",
+    "日本料理": "Japanese",
+    "洋食": "Yoshoku",
+    "焼き鳥": "Yakitori",
+    "焼肉": "Yakiniku",
+    "立ち飲み": "Standing Bar",
+    "食堂": "Shokudo",
+    "餃子": "Gyoza",
+    "鳥料理": "Chicken",
+}
+
+def display_trust_signal(signal: TrustSignal) -> TrustSignal:
+    display_label = trust_signal_display_label(signal)
+    display_tier = trust_signal_display_tier(signal)
+    if display_label == signal.label and display_tier == signal.tier:
+        return signal
+    return signal.model_copy(
+        update={
+            "display_label": display_label,
+            "display_tier": display_tier,
+        }
+    )
+
+
+def trust_signal_display_label(signal: TrustSignal) -> str:
+    if signal.source == "tabelog" and signal.label == "The Tabelog Award":
+        return "Tabelog"
+    if signal.source == "tabelog" and signal.label == "Tabelog Hyakumeiten":
+        return "Tabelog 100"
+    return signal.label
+
+
+def trust_signal_display_tier(signal: TrustSignal) -> str | None:
+    if signal.source == "tabelog" and signal.label == "Tabelog Hyakumeiten":
+        return display_tabelog_hyakumeiten_tier(signal.tier)
+    return signal.tier
+
+
+def display_tabelog_hyakumeiten_tier(tier: str | None) -> str | None:
+    if not tier:
+        return None
+    cleaned = re.sub(r"\s*百名店\s*$", "", tier).strip()
+    if not cleaned:
+        return "Selected Restaurants"
+    parts = cleaned.split()
+    if len(parts) >= 2 and parts[-1].isupper():
+        genre = " ".join(parts[:-1])
+    else:
+        genre = cleaned
+    display_genre = TABELOG_HYAKUMEITEN_GENRE_DISPLAY.get(genre, genre)
+    return display_genre
 
 
 def google_list_field(value: Any, raw: RawSavedList) -> PlaceField:
@@ -4743,6 +4977,19 @@ def search_index_guide_entry(guide: Guide) -> dict[str, Any]:
 
 
 def search_index_place_entry(guide: Guide, place: NormalizedPlace) -> dict[str, Any]:
+    trust_signal_labels = [
+        " ".join(
+            part
+            for part in [
+                signal.display_label or signal.label,
+                signal.display_tier or signal.tier,
+                signal.title,
+            ]
+            if part
+        )
+        for signal in place.trust_signals
+        if signal.confidence != "low"
+    ]
     return {
         "id": place.id,
         "guide_slug": guide.slug,
@@ -4761,6 +5008,19 @@ def search_index_place_entry(guide: Guide, place: NormalizedPlace) -> dict[str, 
         "user_rating_count": place.user_rating_count,
         "top_pick": place.top_pick,
         "manual_rank": place.manual_rank,
+        "trust_signals": [
+            {
+                "label": signal.label,
+                "tier": signal.tier,
+                "display_label": signal.display_label,
+                "display_tier": signal.display_tier,
+                "award_year": signal.award_year,
+                "is_current": signal.is_current,
+                "source": signal.source,
+            }
+            for signal in place.trust_signals
+            if signal.confidence != "low"
+        ],
         "maps_url": place.maps_url,
         "url": f"/guides/{guide.slug}/?place={quote_query_value(place.id)}",
         "search_text": compact_search_text(
@@ -4773,6 +5033,7 @@ def search_index_place_entry(guide: Guide, place: NormalizedPlace) -> dict[str, 
                 place.neighborhood,
                 " ".join(place.tags),
                 " ".join(place.vibe_tags),
+                " ".join(trust_signal_labels),
                 guide.title,
                 guide.city_name,
                 guide.country_name,
@@ -5418,6 +5679,58 @@ def combine_recommendation_copy(*values: str | None) -> str | None:
         seen.add(key)
         parts.append(normalized)
     return "\n\n".join(parts) if parts else None
+
+
+def trust_signal_recommendation_copy(signals: list[TrustSignal]) -> str | None:
+    award_entries: list[tuple[str, bool]] = []
+    seen_award_labels: set[str] = set()
+    current_award_tiers = {
+        (signal.source, trust_signal_award_tier(signal))
+        for signal in signals
+        if signal.confidence != "low"
+        and signal.source in {"michelin", "tabelog"}
+        and signal.is_current is True
+    }
+    for signal in signals:
+        if signal.confidence == "low":
+            continue
+        if signal.source not in {"michelin", "tabelog"}:
+            continue
+        if (
+            (signal.source, trust_signal_award_tier(signal)) in current_award_tiers
+            and signal.is_current is False
+        ):
+            continue
+        label_parts = [
+            signal.display_label or trust_signal_display_label(signal),
+            signal.display_tier or trust_signal_display_tier(signal),
+        ]
+        if signal.award_year:
+            label_parts.append(str(signal.award_year))
+        label = " ".join(part for part in label_parts if part)
+        if label and label not in seen_award_labels:
+            seen_award_labels.add(label)
+            award_entries.append((label, signal.is_current is False))
+        if len(award_entries) >= 2:
+            break
+    if not award_entries:
+        return None
+    if len(award_entries) == 1:
+        label, is_previous = award_entries[0]
+        prefix = "Previously recognized by" if is_previous else "Recognized by"
+        return f"{prefix} {label}."
+    first_label, first_is_previous = award_entries[0]
+    second_label, second_is_previous = award_entries[1]
+    if not first_is_previous and second_is_previous:
+        return f"Recognized by {first_label} and previously by {second_label}."
+    if first_is_previous and not second_is_previous:
+        return f"Recognized by {second_label} and previously by {first_label}."
+    prefix = "Previously recognized by" if first_is_previous and second_is_previous else "Recognized by"
+    return f"{prefix} {first_label} and {second_label}."
+
+
+def trust_signal_award_tier(signal: TrustSignal) -> str:
+    return signal.tier or ""
 
 
 def usable_enrichment_recommendation_copy(
@@ -11390,6 +11703,9 @@ def main() -> int:
     parser = build_parser()
     args = parser.parse_args()
 
+    if args.trust_google_fallback and not args.refresh_trust_signals:
+        parser.error("--trust-google-fallback requires --refresh-trust-signals")
+
     if (args.refresh_list or args.refresh_force) and not args.refresh:
         args.refresh = True
     if args.force_semantic_descriptions and not args.refresh_semantic_descriptions:
@@ -11453,6 +11769,9 @@ def main() -> int:
             place_selectors=args.enrich_place,
         )
 
+    if args.refresh_trust_signals:
+        refresh_trust_signals(include_google_fallback=args.trust_google_fallback)
+
     if args.export_cache_json:
         exported_guides = export_all_places_cache_json()
         print(f"Exported JSON cache debug files for {exported_guides} guide(s).")
@@ -11466,6 +11785,7 @@ def main() -> int:
         and not args.refresh_enrichment
         and not args.refresh_semantic_descriptions
         and not args.refresh_semantic_enrichment
+        and not args.refresh_trust_signals
         and not args.export_cache_json
     )
     if photo_only_refresh and refresh_generated_guide_photos(

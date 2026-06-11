@@ -11,13 +11,13 @@ describe("renderRichText", () => {
 
   it("renders markdown links and escapes labels and hrefs", () => {
     expect(renderRichText("Read [x < y](https://example.com?q=1&z=2)")).toBe(
-      'Read <a href="https://example.com/?q=1&amp;z=2" target="_blank" rel="noreferrer">x &lt; y</a>',
+      'Read <a href="https://example.com/?q=1&amp;z=2" target="_blank" rel="noopener noreferrer">x &lt; y</a>',
     );
   });
 
   it("keeps balanced url parentheses and moves trailing punctuation outside the link", () => {
     expect(renderRichText("Go to https://example.com/place(test)).")).toBe(
-      'Go to <a href="https://example.com/place(test)" target="_blank" rel="noreferrer">https://example.com/place(test)</a>).',
+      'Go to <a href="https://example.com/place(test)" target="_blank" rel="noopener noreferrer">https://example.com/place(test)</a>).',
     );
   });
 

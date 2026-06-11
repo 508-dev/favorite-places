@@ -175,6 +175,32 @@ The behavior is configurable in a few places:
 - `FAVORITE_PLACES_GMAPS_SCRAPER_STATE_DIR` optionally overrides where scraper browser profiles and HTTP cookie jars are stored. Point multiple worktrees at the same absolute path when you want to reuse scraper session state across them.
 - The command controls refresh scope: `fill:gaps` fills missing enrichment and photos, `enrich:data` fills missing or stale cache entries, `refresh:enrichment` refreshes every entry, `refresh:semantic-enrichment` updates cached semantic neighborhoods/tags from already cached evidence, and `refresh:semantic-descriptions` only updates cached semantic descriptions from already cached enrichment evidence.
 
+### Optional Trust Signals
+
+Trust signals are third-party mentions such as MICHELIN Guide, Tabelog Awards for Japan guides, Time Out, and blog mentions. Normal builds only read the local trust cache; they do not call search providers.
+
+MICHELIN regions are fetched as full guide snapshots when a configured guide maps to a known region. Tokyo and Kyoto, Japan are built in; add more regions with `FAVORITE_PLACES_MICHELIN_REGION_URLS` as a JSON object keyed by `"country/city"`. Wikipedia is used as a supplemental Michelin-star history source where explicitly mapped, such as Taiwan; it is not treated as a Bib Gourmand source. MICHELIN and Tabelog signals are year-aware: explicit years are preserved when the source exposes them, and live MICHELIN region rows can fill missing current guide years from cached official restaurant detail pages.
+
+Refresh trust signals with Brave Search:
+
+```bash
+BRAVE_SEARCH_API_KEY=... bun run refresh:trust
+```
+
+Allow the brittle Google Search HTML fallback only when you explicitly want it:
+
+```bash
+bun run refresh:trust:google-fallback
+```
+
+The default trust cache is outside the repo and shared across checkouts/repos for the current user:
+
+```txt
+~/.cache/favorite-places/trust-signals/trust.sqlite
+```
+
+Set `XDG_CACHE_HOME` to move that default root. Override it with `FAVORITE_PLACES_TRUST_STORE_URL` for a SQLAlchemy URL, including local SQLite file URLs.
+
 Example `site/enrichment.json`:
 
 ```json
@@ -257,6 +283,12 @@ GMAPS_SCRAPER_PROXY=...
 
 # Optional shared scraper state root for browser profiles and curl cookies.
 FAVORITE_PLACES_GMAPS_SCRAPER_STATE_DIR=/absolute/path/to/.context/gmaps-scraper
+
+# Optional trust-signal cache and search provider settings.
+BRAVE_SEARCH_API_KEY=...
+FAVORITE_PLACES_TRUST_STORE_URL=sqlite:////absolute/path/to/trust.sqlite
+FAVORITE_PLACES_TRUST_GOOGLE_FALLBACK=false
+FAVORITE_PLACES_MICHELIN_REGION_URLS='{"japan/kyoto":"https://guide.michelin.com/en/jp/kyoto-region/restaurants"}'
 
 # Force Leaflet/OpenStreetMap rendering.
 PUBLIC_MAP_PROVIDER=leaflet

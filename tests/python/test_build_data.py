@@ -93,6 +93,50 @@ class BuildDataTests(unittest.TestCase):
         self.assertEqual(place.added_by.name, "Second Curator")
         self.assertEqual(place.added_by.profile_id, "second-curator-id")
 
+    def test_refresh_trust_signals_passes_override_location_context(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            tmpdir_path = Path(tmpdir)
+            raw_dir = tmpdir_path / "raw"
+            list_overrides_dir = tmpdir_path / "lists"
+            raw_dir.mkdir()
+            list_overrides_dir.mkdir()
+            raw = RawSavedList(
+                title="Restaurants",
+                places=[
+                    RawPlace(
+                        name="Coffee Spot",
+                        maps_url="https://maps.example/coffee",
+                    )
+                ],
+            )
+            (raw_dir / "dinner-list.json").write_text(raw.model_dump_json(), encoding="utf-8")
+            (list_overrides_dir / "dinner-list.json").write_text(
+                json.dumps({"city_name": "Tokyo", "country_name": "Japan"}),
+                encoding="utf-8",
+            )
+            summary = SimpleNamespace(
+                michelin_regions_refreshed=0,
+                michelin_details_refreshed=0,
+                searched_places=0,
+                skipped_places=0,
+                signals_written=0,
+                provider_failures=0,
+            )
+
+            with (
+                patch.object(build_data, "RAW_DIR", raw_dir),
+                patch.object(build_data, "LIST_OVERRIDES_DIR", list_overrides_dir),
+                patch.object(build_data, "sync_local_csv_sources"),
+                patch.object(build_data, "load_places_cache", return_value={}),
+                patch.object(build_data, "refresh_trust_signals_for_raw_guides", return_value=summary) as refresh,
+            ):
+                build_data.refresh_trust_signals(include_google_fallback=False)
+
+        self.assertEqual(
+            refresh.call_args.kwargs["guide_location_contexts"],
+            {"dinner-list": ("Tokyo", "Japan")},
+        )
+
     def test_normalize_guide_uses_raw_owner_as_author(self) -> None:
         raw = RawSavedList(
             title="Tokyo, Japan",
@@ -507,6 +551,18 @@ class BuildDataTests(unittest.TestCase):
             startup_jitter_seconds=build_data.DEFAULT_REFRESH_STARTUP_JITTER_SECONDS,
         )
         rebuild_generated_data.assert_not_called()
+
+    def test_main_rejects_google_fallback_without_trust_refresh(self) -> None:
+        stderr = StringIO()
+        with (
+            patch.object(sys, "argv", ["build_data.py", "--trust-google-fallback"]),
+            redirect_stderr(stderr),
+            self.assertRaises(SystemExit) as raised,
+        ):
+            build_data.main()
+
+        self.assertEqual(raised.exception.code, 2)
+        self.assertIn("--trust-google-fallback requires --refresh-trust-signals", stderr.getvalue())
 
     def test_main_falls_back_to_full_rebuild_when_photo_only_fast_path_is_unavailable(self) -> None:
         with (

@@ -4,7 +4,7 @@ import { siteConfig } from "../data/site";
 import { buildMapMarkerSvg, getMapMarkerColors } from "../lib/mapMarkerIcons";
 import { getDisplayGuideTags, getDisplayPlaceTags, getTagComparisonValue } from "../lib/placeTags";
 import { renderRichText } from "../lib/renderRichText";
-import type { ListAuthor, Place } from "../lib/types";
+import type { ListAuthor, Place, TrustSignal } from "../lib/types";
 import AuthorByline from "./AuthorByline.astro";
 
 interface Props {
@@ -98,12 +98,170 @@ const placeRatingMetaTitle = [
 ]
   .filter(Boolean)
   .join(" · ");
+const rawTrustSignals = siteConfig.placeCard.showTrustSignals
+  ? (place.trust_signals ?? []).filter((signal) => signal.confidence !== "low")
+  : [];
+const isSafeExternalUrl = (value: string | null | undefined): value is string => {
+  if (!value) {
+    return false;
+  }
+  try {
+    const parsed = new URL(value);
+    return parsed.protocol === "https:" || parsed.protocol === "http:";
+  } catch {
+    return false;
+  }
+};
+type CardTrustSignal = TrustSignal & {
+  url: string | null;
+  groupedTrustSignalLabels?: string[];
+  groupedTrustSignalConfidenceNotes?: string[];
+};
+const trustSignalBaseLabel = (signal: TrustSignal) =>
+  [
+    signal.source === "michelin" && signal.is_current === false
+      ? "Previous MICHELIN Guide"
+      : signal.display_label ?? signal.label,
+    signal.display_tier ?? signal.tier,
+    signal.award_year ? String(signal.award_year) : null,
+  ].filter(Boolean).join(" · ");
+const trustSignalAwardTierKey = (signal: TrustSignal) => signal.display_tier ?? signal.tier ?? "";
+const currentAwardKeys = new Set(
+  rawTrustSignals
+    .filter((signal) => (signal.source === "michelin" || signal.source === "tabelog") && signal.is_current === true)
+    .map((signal) => `${signal.source}:${trustSignalAwardTierKey(signal)}`),
+);
+const shouldHidePreviousTrustSignal = (signal: TrustSignal) =>
+  signal.is_current === false && currentAwardKeys.has(`${signal.source}:${trustSignalAwardTierKey(signal)}`);
+const trustSignalConfidenceNote = (signal: TrustSignal) => {
+  if (signal.confidence !== "medium") {
+    return null;
+  }
+  const normalizedReason = signal.match_reason.toLowerCase();
+  if (normalizedReason.includes("alias") && normalizedReason.includes("location")) {
+    return "Matched by alternate name and location";
+  }
+  if (normalizedReason.includes("similarity") && normalizedReason.includes("location")) {
+    return "Matched by similar name and location";
+  }
+  if (normalizedReason.includes("similarity")) {
+    return "Matched by similar name";
+  }
+  if (normalizedReason.includes("location")) {
+    return "Matched by name and location";
+  }
+  return "Matched with medium confidence";
+};
+const combineTabelogTrustSignals = (signals: CardTrustSignal[]) => {
+  const tabelogSignals = signals.filter((signal) => signal.source === "tabelog");
+  if (tabelogSignals.length <= 1) {
+    return signals;
+  }
+
+  const firstTabelogIndex = signals.findIndex((signal) => signal.source === "tabelog");
+  const nonTabelogSignals = signals.filter((signal) => signal.source !== "tabelog");
+  const combinedTabelogSignal = {
+    ...tabelogSignals[0],
+    groupedTrustSignalLabels: tabelogSignals.map(trustSignalBaseLabel),
+    groupedTrustSignalConfidenceNotes: Array.from(
+      new Set(tabelogSignals.map(trustSignalConfidenceNote).filter(Boolean)),
+    ),
+  };
+
+  return [
+    ...nonTabelogSignals.slice(0, firstTabelogIndex),
+    combinedTabelogSignal,
+    ...nonTabelogSignals.slice(firstTabelogIndex),
+  ];
+};
+const trustSignals = combineTabelogTrustSignals(rawTrustSignals
+  .filter((signal) => !shouldHidePreviousTrustSignal(signal))
+  .map((signal) => ({
+    ...signal,
+    url: isSafeExternalUrl(signal.url) ? signal.url : null,
+  })))
+  .slice(0, 3);
+const trustSignalLabel = (signal: (typeof trustSignals)[number]) =>
+  signal.groupedTrustSignalLabels?.join(" + ") ?? trustSignalBaseLabel(signal);
+const trustSignalTitle = (signal: (typeof trustSignals)[number]) =>
+  [
+    trustSignalLabel(signal),
+    ...(signal.groupedTrustSignalConfidenceNotes ?? [trustSignalConfidenceNote(signal)]),
+  ].filter(Boolean).join(" · ");
+const trustSignalClassName = (signal: (typeof trustSignals)[number]) =>
+  [
+    "stat-pill ui-pill place-card-trust-pill",
+    signal.source === "michelin" ? "place-card-trust-pill--michelin" : null,
+    signal.source === "michelin" ? michelinTrustSignalModifier(signal.tier) : null,
+    signal.is_current === false ? "place-card-trust-pill--previous" : null,
+  ].filter(Boolean).join(" ");
+const normalizedTrustTier = (tier: string | null | undefined) => (tier ?? "").toLowerCase();
+const michelinStarCount = (tier: string | null | undefined) => {
+  const normalized = normalizedTrustTier(tier);
+  if (normalized.includes("3 star")) {
+    return 3;
+  }
+  if (normalized.includes("2 star")) {
+    return 2;
+  }
+  if (normalized.includes("1 star")) {
+    return 1;
+  }
+  return 0;
+};
+const michelinTrustSignalModifier = (tier: string | null | undefined) => {
+  const normalized = normalizedTrustTier(tier);
+  const starCount = michelinStarCount(tier);
+  if (starCount > 0) {
+    return `place-card-trust-pill--michelin-stars-${starCount}`;
+  }
+  if (normalized.includes("bib")) {
+    return "place-card-trust-pill--michelin-bib";
+  }
+  if (normalized.includes("green")) {
+    return "place-card-trust-pill--michelin-green";
+  }
+  if (normalized.includes("selected")) {
+    return "place-card-trust-pill--michelin-selected";
+  }
+  return null;
+};
+const trustSignalIconClassName = (signal: (typeof trustSignals)[number]) =>
+  [
+    "place-card-trust-icon",
+    signal.source === "michelin" && michelinStarCount(signal.tier) > 1 ? "place-card-trust-icon--michelin-stars" : null,
+  ].filter(Boolean).join(" ");
+const trustSignalIconSvg = (signal: (typeof trustSignals)[number]) => {
+  if (signal.source === "michelin") {
+    const normalized = normalizedTrustTier(signal.tier);
+    const starCount = michelinStarCount(signal.tier);
+    if (starCount > 0) {
+      return Array.from({ length: starCount }, () => '<img src="/icons/michelin-star.svg" alt="" width="18" height="18" decoding="async" />').join("");
+    }
+    if (normalized.includes("bib")) {
+      return '<img src="/icons/michelin-bib-gourmand.svg" alt="" width="18" height="18" decoding="async" />';
+    }
+    if (normalized.includes("green")) {
+      return '<img src="/icons/michelin-green-star.svg" alt="" width="18" height="18" decoding="async" />';
+    }
+    return '<img src="/icons/michelin-selected.svg" alt="" width="18" height="18" decoding="async" />';
+  }
+  if (signal.source === "tabelog") {
+    return '<svg viewBox="0 0 24 24" width="17" height="17" aria-hidden="true" focusable="false"><path fill="currentColor" d="M7 3h10v8.4a5 5 0 0 1-3.5 4.8L12 16.7l-1.5-.5A5 5 0 0 1 7 11.4V3Zm-2 2v4H2V5h3Zm17 0v4h-3V5h3ZM9 5v6.4a3 3 0 0 0 2.1 2.9l.9.3.9-.3a3 3 0 0 0 2.1-2.9V5H9Zm1 14h4v2h-4v-2Z"/></svg>';
+  }
+  if (signal.source === "timeout") {
+    return '<svg viewBox="0 0 24 24" width="17" height="17" aria-hidden="true" focusable="false"><path fill="currentColor" d="M12 2.8a9.2 9.2 0 1 1 0 18.4 9.2 9.2 0 0 1 0-18.4Zm1 4.2h-2v6.1l4.4 2.6 1-1.7-3.4-2V7Z"/></svg>';
+  }
+  return '<svg viewBox="0 0 24 24" width="17" height="17" aria-hidden="true" focusable="false"><path fill="currentColor" d="M5 4h14v16H5V4Zm2 2v12h10V6H7Zm2 2h6v2H9V8Zm0 4h6v2H9v-2Z"/></svg>';
+};
+const hasTrustSignals = trustSignals.length > 0;
 const placeholderMeta =
   place.neighborhood ??
   guideContext.cityName ??
   guideContext.countryName ??
   siteConfig.placeCard.photoPlaceholderFallback;
 const hasStats = placeRatingMetaLabel.length > 0;
+const hasMetaPills = hasStats || hasTrustSignals;
 const metaParts = [
   siteConfig.placeCard.showCategory ? (place.primary_category ?? siteConfig.placeCard.savedPlaceLabel) : null,
   siteConfig.placeCard.showNeighborhood ? place.neighborhood : null,
@@ -214,7 +372,7 @@ const displayedPlaceAttribution = showPlaceAttribution ? placeAttribution : null
               class="place-card-map-link"
               href={place.maps_url}
               target="_blank"
-              rel="noreferrer"
+              rel="noopener noreferrer"
               aria-label={`Open ${place.name} in Google Maps`}
               title={`Open ${place.name} in Google Maps`}
             >
@@ -232,11 +390,38 @@ const displayedPlaceAttribution = showPlaceAttribution ? placeAttribution : null
           set:html={markerSvg}
         />
         {metaParts.length > 0 && <p class="meta-copy">{metaParts.join(" · ")}</p>}
-        {hasStats && (
+        {hasMetaPills && (
           <div class="stats-row ui-meta-row place-card-stats place-card-meta-stats">
-            <span class="stat-pill ui-pill place-card-rating-pill" title={placeRatingMetaTitle}>
-              {placeRatingMetaLabel}
-            </span>
+            {hasStats && (
+              <span class="stat-pill ui-pill place-card-rating-pill" title={placeRatingMetaTitle}>
+                {placeRatingMetaLabel}
+              </span>
+            )}
+            {trustSignals.map((signal) =>
+              signal.url ? (
+                <a
+                  class={trustSignalClassName(signal)}
+                  href={signal.url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  title={trustSignalTitle(signal)}
+                  aria-label={trustSignalTitle(signal)}
+                >
+                  <span class={trustSignalIconClassName(signal)} set:html={trustSignalIconSvg(signal)} />
+                  <span class="visually-hidden">{trustSignalLabel(signal)}</span>
+                </a>
+              ) : (
+                <span
+                  class={trustSignalClassName(signal)}
+                  title={trustSignalTitle(signal)}
+                  role="img"
+                  aria-label={trustSignalTitle(signal)}
+                >
+                  <span class={trustSignalIconClassName(signal)} set:html={trustSignalIconSvg(signal)} />
+                  <span class="visually-hidden">{trustSignalLabel(signal)}</span>
+                </span>
+              )
+            )}
           </div>
         )}
       </div>
