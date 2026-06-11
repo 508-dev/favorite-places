@@ -4,7 +4,7 @@ import { siteConfig } from "../data/site";
 import { buildMapMarkerSvg, getMapMarkerColors } from "../lib/mapMarkerIcons";
 import { getDisplayGuideTags, getDisplayPlaceTags, getTagComparisonValue } from "../lib/placeTags";
 import { renderRichText } from "../lib/renderRichText";
-import type { ListAuthor, Place } from "../lib/types";
+import type { ListAuthor, Place, TrustSignal } from "../lib/types";
 import AuthorByline from "./AuthorByline.astro";
 
 interface Props {
@@ -117,14 +117,11 @@ const isSafeExternalUrl = (value: string | null | undefined): value is string =>
     return false;
   }
 };
-const trustSignals = rawTrustSignals
-  .filter((signal) => !(currentAwardSources.has(signal.source) && signal.is_current === false))
-  .map((signal) => ({
-    ...signal,
-    url: isSafeExternalUrl(signal.url) ? signal.url : null,
-  }))
-  .slice(0, 3);
-const trustSignalLabel = (signal: (typeof trustSignals)[number]) =>
+type CardTrustSignal = TrustSignal & {
+  url: string | null;
+  groupedTrustSignalLabels?: string[];
+};
+const trustSignalBaseLabel = (signal: TrustSignal) =>
   [
     signal.source === "michelin" && signal.is_current === false
       ? "Previous MICHELIN Guide"
@@ -132,6 +129,35 @@ const trustSignalLabel = (signal: (typeof trustSignals)[number]) =>
     signal.display_tier ?? signal.tier,
     signal.award_year ? String(signal.award_year) : null,
   ].filter(Boolean).join(" · ");
+const combineTabelogTrustSignals = (signals: CardTrustSignal[]) => {
+  const tabelogSignals = signals.filter((signal) => signal.source === "tabelog");
+  if (tabelogSignals.length <= 1) {
+    return signals;
+  }
+
+  const firstTabelogIndex = signals.findIndex((signal) => signal.source === "tabelog");
+  const nonTabelogSignals = signals.filter((signal) => signal.source !== "tabelog");
+  const combinedTabelogSignal = {
+    ...tabelogSignals[0],
+    groupedTrustSignalLabels: tabelogSignals.map(trustSignalBaseLabel),
+    match_reason: Array.from(new Set(tabelogSignals.map((signal) => signal.match_reason).filter(Boolean))).join(" · "),
+  };
+
+  return [
+    ...nonTabelogSignals.slice(0, firstTabelogIndex),
+    combinedTabelogSignal,
+    ...nonTabelogSignals.slice(firstTabelogIndex),
+  ];
+};
+const trustSignals = combineTabelogTrustSignals(rawTrustSignals
+  .filter((signal) => !(currentAwardSources.has(signal.source) && signal.is_current === false))
+  .map((signal) => ({
+    ...signal,
+    url: isSafeExternalUrl(signal.url) ? signal.url : null,
+  })))
+  .slice(0, 3);
+const trustSignalLabel = (signal: (typeof trustSignals)[number]) =>
+  signal.groupedTrustSignalLabels?.join(" + ") ?? trustSignalBaseLabel(signal);
 const trustSignalTitle = (signal: (typeof trustSignals)[number]) =>
   [trustSignalLabel(signal), signal.match_reason].filter(Boolean).join(" · ");
 const trustSignalClassName = (signal: (typeof trustSignals)[number]) =>

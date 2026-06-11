@@ -1252,6 +1252,27 @@ class TrustSignalsTest(unittest.TestCase):
             "Recognized by Tabelog 100 Sushi 2025.",
         )
 
+    def test_tabelog_award_display_removes_leading_the(self) -> None:
+        signal = build_data.display_trust_signal(
+            TrustSignal(
+                source="tabelog",
+                label="The Tabelog Award",
+                tier="Gold",
+                award_year=2026,
+                is_current=True,
+                fetched_at="2026-01-15T00:00:00+00:00",
+                confidence="high",
+                match_reason="Tabelog name exact match",
+            )
+        )
+
+        self.assertEqual(signal.label, "The Tabelog Award")
+        self.assertEqual(signal.display_label, "Tabelog Award")
+        self.assertEqual(
+            build_data.trust_signal_recommendation_copy([signal]),
+            "Recognized by Tabelog Award Gold 2026.",
+        )
+
     def test_trust_signal_recommendation_copy_skips_previous_when_current_exists(self) -> None:
         self.assertEqual(
             build_data.trust_signal_recommendation_copy(
@@ -1307,7 +1328,7 @@ class TrustSignalsTest(unittest.TestCase):
                     ),
                 ]
             ),
-            "Recognized by The Tabelog Award Bronze 2025 and previously by MICHELIN Guide 1 star 2023.",
+            "Recognized by Tabelog Award Bronze 2025 and previously by MICHELIN Guide 1 star 2023.",
         )
 
     def test_trust_signal_recommendation_copy_preserves_previous_michelin_star_when_current_tier_differs(self) -> None:

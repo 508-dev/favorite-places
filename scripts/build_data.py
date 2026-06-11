@@ -3493,6 +3493,8 @@ def display_trust_signal(signal: TrustSignal) -> TrustSignal:
 
 
 def trust_signal_display_label(signal: TrustSignal) -> str:
+    if signal.source == "tabelog" and signal.label == "The Tabelog Award":
+        return "Tabelog Award"
     if signal.source == "tabelog" and signal.label == "Tabelog Hyakumeiten":
         return "Tabelog 100"
     return signal.label
@@ -5695,8 +5697,8 @@ def trust_signal_recommendation_copy(signals: list[TrustSignal]) -> str | None:
         ):
             continue
         label_parts = [
-            signal.display_label or signal.label,
-            signal.display_tier or signal.tier,
+            signal.display_label or trust_signal_display_label(signal),
+            signal.display_tier or trust_signal_display_tier(signal),
         ]
         if signal.award_year:
             label_parts.append(str(signal.award_year))
