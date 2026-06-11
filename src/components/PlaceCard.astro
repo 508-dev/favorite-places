@@ -1,5 +1,6 @@
 ---
 
+import { Image } from "astro:assets";
 import { siteConfig } from "../data/site";
 import { buildMapMarkerSvg, getMapMarkerColors } from "../lib/mapMarkerIcons";
 import { getDisplayGuideTags, getDisplayPlaceTags, getTagComparisonValue } from "../lib/placeTags";
@@ -65,6 +66,7 @@ const neighborhoodToken = getTagComparisonValue(place.neighborhood ?? "");
 const whyRecommendedHtml = renderRichText(place.why_recommended ?? place.note);
 const placePhotosEnabled = (import.meta.env.PUBLIC_PLACE_PHOTOS || "on").toLowerCase() !== "off";
 const photoSrc = place.main_photo_path ?? (guidePhotoMode === "remote_url" ? place.photo_url : null);
+const isRemotePhoto = Boolean(photoSrc && /^https?:\/\//i.test(photoSrc));
 const hasPhoto = Boolean(siteConfig.placeCard.showPhoto && placePhotosEnabled && photoSrc);
 const ratingValue = typeof place.rating === "number" ? place.rating : null;
 const reviewCount = typeof place.user_rating_count === "number" ? place.user_rating_count : null;
@@ -132,7 +134,6 @@ const displayedPlaceAttribution = showPlaceAttribution ? placeAttribution : null
 
 <article
   class="place-card ui-card"
-  tabindex="0"
   data-place-card
   data-best-hit={bestHit ? "true" : "false"}
   data-featured={featured ? "true" : "false"}
@@ -166,7 +167,11 @@ const displayedPlaceAttribution = showPlaceAttribution ? placeAttribution : null
 >
   <div class="place-card-photo" aria-hidden={hasPhoto ? undefined : "true"}>
     {hasPhoto ? (
-      <img src={photoSrc!} alt={place.name} loading="lazy" />
+      isRemotePhoto ? (
+        <img src={photoSrc!} alt={place.name} loading="lazy" decoding="async" />
+      ) : (
+        <Image src={photoSrc!} alt={place.name} width={600} height={400} loading="lazy" decoding="async" />
+      )
     ) : (
       <div class="place-card-photo-placeholder">
         <div class="place-card-photo-placeholder-copy">
@@ -193,10 +198,9 @@ const displayedPlaceAttribution = showPlaceAttribution ? placeAttribution : null
         <h3 class="ui-card-title" title={place.name}>{place.name}</h3>
         <div class="place-card-title-actions">
           {isTemporarilyClosed && (
-            <span
+            <button
+              type="button"
               class="place-card-status-indicator"
-              tabindex="0"
-              role="img"
               aria-label="Temporarily closed. Check Google Maps before visiting."
               title="Temporarily closed · check before visiting"
             >
@@ -207,7 +211,7 @@ const displayedPlaceAttribution = showPlaceAttribution ? placeAttribution : null
                 />
               </svg>
               <span class="place-card-status-tooltip" aria-hidden="true">Temporarily closed · check before visiting</span>
-            </span>
+            </button>
           )}
           {siteConfig.placeCard.showMapLink && (
             <a

@@ -123,7 +123,7 @@ describe("guide map interactions", () => {
     expectCssToContain(css, "white-space: nowrap;");
   });
 
-  it("focuses the full place card when a map marker is selected", () => {
+  it("scrolls the full place card into view when a map marker is selected", () => {
     const guideMap = readSource("src/components/GuideMap.astro");
 
     expect(guideMap).toContain(
@@ -133,7 +133,7 @@ describe("guide map interactions", () => {
       "selectPlace(placeId, { focusCard: shouldAutoFocusCardFromMarker() })",
     );
     expect(guideMap).toContain("const focusPlaceCard = (placeId: string) => {");
-    expect(guideMap).toContain("card.focus({ preventScroll: true });");
+    expect(guideMap).not.toContain("card.focus({ preventScroll: true });");
     expect(guideMap).toContain(
       'card.scrollIntoView({ behavior: "smooth", block: "center", inline: "nearest" });',
     );

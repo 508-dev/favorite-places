@@ -1,5 +1,6 @@
 ---
 
+import { getImage } from "astro:assets";
 import { siteConfig } from "../data/site";
 import type { Place } from "../lib/types";
 
@@ -14,22 +15,41 @@ const placePhotosEnabled = (import.meta.env.PUBLIC_PLACE_PHOTOS || "on").toLower
 const mapProvider =
   requestedMapProvider === "leaflet" ? "leaflet" : configuredGoogleMapsApiKey ? "google" : "leaflet";
 const googleMapsApiKey = mapProvider === "google" ? configuredGoogleMapsApiKey : "";
-const mapPlaces = places
-  .filter((place) => place.lat !== null && place.lng !== null)
-  .map((place) => ({
-    id: place.id,
-    name: place.name,
-    category: place.primary_category ?? "Saved place",
-    markerIcon: place.marker_icon,
-    neighborhood: place.neighborhood,
-    lat: place.lat,
-    lng: place.lng,
-    mapsUrl: place.maps_url,
-    mainPhotoPath: place.main_photo_path,
-    rating: place.rating,
-    userRatingCount: place.user_rating_count,
-    topPick: place.top_pick,
-  }));
+const resolveMapPhotoPath = async (photoPath: string | null | undefined) => {
+  if (!photoPath) return null;
+  if (/^https?:\/\//i.test(photoPath)) return photoPath;
+
+  try {
+    const optimized = await getImage({
+      src: photoPath,
+      width: 480,
+      height: 320,
+      format: "webp",
+    });
+    return optimized.src;
+  } catch {
+    return photoPath;
+  }
+};
+
+const mapPlaces = await Promise.all(
+  places
+    .filter((place) => place.lat !== null && place.lng !== null)
+    .map(async (place) => ({
+      id: place.id,
+      name: place.name,
+      category: place.primary_category ?? "Saved place",
+      markerIcon: place.marker_icon,
+      neighborhood: place.neighborhood,
+      lat: place.lat,
+      lng: place.lng,
+      mapsUrl: place.maps_url,
+      mainPhotoPath: await resolveMapPhotoPath(place.main_photo_path),
+      rating: place.rating,
+      userRatingCount: place.user_rating_count,
+      topPick: place.top_pick,
+    })),
+);
 ---
 
 {
@@ -319,7 +339,7 @@ const mapPlaces = places
     const detailsActionHtml = `<button class="guide-map-popup-details-action" type="button" data-guide-map-popup-details data-place-id="${escapeHtml(place.id)}" aria-label="Show details for ${escapeHtml(place.name)}">Details</button>`;
     const footerHtml = `<span class="guide-map-popup-footer">${ratingMeta ? `<span class="guide-map-popup-rating" title="${escapeHtml(ratingMeta.title)}">${escapeHtml(ratingMeta.label)}</span>` : ""}<span class="guide-map-popup-actions">${detailsActionHtml}${mapsActionHtml}</span></span>`;
     const popupBody = `
-      ${photoUrl ? `<div class="guide-map-popup-photo"><img src="${escapeHtml(photoUrl)}" alt="Photo of ${escapeHtml(place.name)}" loading="lazy" /></div>` : ""}
+      ${photoUrl ? `<div class="guide-map-popup-photo"><img src="${escapeHtml(photoUrl)}" alt="${escapeHtml(place.name)}" loading="lazy" decoding="async" data-image-component /></div>` : ""}
       <span class="guide-map-popup-copy">
         <strong>${escapeHtml(place.name)}</strong>
         <span class="guide-map-popup-meta">${escapeHtml(meta)}</span>
@@ -1398,7 +1418,6 @@ const mapPlaces = places
       const card = cardByPlaceId.get(placeId);
       if (!card || card.hidden) return;
 
-      card.focus({ preventScroll: true });
       card.scrollIntoView({ behavior: "smooth", block: "center", inline: "nearest" });
     };
 
@@ -1738,18 +1757,9 @@ const mapPlaces = places
       const placeId = card.dataset.placeId || "";
       card.addEventListener("pointerenter", () => hoverPlace(placeId));
       card.addEventListener("pointerleave", () => clearHoveredPlace(placeId));
-      card.addEventListener("focus", () => hoverPlace(placeId));
-      card.addEventListener("blur", () => clearHoveredPlace(placeId));
       card.addEventListener("click", (event) => {
         const target = event.target instanceof Element ? event.target : null;
         if (target?.closest("a, button, input, select, textarea, [role='button']")) return;
-        selectPlace(placeId, { expandCollapsed: true });
-      });
-      card.addEventListener("keydown", (event) => {
-        if (event.key !== "Enter" && event.key !== " ") return;
-        const target = event.target instanceof Element ? event.target : null;
-        if (target?.closest("a, button, input, select, textarea, [role='button']")) return;
-        event.preventDefault();
         selectPlace(placeId, { expandCollapsed: true });
       });
     });
