@@ -429,14 +429,28 @@ const hasReservationOptions = reservationLinks.length > 1;
                 aria-label={`Show reservation options for ${place.name}`}
                 title="Find a Table"
               >
-                <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" focusable="false">
-                  <path
-                    fill="currentColor"
-                    d="M7.4 3.2c.5 0 .9.4.9.9v6.1c0 1.1-.7 2.1-1.8 2.4v6.7a.9.9 0 1 1-1.8 0v-6.7a2.5 2.5 0 0 1-1.8-2.4V4.1a.9.9 0 1 1 1.8 0v5.7h.9V4.1c0-.5.4-.9.9-.9Zm4.6.4a6.8 6.8 0 0 1 6.8 6.8v8.9a.9.9 0 1 1-1.8 0v-4.1h-5a5.8 5.8 0 0 1 0-11.6Zm0 1.8a4 4 0 0 0 0 8h5v-3a5 5 0 0 0-5-5Z"
-                  />
-                </svg>
-                <span class="place-card-reservation-caret" aria-hidden="true">
-                  <svg viewBox="0 0 16 16" width="10" height="10" aria-hidden="true" focusable="false">
+                <span class="place-card-reservation-menu-icon" aria-hidden="true">
+                  <svg
+                    class="place-card-reservation-menu-symbol"
+                    viewBox="0 0 24 24"
+                    width="16"
+                    height="16"
+                    aria-hidden="true"
+                    focusable="false"
+                  >
+                    <path
+                      fill="currentColor"
+                      d="M7.4 3.2c.5 0 .9.4.9.9v6.1c0 1.1-.7 2.1-1.8 2.4v6.7a.9.9 0 1 1-1.8 0v-6.7a2.5 2.5 0 0 1-1.8-2.4V4.1a.9.9 0 1 1 1.8 0v5.7h.9V4.1c0-.5.4-.9.9-.9Zm4.6.4a6.8 6.8 0 0 1 6.8 6.8v8.9a.9.9 0 1 1-1.8 0v-4.1h-5a5.8 5.8 0 0 1 0-11.6Zm0 1.8a4 4 0 0 0 0 8h5v-3a5 5 0 0 0-5-5Z"
+                    />
+                  </svg>
+                  <svg
+                    class="place-card-reservation-caret"
+                    viewBox="0 0 16 16"
+                    width="9"
+                    height="9"
+                    aria-hidden="true"
+                    focusable="false"
+                  >
                     <path fill="currentColor" d="M4.1 5.7 8 9.6l3.9-3.9 1.1 1.1-5 5-5-5 1.1-1.1Z" />
                   </svg>
                 </span>

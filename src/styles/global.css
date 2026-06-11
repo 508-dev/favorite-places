@@ -1077,7 +1077,6 @@
     border-color: var(--accent);
     background: color-mix(in srgb, var(--accent-soft) 52%, var(--surface));
     box-shadow: 0 18px 42px rgba(31, 37, 34, 0.13);
-    transform: translateY(-2px);
   }
 
   .place-card[data-search-highlight="true"] {
@@ -1608,19 +1607,23 @@
     display: none;
   }
 
-  .place-card-reservation-caret {
-    position: absolute;
-    right: 0.36rem;
-    bottom: 0.28rem;
+  .place-card-reservation-menu-icon {
     display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0;
     color: currentColor;
-    opacity: 0.86;
-    pointer-events: none;
   }
 
-  .place-card-reservation-caret svg {
-    width: 0.58rem;
-    height: 0.58rem;
+  .place-card-reservation-menu-symbol {
+    width: 0.98rem;
+    height: 0.98rem;
+    display: block;
+  }
+
+  .place-card-reservation-caret {
+    width: 0.54rem;
+    height: 0.54rem;
     display: block;
   }
 
@@ -1677,6 +1680,16 @@
     display: block;
   }
 
+  .place-card-action-link .place-card-reservation-menu-symbol {
+    width: 0.98rem;
+    height: 0.98rem;
+  }
+
+  .place-card-action-link .place-card-reservation-caret {
+    width: 0.54rem;
+    height: 0.54rem;
+  }
+
   .place-card-map-link img {
     width: 1rem;
     height: auto;
@@ -1699,7 +1712,6 @@
     background: #ffffff;
     color: var(--accent);
     box-shadow: 0 14px 28px rgba(39, 47, 56, 0.14);
-    transform: translateY(-1px);
   }
 
   .place-card-action-link--maps:hover,
@@ -1708,7 +1720,6 @@
     background: #ffffff;
     color: #0b57d0;
     box-shadow: 0 14px 28px rgba(26, 115, 232, 0.16);
-    transform: translateY(-1px);
   }
 
   .place-card-action-link:focus-visible {

@@ -1004,7 +1004,7 @@ _PLACE_JS_EXTRACTOR = r"""
   };
   const reservationLabel = (element, href) => {
     const actionPrefixPattern = new RegExp(
-      "^(?:find a table|reserve|make a reservation|book(?: a table)?)"
+      "^(?:find a table|reserve|make a reservation|book a table)"
         + "(?:\\s+(?:with|on|at|via))?\\s*",
       "i",
     );
@@ -1025,7 +1025,7 @@ _PLACE_JS_EXTRACTOR = r"""
     const links = [];
     const seen = new Set();
     const reservationPattern = new RegExp(
-      String.raw`\b(find a table|reserve|reservation|book(?: a table)?|booking)\b`,
+      String.raw`\b(find a table|reserve|reservation|book a table)\b`,
       "i",
     );
     const providerHostPattern = new RegExp(
@@ -1266,7 +1266,7 @@ _PLACE_RESERVATION_BUTTON_CLICK_JS = r"""
 """ + _PLACE_PANEL_HELPERS_JS + r"""
 
   const root = placePanelRoot().root;
-  const reservationPattern = /\b(find a table|reserve|reservation|book(?: a table)?|booking)\b/i;
+  const reservationPattern = /\b(find a table|reserve|reservation|book a table)\b/i;
   const candidates = [
     ...root.querySelectorAll("button, div[role='button']"),
   ];
@@ -1306,7 +1306,7 @@ _PLACE_RESERVATION_DIALOG_JS = r"""
   };
   const cleanReservationLabel = (value, href) => {
     const actionPrefixPattern = new RegExp(
-      "^(?:find a table|reserve|make a reservation|book(?: a table)?)"
+      "^(?:find a table|reserve|make a reservation|book a table)"
         + "(?:\\s+(?:with|on|at|via))?\\s*",
       "i",
     );
@@ -4848,7 +4848,7 @@ def _clean_reservation_label(value: object, url: str) -> str:
         return fallback
     label = re.sub(r"[\ue000-\uf8ff]", " ", label)
     label = re.sub(
-        r"^(?:find a table|reserve|make a reservation|book(?: a table)?)"
+        r"^(?:find a table|reserve|make a reservation|book a table)"
         r"(?:\s+(?:with|on|at|via))?\s*",
         "",
         label,

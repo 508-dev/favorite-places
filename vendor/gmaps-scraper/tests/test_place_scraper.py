@@ -202,6 +202,16 @@ class PlaceScraperTests(unittest.TestCase):
         self.assertIn("closeProviderRoot", _PLACE_RESERVATION_DIALOG_JS)
         self.assertIn("KeyboardEvent", _PLACE_RESERVATION_DIALOG_JS)
 
+    def test_reservation_extractors_do_not_match_generic_booking_copy(self) -> None:
+        for script in (
+            _PLACE_JS_EXTRACTOR,
+            _PLACE_RESERVATION_BUTTON_CLICK_JS,
+            _PLACE_RESERVATION_DIALOG_JS,
+        ):
+            self.assertIn("book a table", script)
+            self.assertNotIn("|booking", script)
+            self.assertNotIn("book(?: a table)?", script)
+
     def test_collect_reservation_dialog_snapshot_skips_when_no_button(self) -> None:
         class _FakePage:
             def __init__(self) -> None:
