@@ -1426,7 +1426,7 @@
   .place-card-meta-row {
     width: 100%;
     display: grid;
-    grid-template-columns: auto minmax(0, 1fr);
+    grid-template-columns: minmax(0, 1fr);
     align-items: center;
     gap: 0.45rem 0.55rem;
   }
@@ -1437,20 +1437,6 @@
     -webkit-box-orient: vertical;
     -webkit-line-clamp: 2;
     line-height: 1.34;
-  }
-
-  .place-card-marker {
-    width: 1.8rem;
-    height: 1.8rem;
-    display: inline-grid;
-    place-items: center;
-    flex: 0 0 auto;
-  }
-
-  .place-card-marker svg {
-    width: 100%;
-    height: 100%;
-    overflow: visible;
   }
 
   .place-card-meta-stats {

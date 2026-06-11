@@ -198,11 +198,11 @@ describe("guide map interactions", () => {
       "const hasMapCoordinates = place.lat !== null && place.lng !== null;",
     );
     expect(placeCard).toContain('class="place-card-name-row"');
-    expect(placeCard).toContain('class="place-card-marker"');
     expect(placeCard).toContain("{hasMapCoordinates && (");
     expect(placeCard).toContain("data-place-card-map-select");
     expect(placeCard).toContain("aria-label={`Show ${place.name} on the guide map`}");
-    expect(placeCard).toContain('class="place-card-map-link"');
+    expect(placeCard).toContain("place-card-map-link");
+    expect(placeCard).toContain("place-card-action-link--maps");
     expect(placeCard).toContain("aria-label={`Open ${place.name} in Google Maps`}");
     expect(placeCard).toContain('src="/icons/google-maps.svg"');
     expect(placeCard).not.toContain("data-image-component");
@@ -214,9 +214,7 @@ describe("guide map interactions", () => {
     expectCssToContain(css, ".place-card-map-link");
     expectCssToContain(css, ".place-card-map-link img");
     expectCssToContain(css, ".place-card-map-link-label");
-    expectCssToContain(css, ".place-card-marker");
     expectCssToContain(css, ".place-card-name-row");
-    expectCssToContain(css, "width: 1.8rem;");
     expectCssToContain(css, "display: inline-flex;");
     expectCssToContain(css, "width: 2.45rem;");
     expectCssToContain(css, "justify-content: center;");

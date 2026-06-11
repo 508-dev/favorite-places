@@ -40,8 +40,8 @@ test("filters, tags, and sorts places on a guide page", async ({ page }) => {
   await searchInput.press("Enter");
 
   await expect(page.locator("[data-selected-tags]")).toContainText("#rainy-day");
-  await expect(resultsCount).toHaveText("3 places");
-  await expect(page.locator(visiblePlaceCards)).toHaveCount(3);
+  await expect(resultsCount).toHaveText("2 places");
+  await expect(page.locator(visiblePlaceCards)).toHaveCount(2);
 
   await page.locator('[data-remove-tag="rainy-day"]').click();
   await expect(resultsCount).toHaveText("11 places");

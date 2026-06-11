@@ -459,12 +459,6 @@ const reservationLink = (place.reservation_links ?? [])
         </div>
       </div>
       <div class="place-card-meta-row">
-        <span
-          class="place-card-marker"
-          aria-hidden="true"
-          title={place.primary_category ?? siteConfig.placeCard.savedPlaceLabel}
-          set:html={markerSvg}
-        />
         {metaParts.length > 0 && <p class="meta-copy">{metaParts.join(" · ")}</p>}
         {hasMetaPills && (
           <div class="stats-row ui-meta-row place-card-stats place-card-meta-stats">
