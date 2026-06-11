@@ -15,7 +15,7 @@ function mapRoots(root?: HTMLElement | null) {
 }
 
 function anchorAccessibleName(anchor: HTMLAnchorElement): string | null {
-  const text = anchor.innerText?.trim();
+  const text = anchor.textContent?.trim();
   if (text) return text;
 
   const ariaLabel = anchor.getAttribute("aria-label")?.trim();
@@ -37,7 +37,13 @@ function anchorAccessibleName(anchor: HTMLAnchorElement): string | null {
 
 function patchAnchors(container: ParentNode) {
   container.querySelectorAll<HTMLAnchorElement>("a[href]").forEach((anchor) => {
-    if (anchor.innerText?.trim() || anchor.getAttribute("aria-label")?.trim()) return;
+    if (
+      anchor.textContent?.trim() ||
+      anchor.getAttribute("aria-label")?.trim() ||
+      anchor.getAttribute("aria-labelledby")?.trim()
+    ) {
+      return;
+    }
 
     const imgAlt = anchor.querySelector("img")?.getAttribute("alt")?.trim();
     if (imgAlt) {
@@ -76,24 +82,39 @@ function patchMapAccessibility(label: string, root?: HTMLElement | null) {
 
 export function installMapAccessibility(root: HTMLElement, label: string) {
   const patch = () => patchMapAccessibility(label, root);
+  let pendingPatchFrame: number | null = null;
+
+  const schedulePatch = () => {
+    if (pendingPatchFrame !== null) return;
+
+    pendingPatchFrame = window.requestAnimationFrame(() => {
+      pendingPatchFrame = null;
+      patch();
+    });
+  };
 
   patch();
 
   const observers = mapRoots(root).map((mapRoot) => {
-    const observer = new MutationObserver(patch);
+    const observer = new MutationObserver(schedulePatch);
     observer.observe(mapRoot, {
       attributes: true,
-      attributeFilter: ["href", "src", "title", "aria-label"],
+      attributeFilter: ["href", "src", "title", "aria-label", "aria-labelledby"],
       childList: true,
       subtree: true,
     });
     return observer;
   });
 
-  const delayedPatchTimers = [250, 1000, 3000].map((delay) => window.setTimeout(patch, delay));
+  const delayedPatchTimers = [250, 1000, 3000].map((delay) =>
+    window.setTimeout(schedulePatch, delay),
+  );
 
   return () => {
     observers.forEach((observer) => observer.disconnect());
     delayedPatchTimers.forEach((timer) => window.clearTimeout(timer));
+    if (pendingPatchFrame !== null) {
+      window.cancelAnimationFrame(pendingPatchFrame);
+    }
   };
 }
