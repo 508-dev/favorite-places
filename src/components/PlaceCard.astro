@@ -101,11 +101,6 @@ const placeRatingMetaTitle = [
 const rawTrustSignals = siteConfig.placeCard.showTrustSignals
   ? (place.trust_signals ?? []).filter((signal) => signal.confidence !== "low")
   : [];
-const currentAwardSources = new Set(
-  rawTrustSignals
-    .filter((signal) => (signal.source === "michelin" || signal.source === "tabelog") && signal.is_current === true)
-    .map((signal) => signal.source),
-);
 const isSafeExternalUrl = (value: string | null | undefined): value is string => {
   if (!value) {
     return false;
@@ -130,6 +125,14 @@ const trustSignalBaseLabel = (signal: TrustSignal) =>
     signal.display_tier ?? signal.tier,
     signal.award_year ? String(signal.award_year) : null,
   ].filter(Boolean).join(" · ");
+const trustSignalAwardTierKey = (signal: TrustSignal) => signal.display_tier ?? signal.tier ?? "";
+const currentAwardKeys = new Set(
+  rawTrustSignals
+    .filter((signal) => (signal.source === "michelin" || signal.source === "tabelog") && signal.is_current === true)
+    .map((signal) => `${signal.source}:${trustSignalAwardTierKey(signal)}`),
+);
+const shouldHidePreviousTrustSignal = (signal: TrustSignal) =>
+  signal.is_current === false && currentAwardKeys.has(`${signal.source}:${trustSignalAwardTierKey(signal)}`);
 const trustSignalConfidenceNote = (signal: TrustSignal) => {
   if (signal.confidence !== "medium") {
     return null;
@@ -172,7 +175,7 @@ const combineTabelogTrustSignals = (signals: CardTrustSignal[]) => {
   ];
 };
 const trustSignals = combineTabelogTrustSignals(rawTrustSignals
-  .filter((signal) => !(currentAwardSources.has(signal.source) && signal.is_current === false))
+  .filter((signal) => !shouldHidePreviousTrustSignal(signal))
   .map((signal) => ({
     ...signal,
     url: isSafeExternalUrl(signal.url) ? signal.url : null,

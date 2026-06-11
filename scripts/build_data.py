@@ -2559,7 +2559,7 @@ def load_all_trust_signal_maps(
     if not trust_store_url_has_readable_cache(store_url):
         return {}
 
-    store = TrustSignalStore(store_url)
+    store = TrustSignalStore(store_url, initialize=False)
     trust_signal_maps: dict[str, dict[str, list[TrustSignal]]] = {}
     for slug, raw in raw_lists.items():
         trust_signal_maps[slug] = load_trust_signals_for_places(
@@ -2585,11 +2585,16 @@ def refresh_trust_signals(
         enrichment_caches[raw_path.stem] = load_places_cache(raw_path.stem)
 
     stable_place_ids = build_stable_place_id_index(raw_lists)
+    guide_location_contexts = {
+        slug: guide_location_context(slug, raw)
+        for slug, raw in raw_lists.items()
+    }
     summary = refresh_trust_signals_for_raw_guides(
         root=ROOT,
         raw_lists=raw_lists,
         enrichment_caches=enrichment_caches,
         stable_place_ids=stable_place_ids,
+        guide_location_contexts=guide_location_contexts,
         include_google_fallback=include_google_fallback,
     )
     print(

@@ -65,6 +65,18 @@ class TrustSignalsTest(unittest.TestCase):
 
             self.assertTrue(db_path.parent.exists())
 
+    def test_store_can_skip_schema_initialization_for_read_only_loads(self) -> None:
+        with (
+            patch("scripts.trust_signals.ensure_sqlite_store_parent_dir") as ensure_parent_dir,
+            patch("scripts.trust_signals.metadata.create_all") as create_all,
+            patch("scripts.trust_signals.ensure_trust_schema") as ensure_schema,
+        ):
+            TrustSignalStore("sqlite:///:memory:", initialize=False)
+
+        ensure_parent_dir.assert_not_called()
+        create_all.assert_not_called()
+        ensure_schema.assert_not_called()
+
     def test_store_round_trips_place_signals(self) -> None:
         with TemporaryDirectory() as tmpdir:
             db_path = Path(tmpdir) / "trust.sqlite"
@@ -841,6 +853,40 @@ class TrustSignalsTest(unittest.TestCase):
                     ),
                 ],
             },
+        )
+
+    def test_region_sources_use_override_location_context(self) -> None:
+        raw_lists = {
+            "dinner-list": RawSavedList(title="Restaurants", places=[]),
+        }
+        guide_location_contexts = {
+            "dinner-list": ("Tokyo", "Japan"),
+        }
+
+        michelin_sources = michelin_region_sources_for_guides(
+            raw_lists,
+            guide_location_contexts=guide_location_contexts,
+        )
+        tabelog_sources = tabelog_sources_for_guides(
+            raw_lists,
+            guide_location_contexts=guide_location_contexts,
+        )
+
+        self.assertEqual(
+            michelin_sources,
+            {
+                "dinner-list": [
+                    MichelinRegionSource(
+                        source_type="official",
+                        region_key="japan/tokyo",
+                        url="https://guide.michelin.com/en/jp/tokyo-region/restaurants",
+                    )
+                ],
+            },
+        )
+        self.assertEqual(
+            [source.source_type for source in tabelog_sources["dinner-list"]],
+            ["award", "hyakumeiten"],
         )
 
     def test_parse_wikipedia_michelin_starred_page_extracts_yeared_stars(self) -> None:

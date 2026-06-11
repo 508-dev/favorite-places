@@ -229,12 +229,14 @@ class TrustSignalRefreshSummary(BaseModel):
 
 
 class TrustSignalStore:
-    def __init__(self, store_url: str) -> None:
+    def __init__(self, store_url: str, *, initialize: bool = True) -> None:
         self.store_url = store_url
-        ensure_sqlite_store_parent_dir(store_url)
+        if initialize:
+            ensure_sqlite_store_parent_dir(store_url)
         self.engine = create_engine(store_url, future=True)
-        metadata.create_all(self.engine)
-        ensure_trust_schema(self.engine)
+        if initialize:
+            metadata.create_all(self.engine)
+            ensure_trust_schema(self.engine)
 
     def load_signals_for_place_keys(
         self,
@@ -674,6 +676,7 @@ def refresh_trust_signals_for_raw_guides(
     raw_lists: Mapping[str, RawSavedList],
     enrichment_caches: Mapping[str, Mapping[str, EnrichmentCacheEntry]],
     stable_place_ids: Mapping[tuple[str, int], str],
+    guide_location_contexts: Mapping[str, tuple[str | None, str | None]] | None = None,
     force_refresh: bool = False,
     include_google_fallback: bool = False,
 ) -> TrustSignalRefreshSummary:
@@ -682,8 +685,14 @@ def refresh_trust_signals_for_raw_guides(
     summary = TrustSignalRefreshSummary()
     brave_api_key = os.environ.get(BRAVE_SEARCH_API_KEY_ENV) or os.environ.get(BRAVE_API_KEY_ENV)
     google_fallback_enabled = include_google_fallback or env_flag_enabled(GOOGLE_FALLBACK_ENV)
-    michelin_sources_by_guide = michelin_region_sources_for_guides(raw_lists)
-    tabelog_sources_by_guide = tabelog_sources_for_guides(raw_lists)
+    michelin_sources_by_guide = michelin_region_sources_for_guides(
+        raw_lists,
+        guide_location_contexts=guide_location_contexts,
+    )
+    tabelog_sources_by_guide = tabelog_sources_for_guides(
+        raw_lists,
+        guide_location_contexts=guide_location_contexts,
+    )
     michelin_restaurants_by_source: dict[tuple[str, str], list[MichelinRestaurant]] = {}
     tabelog_restaurants_by_source: dict[tuple[str, str], list[TabelogRestaurant]] = {}
     unique_sources = {
@@ -716,8 +725,17 @@ def refresh_trust_signals_for_raw_guides(
         tabelog_restaurants_by_source[(source.source_type, source.region_key)] = restaurants
 
     for slug, raw in sorted(raw_lists.items()):
-        city_name = infer_city_name(raw.title or slug)
-        country_name = infer_country_name(raw.title or slug)
+        location_context = guide_location_contexts.get(slug) if guide_location_contexts is not None else None
+        city_name = (
+            location_context[0]
+            if location_context is not None and location_context[0]
+            else infer_city_name(raw.title or slug)
+        )
+        country_name = (
+            location_context[1]
+            if location_context is not None and location_context[1]
+            else infer_country_name(raw.title or slug)
+        )
         enrichment_cache = enrichment_caches.get(slug, {})
         michelin_restaurants = [
             restaurant
@@ -914,11 +932,17 @@ def cached_or_fetch_search_results(
 
 def michelin_region_sources_for_guides(
     raw_lists: Mapping[str, RawSavedList],
+    *,
+    guide_location_contexts: Mapping[str, tuple[str | None, str | None]] | None = None,
 ) -> dict[str, list[MichelinRegionSource]]:
     configured_urls = configured_michelin_region_urls()
     sources: dict[str, list[MichelinRegionSource]] = {}
     for slug, raw in raw_lists.items():
-        country_name, city_name = michelin_region_lookup_key(slug, raw)
+        country_name, city_name = michelin_region_lookup_key(
+            slug,
+            raw,
+            location_context=guide_location_contexts.get(slug) if guide_location_contexts is not None else None,
+        )
         key = (country_name, city_name)
         guide_sources: list[MichelinRegionSource] = []
         official_url = configured_urls.get(key) or MICHELIN_REGION_URLS.get(key)
@@ -947,8 +971,26 @@ def michelin_region_sources_for_guides(
     return sources
 
 
-def michelin_region_lookup_key(slug: str, raw: RawSavedList) -> tuple[str, str]:
-    text = normalize_search_text(" ".join([slug, raw.title or "", raw.description or ""]))
+def michelin_region_lookup_key(
+    slug: str,
+    raw: RawSavedList,
+    *,
+    location_context: tuple[str | None, str | None] | None = None,
+) -> tuple[str, str]:
+    context_city, context_country = location_context or (None, None)
+    text = normalize_search_text(
+        " ".join(
+            value
+            for value in [
+                slug,
+                raw.title or "",
+                raw.description or "",
+                context_city or "",
+                context_country or "",
+            ]
+            if value
+        )
+    )
     if "hong kong" in text:
         return "hong kong", "hong kong"
     if "taipei" in text or "taiwan" in text:
@@ -957,8 +999,8 @@ def michelin_region_lookup_key(slug: str, raw: RawSavedList) -> tuple[str, str]:
         return "japan", "tokyo"
     if "kyoto" in text:
         return "japan", "kyoto"
-    city_name = normalize_region_token(infer_city_name(raw.title or slug) or "")
-    country_name = normalize_region_token(infer_country_name(raw.title or slug) or "")
+    city_name = normalize_region_token(context_city or infer_city_name(raw.title or slug) or "")
+    country_name = normalize_region_token(context_country or infer_country_name(raw.title or slug) or "")
     return country_name, city_name
 
 
@@ -993,12 +1035,16 @@ def configured_michelin_region_urls() -> dict[tuple[str, str], str]:
 
 def tabelog_sources_for_guides(
     raw_lists: Mapping[str, RawSavedList],
+    *,
+    guide_location_contexts: Mapping[str, tuple[str | None, str | None]] | None = None,
 ) -> dict[str, list[TabelogSource]]:
     configured_urls = configured_tabelog_source_urls()
     sources: dict[str, list[TabelogSource]] = {}
     for slug, raw in raw_lists.items():
-        country_name = normalize_region_token(infer_country_name(raw.title or slug) or "")
-        lookup_country, _ = michelin_region_lookup_key(slug, raw)
+        location_context = guide_location_contexts.get(slug) if guide_location_contexts is not None else None
+        context_country = location_context[1] if location_context is not None else None
+        country_name = normalize_region_token(context_country or infer_country_name(raw.title or slug) or "")
+        lookup_country, _ = michelin_region_lookup_key(slug, raw, location_context=location_context)
         if country_name != "japan" and lookup_country != "japan":
             continue
         urls = configured_urls or {
