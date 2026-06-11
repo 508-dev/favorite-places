@@ -66,6 +66,7 @@ const whyRecommendedHtml = renderRichText(place.why_recommended ?? place.note);
 const placePhotosEnabled = (import.meta.env.PUBLIC_PLACE_PHOTOS || "on").toLowerCase() !== "off";
 const photoSrc = place.main_photo_path ?? (guidePhotoMode === "remote_url" ? place.photo_url : null);
 const hasPhoto = Boolean(siteConfig.placeCard.showPhoto && placePhotosEnabled && photoSrc);
+const hasMapCoordinates = place.lat !== null && place.lng !== null;
 const ratingValue = typeof place.rating === "number" ? place.rating : null;
 const reviewCount = typeof place.user_rating_count === "number" ? place.user_rating_count : null;
 const priceRange = typeof place.price_range === "string" && place.price_range.trim().length > 0 ? place.price_range.trim() : null;
@@ -354,15 +355,17 @@ const displayedPlaceAttribution = showPlaceAttribution ? placeAttribution : null
       <div class="place-card-name-row">
         <h3 class="ui-card-title" title={place.name}>{place.name}</h3>
         <div class="place-card-title-actions">
-          <button
-            type="button"
-            class="place-card-map-select"
-            data-place-card-map-select
-            aria-label={`Show ${place.name} on the guide map`}
-            title="Show on guide map"
-          >
-            <span class="place-card-map-select-icon" aria-hidden="true" set:html={markerSvg} />
-          </button>
+          {hasMapCoordinates && (
+            <button
+              type="button"
+              class="place-card-map-select"
+              data-place-card-map-select
+              aria-label={`Show ${place.name} on the guide map`}
+              title="Show on guide map"
+            >
+              <span class="place-card-map-select-icon" aria-hidden="true" set:html={markerSvg} />
+            </button>
+          )}
           {isTemporarilyClosed && (
             <button
               type="button"
