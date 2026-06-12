@@ -492,14 +492,25 @@ class TrustSignalStore:
         with self.engine.connect() as connection:
             row = connection.execute(
                 select(
+                    trust_source_snapshots.c.fetched_at,
                     trust_source_snapshots.c.refresh_after,
                     trust_source_snapshots.c.payload_json,
                 ).where(trust_source_snapshots.c.source_key == source_key)
             ).fetchone()
         if row is None:
             return None
-        refresh_after, payload_json = row
+        fetched_at, refresh_after, payload_json = row
         parsed_refresh_after = metadata_datetime_or_none(refresh_after)
+        fetched_at_dt = metadata_datetime_or_none(fetched_at)
+        policy_refresh_after = tabelog_source_refresh_after(source, now=fetched_at_dt or now)
+        if parsed_refresh_after != policy_refresh_after:
+            parsed_refresh_after = policy_refresh_after
+            with self.engine.begin() as connection:
+                connection.execute(
+                    trust_source_snapshots.update()
+                    .where(trust_source_snapshots.c.source_key == source_key)
+                    .values(refresh_after=policy_refresh_after.isoformat())
+                )
         if parsed_refresh_after is None or parsed_refresh_after <= now:
             return None
         payload = json.loads(payload_json)

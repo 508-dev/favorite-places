@@ -45,6 +45,7 @@ from scripts.trust_signals import (
     signals_from_search_results,
     sqlite_url_for_path,
     source_snapshot_key,
+    tabelog_source_key,
     tabelog_hyakumeiten_category_urls,
     tabelog_search_place_is_eligible,
     tabelog_source_refresh_after,
@@ -205,6 +206,46 @@ class TrustSignalsTest(unittest.TestCase):
 
         self.assertTrue(datetime(2027, 2, 1, tzinfo=UTC) <= award_refresh_after <= datetime(2027, 7, 31, tzinfo=UTC))
         self.assertTrue(now + timedelta(days=30) <= hyakumeiten_refresh_after <= now + timedelta(days=44))
+
+    def test_store_normalizes_existing_tabelog_source_snapshot_on_read(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "trust.sqlite"
+            store = TrustSignalStore(sqlite_url_for_path(db_path))
+            fetched_at = datetime(2026, 6, 15, tzinfo=UTC)
+            source = TabelogSource(
+                source_type="hyakumeiten",
+                region_key="japan",
+                url="https://award.tabelog.com/hyakumeiten",
+            )
+            restaurant = TabelogRestaurant(
+                name="GINZA KOKORO",
+                url="https://tabelog.com/tokyo/A1301/A130101/13204171/",
+                label="Tabelog Hyakumeiten",
+                tier="sushi",
+                region_key="japan",
+            )
+            source_key = tabelog_source_key(source)
+            store.save_tabelog_restaurants(source, [restaurant], now=fetched_at)
+            stale_refresh_after = fetched_at + timedelta(days=365)
+            with store.engine.begin() as connection:
+                connection.execute(
+                    trust_source_snapshots.update()
+                    .where(trust_source_snapshots.c.source_key == source_key)
+                    .values(refresh_after=stale_refresh_after.isoformat())
+                )
+
+            cached = store.cached_tabelog_restaurants(source, now=fetched_at + timedelta(days=45))
+            with store.engine.connect() as connection:
+                refresh_after = connection.execute(
+                    select(trust_source_snapshots.c.refresh_after).where(
+                        trust_source_snapshots.c.source_key == source_key
+                    )
+                ).scalar_one()
+
+        self.assertIsNone(cached)
+        self.assertTrue(
+            fetched_at + timedelta(days=30) <= datetime.fromisoformat(refresh_after) <= fetched_at + timedelta(days=44)
+        )
 
     def test_store_saves_tabelog_restaurant_url_matches_for_future_use(self) -> None:
         with TemporaryDirectory() as tmpdir:
