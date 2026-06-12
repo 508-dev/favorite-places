@@ -565,6 +565,75 @@ class TrustSignalStore:
         with self.engine.begin() as connection:
             upsert_rows(connection, trust_place_source_urls, rows, ["place_key", "source", "url"])
 
+    def load_place_source_urls(
+        self,
+        place_keys: Iterable[str],
+        *,
+        source: str,
+        match_signature: str,
+        now: datetime,
+    ) -> list[PlaceSourceUrl]:
+        keys = sorted({key for key in place_keys if key})
+        if not keys:
+            return []
+
+        with self.engine.connect() as connection:
+            rows = connection.execute(
+                select(
+                    trust_place_source_urls.c.source,
+                    trust_place_source_urls.c.url,
+                    trust_place_source_urls.c.title,
+                    trust_place_source_urls.c.fetched_at,
+                    trust_place_source_urls.c.refresh_after,
+                    trust_place_source_urls.c.confidence,
+                    trust_place_source_urls.c.match_reason,
+                    trust_place_source_urls.c.match_signature,
+                )
+                .where(
+                    and_(
+                        trust_place_source_urls.c.place_key.in_(keys),
+                        trust_place_source_urls.c.source == source,
+                    )
+                )
+                .order_by(
+                    trust_place_source_urls.c.source,
+                    trust_place_source_urls.c.url,
+                )
+            ).fetchall()
+
+        source_urls: list[PlaceSourceUrl] = []
+        for (
+            row_source,
+            url,
+            title,
+            fetched_at,
+            refresh_after,
+            confidence,
+            match_reason,
+            row_match_signature,
+        ) in rows:
+            if row_match_signature != match_signature:
+                continue
+            parsed_refresh_after = metadata_datetime_or_none(refresh_after)
+            if parsed_refresh_after is not None and parsed_refresh_after <= now:
+                continue
+            if not isinstance(row_source, str) or not isinstance(url, str):
+                continue
+            if not isinstance(fetched_at, str) or not isinstance(confidence, str) or not isinstance(match_reason, str):
+                continue
+            source_urls.append(
+                PlaceSourceUrl(
+                    source=row_source,
+                    url=url,
+                    title=title if isinstance(title, str) else None,
+                    fetched_at=fetched_at,
+                    refresh_after=refresh_after if isinstance(refresh_after, str) else None,
+                    confidence=confidence,
+                    match_reason=match_reason,
+                )
+            )
+        return dedupe_place_source_urls(source_urls)
+
     def cached_michelin_detail_snapshot(
         self,
         restaurant_url: str,
@@ -967,13 +1036,30 @@ def refresh_trust_signals_for_raw_guides(
                 ),
                 fetched_at=now,
             )
+            match_signature = trust_match_signature(place.name, city_name, country_name)
+            saved_tabelog_source_urls = store.load_place_source_urls(
+                keys,
+                source="tabelog",
+                match_signature=match_signature,
+                now=now,
+            )
+            saved_tabelog_url_signals = signals_from_tabelog_source_urls(
+                tabelog_restaurants,
+                saved_tabelog_source_urls,
+                fetched_at=now,
+            )
             tabelog_search_signals: list[TrustSignal] = []
             should_search_tabelog = tabelog_search_place_is_eligible(
                 place,
                 enrichment_entry=enrichment_cache.get(place_id),
-                has_tabelog_source_match=bool(tabelog_signals),
+                has_tabelog_source_match=bool(tabelog_signals or saved_tabelog_source_urls),
             )
-            if guide_has_tabelog_sources and tabelog_restaurants and should_search_tabelog:
+            if (
+                guide_has_tabelog_sources
+                and tabelog_restaurants
+                and should_search_tabelog
+                and not saved_tabelog_url_signals
+            ):
                 tabelog_query = tabelog_search_query(place.name)
                 try:
                     tabelog_results = cached_or_fetch_search_results(
@@ -1009,12 +1095,13 @@ def refresh_trust_signals_for_raw_guides(
                             store.save_place_source_urls(
                                 key,
                                 tabelog_source_urls,
-                                match_signature=trust_match_signature(place.name, city_name, country_name),
+                                match_signature=match_signature,
                             )
             if (
                 not results
                 and not michelin_signals
                 and not tabelog_signals
+                and not saved_tabelog_url_signals
                 and not tabelog_search_signals
                 and not brave_api_key
                 and not google_fallback_enabled
@@ -1032,7 +1119,7 @@ def refresh_trust_signals_for_raw_guides(
                         store.replace_search_signals(
                             key,
                             [],
-                            match_signature=trust_match_signature(place.name, city_name, country_name),
+                            match_signature=match_signature,
                             now=now,
                             replaceable_sources=replaceable_sources,
                         )
@@ -1045,9 +1132,10 @@ def refresh_trust_signals_for_raw_guides(
             signals = [
                 *michelin_signals,
                 *tabelog_signals,
+                *saved_tabelog_url_signals,
                 *tabelog_search_signals,
                 *search_signals_without_duplicate_award_urls(
-                    [*michelin_signals, *tabelog_signals, *tabelog_search_signals],
+                    [*michelin_signals, *tabelog_signals, *saved_tabelog_url_signals, *tabelog_search_signals],
                     signals_from_search_results(
                         results,
                         place_name=place.name,
@@ -1061,7 +1149,7 @@ def refresh_trust_signals_for_raw_guides(
                 store.replace_search_signals(
                     key,
                     signals,
-                    match_signature=trust_match_signature(place.name, city_name, country_name),
+                    match_signature=match_signature,
                     now=now,
                     replaceable_sources=[
                         source
@@ -2018,6 +2106,44 @@ def signals_from_tabelog_search_results(
                     fetched_at=fetched_at.isoformat(),
                     confidence="high",
                     match_reason="Tabelog direct search URL match",
+                )
+            )
+    return sort_trust_signals(dedupe_trust_signals(signals))
+
+
+def signals_from_tabelog_source_urls(
+    restaurants: list[TabelogRestaurant],
+    source_urls: list[PlaceSourceUrl],
+    *,
+    fetched_at: datetime,
+) -> list[TrustSignal]:
+    restaurants_by_url: dict[str, list[TabelogRestaurant]] = {}
+    for restaurant in restaurants:
+        restaurants_by_url.setdefault(canonical_tabelog_url(restaurant.url), []).append(restaurant)
+
+    signals: list[TrustSignal] = []
+    matched_urls: set[str] = set()
+    for source_url in source_urls:
+        if source_url.source != "tabelog":
+            continue
+        url = canonical_tabelog_url(source_url.url)
+        matched_restaurants = restaurants_by_url.get(url)
+        if not matched_restaurants or url in matched_urls:
+            continue
+        matched_urls.add(url)
+        for restaurant in matched_restaurants:
+            signals.append(
+                TrustSignal(
+                    source="tabelog",
+                    label=restaurant.label,
+                    tier=restaurant.tier,
+                    award_year=restaurant.award_year,
+                    is_current=restaurant.is_current,
+                    url=restaurant.url,
+                    title=restaurant.name,
+                    fetched_at=fetched_at.isoformat(),
+                    confidence=source_url.confidence,
+                    match_reason="Tabelog saved source URL match",
                 )
             )
     return sort_trust_signals(dedupe_trust_signals(signals))
