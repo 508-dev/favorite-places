@@ -490,7 +490,7 @@ class TrustSignalsTest(unittest.TestCase):
                 patch.dict(
                     os.environ,
                     {
-                        "FAVORITE_PLACES_TRUST_CACHE_PATH": str(db_path),
+                        "FAVORITE_PLACES_TRUST_STORE_URL": sqlite_url_for_path(db_path),
                         "BRAVE_SEARCH_API_KEY": "",
                         "BRAVE_API_KEY": "",
                         "FAVORITE_PLACES_TRUST_GOOGLE_FALLBACK": "",
@@ -559,7 +559,7 @@ class TrustSignalsTest(unittest.TestCase):
                 patch.dict(
                     os.environ,
                     {
-                        "FAVORITE_PLACES_TRUST_CACHE_PATH": str(db_path),
+                        "FAVORITE_PLACES_TRUST_STORE_URL": sqlite_url_for_path(db_path),
                         "BRAVE_SEARCH_API_KEY": "brave-key",
                         "BRAVE_API_KEY": "",
                         "FAVORITE_PLACES_TRUST_GOOGLE_FALLBACK": "",
@@ -602,7 +602,7 @@ class TrustSignalsTest(unittest.TestCase):
                 patch.dict(
                     os.environ,
                     {
-                        "FAVORITE_PLACES_TRUST_CACHE_PATH": str(db_path),
+                        "FAVORITE_PLACES_TRUST_STORE_URL": sqlite_url_for_path(db_path),
                         "BRAVE_SEARCH_API_KEY": "brave-key",
                         "BRAVE_API_KEY": "",
                         "FAVORITE_PLACES_TRUST_GOOGLE_FALLBACK": "",
@@ -669,7 +669,7 @@ class TrustSignalsTest(unittest.TestCase):
                 patch.dict(
                     os.environ,
                     {
-                        "FAVORITE_PLACES_TRUST_CACHE_PATH": str(db_path),
+                        "FAVORITE_PLACES_TRUST_STORE_URL": sqlite_url_for_path(db_path),
                         "FAVORITE_PLACES_TABELOG_SOURCE_URLS": '{"award":"https://award.tabelog.com/en/restaurants"}',
                         "BRAVE_SEARCH_API_KEY": "",
                         "BRAVE_API_KEY": "",
@@ -729,7 +729,7 @@ class TrustSignalsTest(unittest.TestCase):
                 patch.dict(
                     os.environ,
                     {
-                        "FAVORITE_PLACES_TRUST_CACHE_PATH": str(db_path),
+                        "FAVORITE_PLACES_TRUST_STORE_URL": sqlite_url_for_path(db_path),
                         "FAVORITE_PLACES_TABELOG_SOURCE_URLS": '{"hyakumeiten":"https://award.tabelog.com/hyakumeiten"}',
                         "BRAVE_SEARCH_API_KEY": "",
                         "BRAVE_API_KEY": "",
@@ -818,7 +818,7 @@ class TrustSignalsTest(unittest.TestCase):
                 patch.dict(
                     os.environ,
                     {
-                        "FAVORITE_PLACES_TRUST_CACHE_PATH": str(db_path),
+                        "FAVORITE_PLACES_TRUST_STORE_URL": sqlite_url_for_path(db_path),
                         "FAVORITE_PLACES_TABELOG_SOURCE_URLS": '{"hyakumeiten":"https://award.tabelog.com/hyakumeiten"}',
                         "BRAVE_SEARCH_API_KEY": "",
                         "BRAVE_API_KEY": "",
@@ -901,7 +901,7 @@ class TrustSignalsTest(unittest.TestCase):
                 patch.dict(
                     os.environ,
                     {
-                        "FAVORITE_PLACES_TRUST_CACHE_PATH": str(db_path),
+                        "FAVORITE_PLACES_TRUST_STORE_URL": sqlite_url_for_path(db_path),
                         "FAVORITE_PLACES_TABELOG_SOURCE_URLS": '{"hyakumeiten":"https://award.tabelog.com/hyakumeiten"}',
                         "BRAVE_SEARCH_API_KEY": "",
                         "BRAVE_API_KEY": "",
@@ -979,7 +979,7 @@ class TrustSignalsTest(unittest.TestCase):
                 patch.dict(
                     os.environ,
                     {
-                        "FAVORITE_PLACES_TRUST_CACHE_PATH": str(db_path),
+                        "FAVORITE_PLACES_TRUST_STORE_URL": sqlite_url_for_path(db_path),
                         "FAVORITE_PLACES_TABELOG_SOURCE_URLS": '{"hyakumeiten":"https://award.tabelog.com/hyakumeiten"}',
                         "BRAVE_SEARCH_API_KEY": "",
                         "BRAVE_API_KEY": "",
