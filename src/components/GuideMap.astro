@@ -1738,11 +1738,20 @@ const mapPlaces = places
       card.dataset.mapInteractionInitialized = "true";
 
       const placeId = card.dataset.placeId || "";
+      const interactiveSelector = "a, button, input, select, textarea, summary, [role='button']";
+      const isNestedInteractiveTarget = (target: EventTarget | null) =>
+        target instanceof Element && target !== card && Boolean(target.closest(interactiveSelector));
+      if (!card.hasAttribute("tabindex")) card.tabIndex = 0;
       card.addEventListener("pointerenter", () => hoverPlace(placeId));
       card.addEventListener("pointerleave", () => clearHoveredPlace(placeId));
       card.addEventListener("click", (event) => {
-        const target = event.target instanceof Element ? event.target : null;
-        if (target?.closest("a, button, input, select, textarea, summary, [role='button']")) return;
+        if (isNestedInteractiveTarget(event.target)) return;
+        selectPlace(placeId, { expandCollapsed: true });
+      });
+      card.addEventListener("keydown", (event) => {
+        if (event.key !== "Enter" && event.key !== " ") return;
+        if (isNestedInteractiveTarget(event.target)) return;
+        event.preventDefault();
         selectPlace(placeId, { expandCollapsed: true });
       });
     });
