@@ -16,11 +16,13 @@ from scripts.trust_signals import (
     MichelinRegionSource,
     MichelinRestaurant,
     MichelinMatchContext,
+    PlaceSourceUrl,
     TabelogRestaurant,
     TabelogSource,
     SearchResult,
     TrustSignalStore,
     default_trust_cache_path,
+    dedupe_place_source_urls,
     michelin_next_page_url,
     michelin_region_sources_for_guides,
     parse_michelin_full_list_article_page,
@@ -247,6 +249,36 @@ class TrustSignalsTest(unittest.TestCase):
                 )
             ],
         )
+
+    def test_place_source_url_dedupe_uses_confidence_priority(self) -> None:
+        now = datetime(2026, 6, 15, tzinfo=UTC)
+        refresh_after = datetime(2027, 2, 1, tzinfo=UTC)
+        base_url = PlaceSourceUrl(
+            source="tabelog",
+            url="https://tabelog.com/tokyo/A1314/A131401/13196420/",
+            title="Low Confidence",
+            fetched_at=now.isoformat(),
+            refresh_after=refresh_after.isoformat(),
+            confidence="low",
+            match_reason="fallback title match",
+        )
+        medium_url = base_url.model_copy(
+            update={
+                "title": "Medium Confidence",
+                "confidence": "medium",
+                "match_reason": "normalized name match",
+            }
+        )
+        high_url = base_url.model_copy(
+            update={
+                "title": "High Confidence",
+                "confidence": "high",
+                "match_reason": "exact name match",
+            }
+        )
+
+        self.assertEqual(dedupe_place_source_urls([base_url, medium_url]), [medium_url])
+        self.assertEqual(dedupe_place_source_urls([medium_url, high_url]), [high_url])
 
     def test_tabelog_search_eligibility_skips_obvious_non_restaurants(self) -> None:
         cases = [

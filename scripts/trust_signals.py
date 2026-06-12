@@ -2679,7 +2679,9 @@ def dedupe_place_source_urls(source_urls: Iterable[PlaceSourceUrl]) -> list[Plac
     for source_url in source_urls:
         key = (source_url.source, source_url.url)
         existing = by_key.get(key)
-        if existing is None or source_url.confidence < existing.confidence:
+        if existing is None or TRUST_SIGNAL_CONFIDENCE_PRIORITY.get(
+            source_url.confidence, 99
+        ) < TRUST_SIGNAL_CONFIDENCE_PRIORITY.get(existing.confidence, 99):
             by_key[key] = source_url
     return sorted(by_key.values(), key=lambda value: (value.source, value.url))
 

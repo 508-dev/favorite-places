@@ -256,8 +256,11 @@ jobs:
           git add -A -- \
             site/data/raw \
             site/data/cache \
-            site/public/author-photos \
             site/public/place-photos
+
+          if [[ -d site/public/author-photos ]]; then
+            git add -A -- site/public/author-photos
+          fi
 
           if git diff --cached --quiet; then
             echo "changed=false" >> "${GITHUB_OUTPUT}"
