@@ -1739,8 +1739,11 @@ const mapPlaces = places
 
       const placeId = card.dataset.placeId || "";
       const interactiveSelector = "a, button, input, select, textarea, summary, [role='button']";
-      const isNestedInteractiveTarget = (target: EventTarget | null) =>
-        target instanceof Element && target !== card && Boolean(target.closest(interactiveSelector));
+      const isNestedInteractiveTarget = (target: EventTarget | null) => {
+        if (!(target instanceof Element)) return false;
+        const nestedInteractive = target.closest(interactiveSelector);
+        return Boolean(nestedInteractive && nestedInteractive !== card);
+      };
       if (!card.hasAttribute("tabindex")) card.tabIndex = 0;
       if (!card.hasAttribute("role")) card.setAttribute("role", "button");
       card.addEventListener("pointerenter", () => hoverPlace(placeId));
