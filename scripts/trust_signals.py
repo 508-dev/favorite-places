@@ -331,6 +331,8 @@ class TrustSignalStore:
         place_keys: Iterable[str],
         *,
         include_low_confidence: bool = False,
+        match_signatures_by_key: Mapping[str, set[str]] | None = None,
+        now: datetime | None = None,
     ) -> dict[str, list[TrustSignal]]:
         keys = sorted({key for key in place_keys if key})
         if not keys:
@@ -340,6 +342,8 @@ class TrustSignalStore:
             rows = connection.execute(
                 select(
                     trust_place_signals.c.place_key,
+                    trust_place_signals.c.refresh_after,
+                    trust_place_signals.c.match_signature,
                     trust_place_signals.c.signal_json,
                 )
                 .where(trust_place_signals.c.place_key.in_(keys))
@@ -351,8 +355,15 @@ class TrustSignalStore:
             ).fetchall()
 
         signals_by_key: dict[str, list[TrustSignal]] = {}
-        for place_key, signal_json in rows:
+        for place_key, refresh_after, match_signature, signal_json in rows:
             if not isinstance(place_key, str) or not isinstance(signal_json, str):
+                continue
+            if now is not None:
+                parsed_refresh_after = metadata_datetime_or_none(refresh_after)
+                if parsed_refresh_after is not None and parsed_refresh_after <= now:
+                    continue
+            expected_match_signatures = match_signatures_by_key.get(place_key) if match_signatures_by_key is not None else None
+            if expected_match_signatures is not None and match_signature not in expected_match_signatures:
                 continue
             signal = TrustSignal.model_validate_json(signal_json)
             if signal.confidence == "low" and not include_low_confidence:
@@ -852,13 +863,27 @@ def load_trust_signals_for_places(
     enrichment_cache: Mapping[str, EnrichmentCacheEntry],
     *,
     stable_place_ids: Mapping[tuple[str, int], str],
+    location_context: tuple[str | None, str | None] | None = None,
+    now: datetime | None = None,
 ) -> dict[str, list[TrustSignal]]:
     lookup_keys: dict[str, list[str]] = {}
+    match_signatures_by_key: dict[str, set[str]] = {}
     all_keys: set[str] = set()
+    city_name = (
+        location_context[0]
+        if location_context is not None and location_context[0]
+        else infer_city_name(raw.title or slug)
+    )
+    country_name = (
+        location_context[1]
+        if location_context is not None and location_context[1]
+        else infer_country_name(raw.title or slug)
+    )
     for index, place in enumerate(raw.places):
         place_id = stable_place_ids.get((slug, index))
         if place_id is None:
             continue
+        match_signature = trust_match_signature(place.name, city_name, country_name)
         keys = trust_place_keys(
             place,
             place_id=place_id,
@@ -866,8 +891,14 @@ def load_trust_signals_for_places(
         )
         lookup_keys[place_id] = keys
         all_keys.update(keys)
+        for key in keys:
+            match_signatures_by_key.setdefault(key, set()).add(match_signature)
 
-    signals_by_key = store.load_signals_for_place_keys(all_keys)
+    signals_by_key = store.load_signals_for_place_keys(
+        all_keys,
+        match_signatures_by_key=match_signatures_by_key,
+        now=now or datetime.now(UTC),
+    )
     signals_by_place_id: dict[str, list[TrustSignal]] = {}
     for place_id, keys in lookup_keys.items():
         signals: list[TrustSignal] = []

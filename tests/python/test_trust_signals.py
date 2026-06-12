@@ -116,6 +116,50 @@ class TrustSignalsTest(unittest.TestCase):
 
         self.assertEqual(loaded, {"cid:111": [signal]})
 
+    def test_store_filters_cached_place_signals_by_freshness_and_signature(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "trust.sqlite"
+            store = TrustSignalStore(sqlite_url_for_path(db_path))
+            fetched_at = datetime(2026, 6, 15, tzinfo=UTC)
+            signal = TrustSignal(
+                source="michelin",
+                label="MICHELIN Guide",
+                tier="Bib Gourmand",
+                url="https://guide.michelin.com/en/jp/tokyo-region/restaurant/coffee-house",
+                title="Coffee House - Tokyo - a MICHELIN Guide Restaurant",
+                fetched_at=fetched_at.isoformat(),
+                confidence="high",
+                match_reason="name plus source/location match",
+            )
+            match_signature = trust_match_signature("Coffee House", "Tokyo", "Japan")
+
+            store.replace_search_signals(
+                "cid:111",
+                [signal],
+                match_signature=match_signature,
+                now=fetched_at,
+            )
+
+            fresh_loaded = store.load_signals_for_place_keys(
+                ["cid:111"],
+                match_signatures_by_key={"cid:111": {match_signature}},
+                now=fetched_at + timedelta(days=89),
+            )
+            expired_loaded = store.load_signals_for_place_keys(
+                ["cid:111"],
+                match_signatures_by_key={"cid:111": {match_signature}},
+                now=fetched_at + timedelta(days=91),
+            )
+            renamed_loaded = store.load_signals_for_place_keys(
+                ["cid:111"],
+                match_signatures_by_key={"cid:111": {trust_match_signature("Renamed Coffee", "Tokyo", "Japan")}},
+                now=fetched_at + timedelta(days=1),
+            )
+
+        self.assertEqual(fresh_loaded, {"cid:111": [signal]})
+        self.assertEqual(expired_loaded, {})
+        self.assertEqual(renamed_loaded, {})
+
     def test_store_uses_post_award_stagger_for_tabelog_search_snapshots(self) -> None:
         with TemporaryDirectory() as tmpdir:
             db_path = Path(tmpdir) / "trust.sqlite"

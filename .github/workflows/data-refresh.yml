@@ -263,14 +263,19 @@ jobs:
           fi
           site_dir="${site_dir%/}"
 
+          stage_optional_path() {
+            local path="$1"
+            if [[ -e "${path}" ]] || git ls-files -- "${path}" | grep -q .; then
+              git add -A -- "${path}"
+            fi
+          }
+
           git add -A -- \
             "${site_dir}/data/raw" \
-            "${site_dir}/data/cache" \
-            "${site_dir}/public/place-photos"
+            "${site_dir}/data/cache"
 
-          if [[ -d "${site_dir}/public/author-photos" ]]; then
-            git add -A -- "${site_dir}/public/author-photos"
-          fi
+          stage_optional_path "${site_dir}/public/place-photos"
+          stage_optional_path "${site_dir}/public/author-photos"
 
           if git diff --cached --quiet; then
             echo "changed=false" >> "${GITHUB_OUTPUT}"
