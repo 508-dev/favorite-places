@@ -1742,6 +1742,7 @@ const mapPlaces = places
       const isNestedInteractiveTarget = (target: EventTarget | null) =>
         target instanceof Element && target !== card && Boolean(target.closest(interactiveSelector));
       if (!card.hasAttribute("tabindex")) card.tabIndex = 0;
+      if (!card.hasAttribute("role")) card.setAttribute("role", "button");
       card.addEventListener("pointerenter", () => hoverPlace(placeId));
       card.addEventListener("pointerleave", () => clearHoveredPlace(placeId));
       card.addEventListener("click", (event) => {

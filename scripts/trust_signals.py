@@ -598,12 +598,12 @@ class TrustSignalStore:
                     trust_place_source_urls.c.refresh_after,
                     trust_place_source_urls.c.confidence,
                     trust_place_source_urls.c.match_reason,
-                    trust_place_source_urls.c.match_signature,
                 )
                 .where(
                     and_(
                         trust_place_source_urls.c.place_key.in_(keys),
                         trust_place_source_urls.c.source == source,
+                        trust_place_source_urls.c.match_signature == match_signature,
                     )
                 )
                 .order_by(
@@ -621,10 +621,7 @@ class TrustSignalStore:
             refresh_after,
             confidence,
             match_reason,
-            row_match_signature,
         ) in rows:
-            if row_match_signature != match_signature:
-                continue
             parsed_refresh_after = metadata_datetime_or_none(refresh_after)
             if parsed_refresh_after is not None and parsed_refresh_after <= now:
                 continue
@@ -1068,12 +1065,46 @@ def refresh_trust_signals_for_raw_guides(
                 fetched_at=now,
             )
             match_signature = trust_match_signature(place.name, city_name, country_name)
+            existing_signals_by_key = store.load_signals_for_place_keys(
+                keys,
+                include_low_confidence=True,
+                match_signatures_by_key={key: {match_signature} for key in keys},
+                now=now,
+            )
+            existing_tabelog_direct_signals = sort_trust_signals(
+                dedupe_trust_signals(
+                    signal
+                    for signals in existing_signals_by_key.values()
+                    for signal in signals
+                    if signal.source == "tabelog"
+                    and signal.match_reason == "Tabelog direct search URL match"
+                )
+            )
             saved_tabelog_source_urls = store.load_place_source_urls(
                 keys,
                 source="tabelog",
                 match_signature=match_signature,
                 now=now,
             )
+            legacy_tabelog_source_urls = place_source_urls_from_tabelog_signals(
+                existing_tabelog_direct_signals,
+                fetched_at=now,
+                refresh_after=search_snapshot_refresh_after(
+                    "tabelog_search",
+                    tabelog_search_query(place.name),
+                    now=now,
+                ),
+            )
+            if legacy_tabelog_source_urls:
+                for key in keys:
+                    store.save_place_source_urls(
+                        key,
+                        legacy_tabelog_source_urls,
+                        match_signature=match_signature,
+                    )
+                saved_tabelog_source_urls = dedupe_place_source_urls(
+                    [*saved_tabelog_source_urls, *legacy_tabelog_source_urls]
+                )
             saved_tabelog_url_signals = signals_from_tabelog_source_urls(
                 tabelog_restaurants,
                 saved_tabelog_source_urls,
@@ -1083,13 +1114,18 @@ def refresh_trust_signals_for_raw_guides(
             should_search_tabelog = tabelog_search_place_is_eligible(
                 place,
                 enrichment_entry=enrichment_cache.get(place_id),
-                has_tabelog_source_match=bool(tabelog_signals or saved_tabelog_source_urls),
+                has_tabelog_source_match=bool(
+                    tabelog_signals
+                    or saved_tabelog_source_urls
+                    or existing_tabelog_direct_signals
+                ),
             )
             if (
                 guide_has_tabelog_sources
                 and tabelog_restaurants
                 and should_search_tabelog
                 and not saved_tabelog_url_signals
+                and not existing_tabelog_direct_signals
             ):
                 tabelog_query = tabelog_search_query(place.name)
                 try:
@@ -1133,6 +1169,7 @@ def refresh_trust_signals_for_raw_guides(
                 and not michelin_signals
                 and not tabelog_signals
                 and not saved_tabelog_url_signals
+                and not existing_tabelog_direct_signals
                 and not tabelog_search_signals
                 and not brave_api_key
                 and not google_fallback_enabled
@@ -1164,9 +1201,16 @@ def refresh_trust_signals_for_raw_guides(
                 *michelin_signals,
                 *tabelog_signals,
                 *saved_tabelog_url_signals,
+                *existing_tabelog_direct_signals,
                 *tabelog_search_signals,
                 *search_signals_without_duplicate_award_urls(
-                    [*michelin_signals, *tabelog_signals, *saved_tabelog_url_signals, *tabelog_search_signals],
+                    [
+                        *michelin_signals,
+                        *tabelog_signals,
+                        *saved_tabelog_url_signals,
+                        *existing_tabelog_direct_signals,
+                        *tabelog_search_signals,
+                    ],
                     signals_from_search_results(
                         results,
                         place_name=place.name,
@@ -2178,6 +2222,30 @@ def signals_from_tabelog_source_urls(
                 )
             )
     return sort_trust_signals(dedupe_trust_signals(signals))
+
+
+def place_source_urls_from_tabelog_signals(
+    signals: list[TrustSignal],
+    *,
+    fetched_at: datetime,
+    refresh_after: datetime,
+) -> list[PlaceSourceUrl]:
+    source_urls: list[PlaceSourceUrl] = []
+    for signal in signals:
+        if signal.source != "tabelog" or not signal.url:
+            continue
+        source_urls.append(
+            PlaceSourceUrl(
+                source="tabelog",
+                url=canonical_tabelog_url(signal.url),
+                title=signal.title,
+                fetched_at=fetched_at.isoformat(),
+                refresh_after=refresh_after.isoformat(),
+                confidence=signal.confidence,
+                match_reason="Existing Tabelog direct signal",
+            )
+        )
+    return dedupe_place_source_urls(source_urls)
 
 
 def place_source_urls_from_tabelog_search_results(

@@ -856,6 +856,89 @@ class TrustSignalsTest(unittest.TestCase):
         self.assertEqual(loaded["place-1"][0].source, "tabelog")
         self.assertEqual(loaded["place-1"][0].match_reason, "Tabelog saved source URL match")
 
+    def test_refresh_reuses_existing_direct_tabelog_signal_before_search_gate(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "trust.sqlite"
+            now = datetime(2026, 6, 15, tzinfo=UTC)
+            existing_signal = TrustSignal(
+                source="tabelog",
+                label="Tabelog Hyakumeiten",
+                tier="寿司 TOKYO 百名店",
+                award_year=2025,
+                is_current=True,
+                url="https://tabelog.com/tokyo/A1314/A131401/13196420/",
+                title="東麻布 天本",
+                fetched_at=now.isoformat(),
+                confidence="high",
+                match_reason="Tabelog direct search URL match",
+            )
+            store = TrustSignalStore(sqlite_url_for_path(db_path))
+            store.replace_search_signals(
+                "place-1",
+                [existing_signal],
+                match_signature=trust_match_signature("Higashiazabu Amamoto", "Tokyo", "Japan"),
+                now=now,
+            )
+            raw_lists = {
+                "tokyo-japan": RawSavedList(
+                    title="Tokyo, Japan",
+                    places=[
+                        RawPlace(
+                            name="Higashiazabu Amamoto",
+                            address="Akabanebashi, Tokyo, Japan",
+                            maps_url="https://maps.google.com/?q=higashiazabu-amamoto",
+                        )
+                    ],
+                )
+            }
+            enrichment_entry = EnrichmentCacheEntry(
+                fetched_at=now.isoformat(),
+                query="Higashiazabu Amamoto",
+                place=EnrichmentPlace(primary_type_display_name="Hotel"),
+            )
+
+            with (
+                patch.dict(
+                    os.environ,
+                    {
+                        "FAVORITE_PLACES_TRUST_CACHE_PATH": str(db_path),
+                        "FAVORITE_PLACES_TABELOG_SOURCE_URLS": '{"hyakumeiten":"https://award.tabelog.com/hyakumeiten"}',
+                        "BRAVE_SEARCH_API_KEY": "",
+                        "BRAVE_API_KEY": "",
+                        "FAVORITE_PLACES_TRUST_GOOGLE_FALLBACK": "",
+                    },
+                ),
+                patch("scripts.trust_signals.scrape_michelin_region_source", return_value=[]),
+                patch(
+                    "scripts.trust_signals.scrape_tabelog_source",
+                    return_value=[
+                        TabelogRestaurant(
+                            name="東麻布 天本",
+                            url="https://tabelog.com/tokyo/A1314/A131401/13196420/",
+                            label="Tabelog Hyakumeiten",
+                            tier="寿司 TOKYO 百名店",
+                            award_year=2025,
+                            is_current=True,
+                            region_key="japan",
+                        )
+                    ],
+                ),
+                patch("scripts.trust_signals.tabelog_search", side_effect=AssertionError("unexpected Tabelog search")),
+            ):
+                refresh_trust_signals_for_raw_guides(
+                    root=Path(tmpdir),
+                    raw_lists=raw_lists,
+                    enrichment_caches={"tokyo-japan": {"place-1": enrichment_entry}},
+                    stable_place_ids={("tokyo-japan", 0): "place-1"},
+                )
+
+            loaded = store.load_signals_for_place_keys(["place-1"])
+
+        self.assertEqual(len(loaded["place-1"]), 1)
+        self.assertEqual(loaded["place-1"][0].source, "tabelog")
+        self.assertEqual(loaded["place-1"][0].url, existing_signal.url)
+        self.assertEqual(loaded["place-1"][0].match_reason, "Tabelog saved source URL match")
+
     def test_refresh_preserves_tabelog_rows_when_tabelog_search_fails(self) -> None:
         with TemporaryDirectory() as tmpdir:
             db_path = Path(tmpdir) / "trust.sqlite"
