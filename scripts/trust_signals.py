@@ -39,7 +39,6 @@ except ModuleNotFoundError:
     from pipeline_models import EnrichmentCacheEntry, RawPlace, RawSavedList, TrustSignal
 
 TRUST_STORE_URL_ENV = "FAVORITE_PLACES_TRUST_STORE_URL"
-TRUST_CACHE_PATH_ENV = "FAVORITE_PLACES_TRUST_CACHE_PATH"
 BRAVE_SEARCH_API_KEY_ENV = "BRAVE_SEARCH_API_KEY"
 BRAVE_API_KEY_ENV = "BRAVE_API_KEY"
 GOOGLE_FALLBACK_ENV = "FAVORITE_PLACES_TRUST_GOOGLE_FALLBACK"
@@ -566,10 +565,6 @@ def resolve_trust_store_url(root: Path, *, env: Mapping[str, str] | None = None)
     configured_store_url = env.get(TRUST_STORE_URL_ENV)
     if configured_store_url:
         return configured_store_url
-
-    configured_cache_path = env.get(TRUST_CACHE_PATH_ENV)
-    if configured_cache_path:
-        return sqlite_url_for_path(resolve_path(configured_cache_path, root=root))
 
     return sqlite_url_for_path(default_trust_cache_path(root, env=env))
 

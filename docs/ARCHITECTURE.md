@@ -255,8 +255,7 @@ Common variables:
 - `GMAPS_SCRAPER_PROXY`: route scraper traffic through a proxy
 - `FAVORITE_PLACES_GMAPS_SCRAPER_STATE_DIR`: optionally override the scraper browser-profile and HTTP-cookie-jar root; point multiple worktrees at the same absolute path to reuse scraper session state
 - `BRAVE_SEARCH_API_KEY` / `BRAVE_API_KEY`: enable Brave Search for optional trust-signal refreshes
-- `FAVORITE_PLACES_TRUST_CACHE_PATH`: override the default SQLite trust-signal cache path
-- `FAVORITE_PLACES_TRUST_STORE_URL`: override trust-signal storage with an explicit SQLAlchemy URL
+- `FAVORITE_PLACES_TRUST_STORE_URL`: override trust-signal storage with an explicit SQLAlchemy URL, including local SQLite file URLs
 - `FAVORITE_PLACES_TRUST_GOOGLE_FALLBACK`: allow Google Search HTML fallback for trust-signal refreshes when set to `true`
 - `FAVORITE_PLACES_MICHELIN_REGION_URLS`: JSON object of `"country/city"` to MICHELIN region URL overrides for full-guide snapshots
 
