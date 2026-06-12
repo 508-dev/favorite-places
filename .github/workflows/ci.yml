@@ -49,6 +49,7 @@ jobs:
               - "bunfig.toml"
               - "bun.lock"
               - "tsconfig.json"
+              - "vitest.config.mjs"
               - "tests/frontend/**"
             python_pipeline:
               - "scripts/**"
