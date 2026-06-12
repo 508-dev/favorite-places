@@ -789,7 +789,7 @@ class TrustSignalsTest(unittest.TestCase):
                         url="https://tabelog.com/tokyo/A1314/A131401/13196420/",
                         title="Higashiazabu Amamoto",
                         fetched_at=now.isoformat(),
-                        refresh_after=(now + timedelta(days=90)).isoformat(),
+                        refresh_after=datetime(2099, 1, 1, tzinfo=UTC).isoformat(),
                         confidence="medium",
                         match_reason="Tabelog search result name match",
                     )
