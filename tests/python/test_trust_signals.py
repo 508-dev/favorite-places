@@ -1,24 +1,28 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from tempfile import TemporaryDirectory
 from pathlib import Path
 from unittest.mock import patch
 import os
 import unittest
 
-from scripts.pipeline_models import TrustSignal
+from sqlalchemy import select
+
+from scripts.pipeline_models import EnrichmentCacheEntry, EnrichmentPlace, TrustSignal
 from scripts.pipeline_models import RawPlace, RawSavedList
 from scripts import build_data
 from scripts.trust_signals import (
     MichelinRegionSource,
     MichelinRestaurant,
     MichelinMatchContext,
+    PlaceSourceUrl,
     TabelogRestaurant,
     TabelogSource,
     SearchResult,
     TrustSignalStore,
     default_trust_cache_path,
+    dedupe_place_source_urls,
     michelin_next_page_url,
     michelin_region_sources_for_guides,
     parse_michelin_full_list_article_page,
@@ -29,6 +33,7 @@ from scripts.trust_signals import (
     parse_tabelog_search_results,
     parse_wikipedia_michelin_starred_page,
     parse_google_search_results,
+    place_source_urls_from_tabelog_search_results,
     refresh_trust_signals_for_raw_guides,
     scrape_official_michelin_region,
     search_signals_without_duplicate_award_urls,
@@ -39,8 +44,14 @@ from scripts.trust_signals import (
     signals_from_tabelog_search_results,
     signals_from_search_results,
     sqlite_url_for_path,
+    source_snapshot_key,
+    tabelog_source_key,
     tabelog_hyakumeiten_category_urls,
+    tabelog_search_place_is_eligible,
+    tabelog_source_refresh_after,
     tabelog_sources_for_guides,
+    trust_place_source_urls,
+    trust_source_snapshots,
     trust_match_signature,
 )
 
@@ -82,7 +93,7 @@ class TrustSignalsTest(unittest.TestCase):
         with TemporaryDirectory() as tmpdir:
             db_path = Path(tmpdir) / "trust.sqlite"
             store = TrustSignalStore(sqlite_url_for_path(db_path))
-            fetched_at = datetime(2026, 1, 15, tzinfo=UTC)
+            fetched_at = datetime(2026, 6, 15, tzinfo=UTC)
             signal = TrustSignal(
                 source="michelin",
                 label="MICHELIN Guide",
@@ -104,6 +115,297 @@ class TrustSignalsTest(unittest.TestCase):
             loaded = store.load_signals_for_place_keys(["cid:111"])
 
         self.assertEqual(loaded, {"cid:111": [signal]})
+
+    def test_store_filters_cached_place_signals_by_freshness_and_signature(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "trust.sqlite"
+            store = TrustSignalStore(sqlite_url_for_path(db_path))
+            fetched_at = datetime(2026, 6, 15, tzinfo=UTC)
+            signal = TrustSignal(
+                source="michelin",
+                label="MICHELIN Guide",
+                tier="Bib Gourmand",
+                url="https://guide.michelin.com/en/jp/tokyo-region/restaurant/coffee-house",
+                title="Coffee House - Tokyo - a MICHELIN Guide Restaurant",
+                fetched_at=fetched_at.isoformat(),
+                confidence="high",
+                match_reason="name plus source/location match",
+            )
+            match_signature = trust_match_signature("Coffee House", "Tokyo", "Japan")
+
+            store.replace_search_signals(
+                "cid:111",
+                [signal],
+                match_signature=match_signature,
+                now=fetched_at,
+            )
+
+            fresh_loaded = store.load_signals_for_place_keys(
+                ["cid:111"],
+                match_signatures_by_key={"cid:111": {match_signature}},
+                now=fetched_at + timedelta(days=89),
+            )
+            expired_loaded = store.load_signals_for_place_keys(
+                ["cid:111"],
+                match_signatures_by_key={"cid:111": {match_signature}},
+                now=fetched_at + timedelta(days=91),
+            )
+            renamed_loaded = store.load_signals_for_place_keys(
+                ["cid:111"],
+                match_signatures_by_key={"cid:111": {trust_match_signature("Renamed Coffee", "Tokyo", "Japan")}},
+                now=fetched_at + timedelta(days=1),
+            )
+
+        self.assertEqual(fresh_loaded, {"cid:111": [signal]})
+        self.assertEqual(expired_loaded, {})
+        self.assertEqual(renamed_loaded, {})
+
+    def test_store_uses_post_award_stagger_for_tabelog_search_snapshots(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "trust.sqlite"
+            store = TrustSignalStore(sqlite_url_for_path(db_path))
+            now = datetime(2026, 6, 15, tzinfo=UTC)
+            result = SearchResult(title="Higashiazabu Amamoto", url="https://tabelog.com/tokyo/A1314/A131401/13196420/")
+
+            store.save_search_results("tabelog_search", "Higashiazabu Amamoto", [result], now=now)
+            store.save_search_results("tabelog_search", "GINZA KOKORO", [], now=now)
+
+            with store.engine.connect() as connection:
+                rows = connection.execute(
+                    select(
+                        trust_source_snapshots.c.query,
+                        trust_source_snapshots.c.refresh_after,
+                    )
+                    .where(trust_source_snapshots.c.source_type == "tabelog_search")
+                    .order_by(trust_source_snapshots.c.query)
+                ).fetchall()
+
+            refresh_afters = {
+                query: datetime.fromisoformat(refresh_after)
+                for query, refresh_after in rows
+                if isinstance(query, str) and isinstance(refresh_after, str)
+            }
+
+        self.assertEqual(set(refresh_afters), {"GINZA KOKORO", "Higashiazabu Amamoto"})
+        self.assertTrue(
+            datetime(2027, 2, 1, tzinfo=UTC)
+            <= refresh_afters["Higashiazabu Amamoto"]
+            <= datetime(2027, 7, 31, tzinfo=UTC)
+        )
+        self.assertTrue(
+            datetime(2027, 2, 1, tzinfo=UTC)
+            <= refresh_afters["GINZA KOKORO"]
+            <= datetime(2027, 7, 31, tzinfo=UTC)
+        )
+        self.assertNotEqual(refresh_afters["Higashiazabu Amamoto"], refresh_afters["GINZA KOKORO"])
+
+    def test_store_normalizes_existing_tabelog_search_snapshot_on_read(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "trust.sqlite"
+            store = TrustSignalStore(sqlite_url_for_path(db_path))
+            fetched_at = datetime(2026, 6, 15, tzinfo=UTC)
+            query = "Higashiazabu Amamoto"
+            result = SearchResult(title="Higashiazabu Amamoto", url="https://tabelog.com/tokyo/A1314/A131401/13196420/")
+            source_key = source_snapshot_key("tabelog_search", query)
+            store.save_search_results("tabelog_search", query, [result], now=fetched_at)
+            short_refresh_after = fetched_at + timedelta(days=90)
+            with store.engine.begin() as connection:
+                connection.execute(
+                    trust_source_snapshots.update()
+                    .where(trust_source_snapshots.c.source_key == source_key)
+                    .values(refresh_after=short_refresh_after.isoformat())
+                )
+
+            cached = store.cached_search_results(
+                "tabelog_search",
+                query,
+                now=fetched_at + timedelta(days=91),
+            )
+            with store.engine.connect() as connection:
+                refresh_after = connection.execute(
+                    select(trust_source_snapshots.c.refresh_after).where(
+                        trust_source_snapshots.c.source_key == source_key
+                    )
+                ).scalar_one()
+
+        self.assertEqual(cached, [result])
+        self.assertGreaterEqual(datetime.fromisoformat(refresh_after), datetime(2027, 2, 1, tzinfo=UTC))
+        self.assertLessEqual(datetime.fromisoformat(refresh_after), datetime(2027, 7, 31, tzinfo=UTC))
+
+    def test_tabelog_award_source_refresh_starts_after_next_award_ceremony(self) -> None:
+        award_source = TabelogSource(
+            source_type="award",
+            region_key="japan",
+            url="https://award.tabelog.com/en/restaurants",
+        )
+        hyakumeiten_source = TabelogSource(
+            source_type="hyakumeiten",
+            region_key="japan",
+            url="https://award.tabelog.com/hyakumeiten",
+        )
+        now = datetime(2026, 6, 15, tzinfo=UTC)
+
+        award_refresh_after = tabelog_source_refresh_after(award_source, now=now)
+        hyakumeiten_refresh_after = tabelog_source_refresh_after(hyakumeiten_source, now=now)
+
+        self.assertTrue(datetime(2027, 2, 1, tzinfo=UTC) <= award_refresh_after <= datetime(2027, 7, 31, tzinfo=UTC))
+        self.assertTrue(now + timedelta(days=30) <= hyakumeiten_refresh_after <= now + timedelta(days=44))
+
+    def test_store_normalizes_existing_tabelog_source_snapshot_on_read(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "trust.sqlite"
+            store = TrustSignalStore(sqlite_url_for_path(db_path))
+            fetched_at = datetime(2026, 6, 15, tzinfo=UTC)
+            source = TabelogSource(
+                source_type="hyakumeiten",
+                region_key="japan",
+                url="https://award.tabelog.com/hyakumeiten",
+            )
+            restaurant = TabelogRestaurant(
+                name="GINZA KOKORO",
+                url="https://tabelog.com/tokyo/A1301/A130101/13204171/",
+                label="Tabelog Hyakumeiten",
+                tier="sushi",
+                region_key="japan",
+            )
+            source_key = tabelog_source_key(source)
+            store.save_tabelog_restaurants(source, [restaurant], now=fetched_at)
+            stale_refresh_after = fetched_at + timedelta(days=365)
+            with store.engine.begin() as connection:
+                connection.execute(
+                    trust_source_snapshots.update()
+                    .where(trust_source_snapshots.c.source_key == source_key)
+                    .values(refresh_after=stale_refresh_after.isoformat())
+                )
+
+            cached = store.cached_tabelog_restaurants(source, now=fetched_at + timedelta(days=45))
+            with store.engine.connect() as connection:
+                refresh_after = connection.execute(
+                    select(trust_source_snapshots.c.refresh_after).where(
+                        trust_source_snapshots.c.source_key == source_key
+                    )
+                ).scalar_one()
+
+        self.assertIsNone(cached)
+        self.assertTrue(
+            fetched_at + timedelta(days=30) <= datetime.fromisoformat(refresh_after) <= fetched_at + timedelta(days=44)
+        )
+
+    def test_store_saves_tabelog_restaurant_url_matches_for_future_use(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "trust.sqlite"
+            store = TrustSignalStore(sqlite_url_for_path(db_path))
+            now = datetime(2026, 6, 15, tzinfo=UTC)
+            source_urls = place_source_urls_from_tabelog_search_results(
+                [
+                    SearchResult(
+                        title="Higashiazabu Amamoto",
+                        url="https://tabelog.com/en/tokyo/A1314/A131401/13196420/",
+                    )
+                ],
+                place_name="Higashiazabu Amamoto",
+                fetched_at=now,
+                refresh_after=datetime(2027, 2, 1, tzinfo=UTC),
+            )
+
+            store.save_place_source_urls(
+                "place-1",
+                source_urls,
+                match_signature=trust_match_signature("Higashiazabu Amamoto", "Tokyo", "Japan"),
+            )
+            with store.engine.connect() as connection:
+                rows = connection.execute(
+                    select(
+                        trust_place_source_urls.c.place_key,
+                        trust_place_source_urls.c.source,
+                        trust_place_source_urls.c.url,
+                        trust_place_source_urls.c.title,
+                    )
+                ).fetchall()
+
+        self.assertEqual(
+            rows,
+            [
+                (
+                    "place-1",
+                    "tabelog",
+                    "https://tabelog.com/tokyo/A1314/A131401/13196420/",
+                    "Higashiazabu Amamoto",
+                )
+            ],
+        )
+
+    def test_place_source_url_dedupe_uses_confidence_priority(self) -> None:
+        now = datetime(2026, 6, 15, tzinfo=UTC)
+        refresh_after = datetime(2027, 2, 1, tzinfo=UTC)
+        base_url = PlaceSourceUrl(
+            source="tabelog",
+            url="https://tabelog.com/tokyo/A1314/A131401/13196420/",
+            title="Low Confidence",
+            fetched_at=now.isoformat(),
+            refresh_after=refresh_after.isoformat(),
+            confidence="low",
+            match_reason="fallback title match",
+        )
+        medium_url = base_url.model_copy(
+            update={
+                "title": "Medium Confidence",
+                "confidence": "medium",
+                "match_reason": "normalized name match",
+            }
+        )
+        high_url = base_url.model_copy(
+            update={
+                "title": "High Confidence",
+                "confidence": "high",
+                "match_reason": "exact name match",
+            }
+        )
+
+        self.assertEqual(dedupe_place_source_urls([base_url, medium_url]), [medium_url])
+        self.assertEqual(dedupe_place_source_urls([medium_url, high_url]), [high_url])
+
+    def test_tabelog_search_eligibility_skips_obvious_non_restaurants(self) -> None:
+        cases = [
+            ("Ohori Park", "Park", False),
+            ("Edo-Tokyo Museum", "Museum", False),
+            ("Aman Tokyo", "Hotel", False),
+            ("Yakiniku Sumiya", "Yakiniku restaurant", True),
+            ("Bar Benfiddich", "Cocktail bar", True),
+            ("Koffee Mameya", "Coffee shop", True),
+            ("Hotel Restaurant", "Hotel restaurant", True),
+        ]
+        for name, category, expected in cases:
+            with self.subTest(category=category):
+                place = RawPlace(name=name, maps_url="https://maps.google.com/?q=test")
+                enrichment_entry = EnrichmentCacheEntry(
+                    fetched_at="2026-06-15T00:00:00+00:00",
+                    query=name,
+                    place=EnrichmentPlace(primary_type_display_name=category),
+                )
+
+                self.assertEqual(
+                    tabelog_search_place_is_eligible(place, enrichment_entry=enrichment_entry),
+                    expected,
+                )
+
+    def test_tabelog_search_eligibility_allows_unknown_or_existing_source_match(self) -> None:
+        unknown_place = RawPlace(name="GINZA KOKORO", maps_url="https://maps.google.com/?q=test")
+        park_place = RawPlace(name="Awarded Place In A Park", maps_url="https://maps.google.com/?q=test")
+        park_entry = EnrichmentCacheEntry(
+            fetched_at="2026-06-15T00:00:00+00:00",
+            query="Awarded Place In A Park",
+            place=EnrichmentPlace(types=["park"]),
+        )
+
+        self.assertTrue(tabelog_search_place_is_eligible(unknown_place, enrichment_entry=None))
+        self.assertTrue(
+            tabelog_search_place_is_eligible(
+                park_place,
+                enrichment_entry=park_entry,
+                has_tabelog_source_match=True,
+            )
+        )
 
     def test_store_refresh_replaces_stale_michelin_rows_for_place(self) -> None:
         with TemporaryDirectory() as tmpdir:
@@ -473,6 +775,169 @@ class TrustSignalsTest(unittest.TestCase):
         self.assertEqual(loaded["place-1"][0].label, "Tabelog Hyakumeiten")
         self.assertEqual(loaded["place-1"][0].tier, "寿司 TOKYO 百名店")
         self.assertEqual(loaded["place-1"][0].match_reason, "Tabelog direct search URL match")
+
+    def test_refresh_reuses_saved_tabelog_source_url_for_ineligible_categories(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "trust.sqlite"
+            now = datetime(2026, 6, 15, tzinfo=UTC)
+            store = TrustSignalStore(sqlite_url_for_path(db_path))
+            store.save_place_source_urls(
+                "place-1",
+                [
+                    PlaceSourceUrl(
+                        source="tabelog",
+                        url="https://tabelog.com/tokyo/A1314/A131401/13196420/",
+                        title="Higashiazabu Amamoto",
+                        fetched_at=now.isoformat(),
+                        refresh_after=datetime(2099, 1, 1, tzinfo=UTC).isoformat(),
+                        confidence="medium",
+                        match_reason="Tabelog search result name match",
+                    )
+                ],
+                match_signature=trust_match_signature("Higashiazabu Amamoto", "Tokyo", "Japan"),
+            )
+            raw_lists = {
+                "tokyo-japan": RawSavedList(
+                    title="Tokyo, Japan",
+                    places=[
+                        RawPlace(
+                            name="Higashiazabu Amamoto",
+                            address="Akabanebashi, Tokyo, Japan",
+                            maps_url="https://maps.google.com/?q=higashiazabu-amamoto",
+                        )
+                    ],
+                )
+            }
+            enrichment_entry = EnrichmentCacheEntry(
+                fetched_at=now.isoformat(),
+                query="Higashiazabu Amamoto",
+                place=EnrichmentPlace(primary_type_display_name="Hotel"),
+            )
+
+            with (
+                patch.dict(
+                    os.environ,
+                    {
+                        "FAVORITE_PLACES_TRUST_STORE_URL": sqlite_url_for_path(db_path),
+                        "FAVORITE_PLACES_TABELOG_SOURCE_URLS": '{"hyakumeiten":"https://award.tabelog.com/hyakumeiten"}',
+                        "BRAVE_SEARCH_API_KEY": "",
+                        "BRAVE_API_KEY": "",
+                        "FAVORITE_PLACES_TRUST_GOOGLE_FALLBACK": "",
+                    },
+                ),
+                patch("scripts.trust_signals.scrape_michelin_region_source", return_value=[]),
+                patch(
+                    "scripts.trust_signals.scrape_tabelog_source",
+                    return_value=[
+                        TabelogRestaurant(
+                            name="東麻布 天本",
+                            url="https://tabelog.com/tokyo/A1314/A131401/13196420/",
+                            label="Tabelog Hyakumeiten",
+                            tier="寿司 TOKYO 百名店",
+                            award_year=2025,
+                            is_current=True,
+                            region_key="japan",
+                        )
+                    ],
+                ),
+                patch("scripts.trust_signals.tabelog_search", side_effect=AssertionError("unexpected Tabelog search")),
+            ):
+                summary = refresh_trust_signals_for_raw_guides(
+                    root=Path(tmpdir),
+                    raw_lists=raw_lists,
+                    enrichment_caches={"tokyo-japan": {"place-1": enrichment_entry}},
+                    stable_place_ids={("tokyo-japan", 0): "place-1"},
+                )
+
+            loaded = store.load_signals_for_place_keys(["place-1"])
+
+        self.assertEqual(summary.tabelog_sources_refreshed, 1)
+        self.assertEqual(len(loaded["place-1"]), 1)
+        self.assertEqual(loaded["place-1"][0].source, "tabelog")
+        self.assertEqual(loaded["place-1"][0].match_reason, "Tabelog saved source URL match")
+
+    def test_refresh_reuses_existing_direct_tabelog_signal_before_search_gate(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "trust.sqlite"
+            now = datetime(2026, 6, 15, tzinfo=UTC)
+            existing_signal = TrustSignal(
+                source="tabelog",
+                label="Tabelog Hyakumeiten",
+                tier="寿司 TOKYO 百名店",
+                award_year=2025,
+                is_current=True,
+                url="https://tabelog.com/tokyo/A1314/A131401/13196420/",
+                title="東麻布 天本",
+                fetched_at=now.isoformat(),
+                confidence="high",
+                match_reason="Tabelog direct search URL match",
+            )
+            store = TrustSignalStore(sqlite_url_for_path(db_path))
+            store.replace_search_signals(
+                "place-1",
+                [existing_signal],
+                match_signature=trust_match_signature("Higashiazabu Amamoto", "Tokyo", "Japan"),
+                now=now,
+            )
+            raw_lists = {
+                "tokyo-japan": RawSavedList(
+                    title="Tokyo, Japan",
+                    places=[
+                        RawPlace(
+                            name="Higashiazabu Amamoto",
+                            address="Akabanebashi, Tokyo, Japan",
+                            maps_url="https://maps.google.com/?q=higashiazabu-amamoto",
+                        )
+                    ],
+                )
+            }
+            enrichment_entry = EnrichmentCacheEntry(
+                fetched_at=now.isoformat(),
+                query="Higashiazabu Amamoto",
+                place=EnrichmentPlace(primary_type_display_name="Hotel"),
+            )
+
+            with (
+                patch.dict(
+                    os.environ,
+                    {
+                        "FAVORITE_PLACES_TRUST_STORE_URL": sqlite_url_for_path(db_path),
+                        "FAVORITE_PLACES_TABELOG_SOURCE_URLS": '{"hyakumeiten":"https://award.tabelog.com/hyakumeiten"}',
+                        "BRAVE_SEARCH_API_KEY": "",
+                        "BRAVE_API_KEY": "",
+                        "FAVORITE_PLACES_TRUST_GOOGLE_FALLBACK": "",
+                    },
+                ),
+                patch("scripts.trust_signals.scrape_michelin_region_source", return_value=[]),
+                patch(
+                    "scripts.trust_signals.scrape_tabelog_source",
+                    return_value=[
+                        TabelogRestaurant(
+                            name="東麻布 天本",
+                            url="https://tabelog.com/tokyo/A1314/A131401/13196420/",
+                            label="Tabelog Hyakumeiten",
+                            tier="寿司 TOKYO 百名店",
+                            award_year=2025,
+                            is_current=True,
+                            region_key="japan",
+                        )
+                    ],
+                ),
+                patch("scripts.trust_signals.tabelog_search", side_effect=AssertionError("unexpected Tabelog search")),
+            ):
+                refresh_trust_signals_for_raw_guides(
+                    root=Path(tmpdir),
+                    raw_lists=raw_lists,
+                    enrichment_caches={"tokyo-japan": {"place-1": enrichment_entry}},
+                    stable_place_ids={("tokyo-japan", 0): "place-1"},
+                )
+
+            loaded = store.load_signals_for_place_keys(["place-1"])
+
+        self.assertEqual(len(loaded["place-1"]), 1)
+        self.assertEqual(loaded["place-1"][0].source, "tabelog")
+        self.assertEqual(loaded["place-1"][0].url, existing_signal.url)
+        self.assertEqual(loaded["place-1"][0].match_reason, "Tabelog saved source URL match")
 
     def test_refresh_preserves_tabelog_rows_when_tabelog_search_fails(self) -> None:
         with TemporaryDirectory() as tmpdir:

@@ -253,10 +253,29 @@ jobs:
         run: |
           set -euo pipefail
 
+          site_dir="${FAVORITE_PLACES_SITE_DIR:-}"
+          if [[ -z "${site_dir}" ]]; then
+            if [[ -e site ]]; then
+              site_dir="site"
+            else
+              site_dir="site.example"
+            fi
+          fi
+          site_dir="${site_dir%/}"
+
+          stage_optional_path() {
+            local path="$1"
+            if [[ -e "${path}" ]] || git ls-files -- "${path}" | grep -q .; then
+              git add -A -- "${path}"
+            fi
+          }
+
           git add -A -- \
-            site/data/raw \
-            site/data/cache \
-            site/public/place-photos
+            "${site_dir}/data/raw" \
+            "${site_dir}/data/cache"
+
+          stage_optional_path "${site_dir}/public/place-photos"
+          stage_optional_path "${site_dir}/public/author-photos"
 
           if git diff --cached --quiet; then
             echo "changed=false" >> "${GITHUB_OUTPUT}"

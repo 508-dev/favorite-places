@@ -2567,6 +2567,10 @@ def load_all_trust_signal_maps(
 
     store = TrustSignalStore(store_url, initialize=False)
     trust_signal_maps: dict[str, dict[str, list[TrustSignal]]] = {}
+    guide_location_contexts = {
+        slug: guide_location_context(slug, raw)
+        for slug, raw in raw_lists.items()
+    }
     for slug, raw in raw_lists.items():
         trust_signal_maps[slug] = load_trust_signals_for_places(
             store,
@@ -2574,6 +2578,7 @@ def load_all_trust_signal_maps(
             raw,
             enrichment_caches.get(slug, {}),
             stable_place_ids=stable_place_ids,
+            location_context=guide_location_contexts.get(slug),
         )
     return trust_signal_maps
 
