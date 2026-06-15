@@ -80,14 +80,12 @@ const hasPhoto = Boolean(siteConfig.placeCard.showPhoto && placePhotosEnabled &&
 const ratingValue = typeof place.rating === "number" ? place.rating : null;
 const reviewCount = typeof place.user_rating_count === "number" ? place.user_rating_count : null;
 const priceRange = typeof place.price_range === "string" && place.price_range.trim().length > 0 ? place.price_range.trim() : null;
-const priceTitleBasis =
-  place.budget_kind === "restaurant_per_person"
-    ? "Restaurant spend per person"
-    : place.budget_kind === "hotel_per_night"
-      ? "Hotel nightly rate"
-      : place.budget_kind === "admission_per_person"
-        ? "Admission per person"
-        : "Price range";
+const budgetKindPriceTitles = {
+  restaurant_per_person: "Restaurant spend per person",
+  hotel_per_night: "Hotel nightly rate",
+  admission_per_person: "Admission per person",
+} as const;
+const priceTitleBasis = place.budget_kind ? (budgetKindPriceTitles[place.budget_kind] ?? "Price range") : "Price range";
 const ratingFormatter = new Intl.NumberFormat("en-US", {
   minimumFractionDigits: 1,
   maximumFractionDigits: 1,

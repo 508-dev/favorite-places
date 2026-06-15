@@ -6583,6 +6583,42 @@ class BuildDataTests(unittest.TestCase):
                 build_data.display_price_range_for_place(enrichment, country_name="Japan")
             )
 
+    def test_display_price_range_for_place_keeps_generic_food_price_range(self) -> None:
+        enrichment = EnrichmentPlace(
+            price_range="$$",
+            admission_price=None,
+            primary_type="food",
+            types=["food"],
+        )
+
+        with patch.object(
+            build_data,
+            "google_maps_place_price_display_config",
+            return_value={"currency_mode": "raw"},
+        ):
+            self.assertEqual(
+                build_data.display_price_source_for_place(enrichment, country_name="Japan"),
+                ("price_range", "$$"),
+            )
+
+    def test_display_price_range_for_place_keeps_store_price_range(self) -> None:
+        enrichment = EnrichmentPlace(
+            price_range="$$",
+            admission_price=None,
+            primary_type="clothing_store",
+            types=["clothing_store"],
+        )
+
+        with patch.object(
+            build_data,
+            "google_maps_place_price_display_config",
+            return_value={"currency_mode": "raw"},
+        ):
+            self.assertEqual(
+                build_data.display_price_source_for_place(enrichment, country_name="Japan"),
+                ("price_range", "$$"),
+            )
+
     def test_display_price_range_for_place_keeps_numeric_restaurant_price_range(self) -> None:
         enrichment = EnrichmentPlace(
             price_range="NT$200–400",
@@ -6679,6 +6715,55 @@ class BuildDataTests(unittest.TestCase):
         ):
             self.assertIsNone(
                 build_data.display_price_source_for_place(enrichment, country_name="Japan")
+            )
+
+    def test_display_price_range_for_place_uses_raw_context_for_room_price(self) -> None:
+        enrichment = EnrichmentPlace(
+            price_range=None,
+            room_price="¥18,000",
+            primary_type_display_name=None,
+            types=[],
+        )
+        raw_place = RawPlace(
+            name="Quiet Inn",
+            maps_url="https://maps.example/quiet-inn",
+            types=["lodging"],
+        )
+
+        with patch.object(
+            build_data,
+            "google_maps_place_price_display_config",
+            return_value={"currency_mode": "guide_local", "source_order": ["room_price"]},
+        ):
+            self.assertEqual(
+                build_data.display_price_source_for_place(
+                    enrichment,
+                    country_name="Japan",
+                    raw_place=raw_place,
+                ),
+                ("room_price", "¥18,000"),
+            )
+
+    def test_display_price_range_for_place_uses_primary_category_for_admission_price(self) -> None:
+        enrichment = EnrichmentPlace(
+            price_range=None,
+            admission_price="NT$100",
+            primary_type_display_name=None,
+            types=[],
+        )
+
+        with patch.object(
+            build_data,
+            "google_maps_place_price_display_config",
+            return_value={"currency_mode": "guide_local", "source_order": ["admission_price"]},
+        ):
+            self.assertEqual(
+                build_data.display_price_source_for_place(
+                    enrichment,
+                    country_name="Taiwan",
+                    primary_category="Museum",
+                ),
+                ("admission_price", "NT$100"),
             )
 
     def test_display_price_range_for_place_keeps_park_style_admission_price(self) -> None:

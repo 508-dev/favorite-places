@@ -1142,6 +1142,22 @@ PARENT_TYPE_TAG_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("shopping", ("market", "boutique", "mall", "shopping-center")),
     ("hotel", ("lodging", "hotel", "hostel", "inn", "resort", "ryokan")),
 )
+BUDGET_PARENT_TYPE_TAG_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("restaurant", ("food", "food-court", "meal-takeaway", "meal-delivery")),
+    (
+        "shopping",
+        (
+            "store",
+            "shop",
+            "shopping-mall",
+            "gift-shop",
+            "book-store",
+            "clothing-store",
+            "department-store",
+            "antique-store",
+        ),
+    ),
+)
 INFERRED_PARENT_TYPE_TAG_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
     (
         "japanese-restaurant",
@@ -3259,6 +3275,9 @@ def normalize_guide(
         enrichment_display_price = display_price_source_for_place(
             enrichment,
             country_name=country_name,
+            raw_place=place,
+            primary_category=primary_category,
+            tags=tags,
         )
         raw_display_price = display_price_range_for_raw_place(place)
         price_source = (
@@ -10686,10 +10705,16 @@ def display_price_range_for_place(
     enrichment_place: EnrichmentPlace,
     *,
     country_name: str | None,
+    raw_place: RawPlace | None = None,
+    primary_category: str | None = None,
+    tags: Iterable[str] = (),
 ) -> str | None:
     selected_display_price = display_price_source_for_place(
         enrichment_place,
         country_name=country_name,
+        raw_place=raw_place,
+        primary_category=primary_category,
+        tags=tags,
     )
     return selected_display_price[1] if selected_display_price else None
 
@@ -10698,8 +10723,16 @@ def display_price_source_for_place(
     enrichment_place: EnrichmentPlace,
     *,
     country_name: str | None,
+    raw_place: RawPlace | None = None,
+    primary_category: str | None = None,
+    tags: Iterable[str] = (),
 ) -> tuple[str, str] | None:
-    selected_price = select_place_display_price(enrichment_place)
+    selected_price = select_place_display_price(
+        enrichment_place,
+        raw_place=raw_place,
+        primary_category=primary_category,
+        tags=tags,
+    )
     if selected_price is None:
         return None
     source, raw_price = selected_price
@@ -10842,6 +10875,9 @@ def budget_parent_tags_from_values(values: Iterable[str | None]) -> set[str]:
                 continue
             parent_tags.add(candidate)
             parent_tags.update(expanded_parent_type_tags(candidate))
+            for parent_tag, phrases in BUDGET_PARENT_TYPE_TAG_RULES:
+                if any(slug_phrase_matches(candidate, phrase) for phrase in phrases):
+                    parent_tags.add(parent_tag)
     return parent_tags
 
 
@@ -10951,7 +10987,13 @@ def symbolic_price_tier(value: str) -> int | None:
     return None
 
 
-def select_place_display_price(enrichment_place: EnrichmentPlace) -> tuple[str, str] | None:
+def select_place_display_price(
+    enrichment_place: EnrichmentPlace,
+    *,
+    raw_place: RawPlace | None = None,
+    primary_category: str | None = None,
+    tags: Iterable[str] = (),
+) -> tuple[str, str] | None:
     config = google_maps_place_price_display_config()
     configured_order = coerce_string_list(config.get("source_order"))
     source_order = [
@@ -10965,11 +11007,20 @@ def select_place_display_price(enrichment_place: EnrichmentPlace) -> tuple[str, 
     for source in source_order:
         value = as_string(values.get(source))
         if value is not None:
-            if source == "price_range" and not price_range_source_is_eligible(enrichment_place, value):
+            if source == "price_range" and not price_range_source_is_eligible(
+                enrichment_place,
+                value,
+                raw_place=raw_place,
+                primary_category=primary_category,
+                tags=tags,
+            ):
                 continue
             if source in {"admission_price", "room_price"} and not price_source_is_eligible_for_category(
                 enrichment_place,
                 source,
+                raw_place=raw_place,
+                primary_category=primary_category,
+                tags=tags,
             ):
                 continue
             return source, value
@@ -11005,10 +11056,27 @@ def price_display_max_numeric_amount(source: str, currency: str) -> float | None
     return as_float(amount)
 
 
-def price_range_source_is_eligible(enrichment_place: EnrichmentPlace, value: str) -> bool:
-    if room_price_should_preempt_price_range(enrichment_place):
+def price_range_source_is_eligible(
+    enrichment_place: EnrichmentPlace,
+    value: str,
+    *,
+    raw_place: RawPlace | None = None,
+    primary_category: str | None = None,
+    tags: Iterable[str] = (),
+) -> bool:
+    if room_price_should_preempt_price_range(
+        enrichment_place,
+        raw_place=raw_place,
+        primary_category=primary_category,
+        tags=tags,
+    ):
         return False
-    parent_tags = budget_parent_tags_for_place(enrichment_place=enrichment_place)
+    parent_tags = budget_parent_tags_for_place(
+        enrichment_place=enrichment_place,
+        raw_place=raw_place,
+        primary_category=primary_category,
+        tags=tags,
+    )
     if re.fullmatch(r"\${1,4}", value.strip()):
         return bool(parent_tags & PRICE_RANGE_BUDGET_PARENT_TAGS)
     if parse_price_text(value) is None:
@@ -11016,21 +11084,49 @@ def price_range_source_is_eligible(enrichment_place: EnrichmentPlace, value: str
     return bool(parent_tags & PRICE_RANGE_BUDGET_PARENT_TAGS)
 
 
-def room_price_should_preempt_price_range(enrichment_place: EnrichmentPlace) -> bool:
+def room_price_should_preempt_price_range(
+    enrichment_place: EnrichmentPlace,
+    *,
+    raw_place: RawPlace | None = None,
+    primary_category: str | None = None,
+    tags: Iterable[str] = (),
+) -> bool:
     if as_string(enrichment_place.room_price) is None:
         return False
-    parent_tags = room_price_budget_parent_tags_for_place(enrichment_place=enrichment_place)
+    parent_tags = room_price_budget_parent_tags_for_place(
+        enrichment_place=enrichment_place,
+        raw_place=raw_place,
+        primary_category=primary_category,
+        tags=tags,
+    )
     return budget_parent_tags_allow_kind(parent_tags, "hotel_per_night")
 
 
-def price_source_is_eligible_for_category(enrichment_place: EnrichmentPlace, source: str) -> bool:
+def price_source_is_eligible_for_category(
+    enrichment_place: EnrichmentPlace,
+    source: str,
+    *,
+    raw_place: RawPlace | None = None,
+    primary_category: str | None = None,
+    tags: Iterable[str] = (),
+) -> bool:
     budget_kind = PRICE_SOURCE_BUDGET_KINDS.get(source)
     if budget_kind is None:
         return True
     parent_tags = (
-        room_price_budget_parent_tags_for_place(enrichment_place=enrichment_place)
+        room_price_budget_parent_tags_for_place(
+            enrichment_place=enrichment_place,
+            raw_place=raw_place,
+            primary_category=primary_category,
+            tags=tags,
+        )
         if source == "room_price"
-        else budget_parent_tags_for_place(enrichment_place=enrichment_place)
+        else budget_parent_tags_for_place(
+            enrichment_place=enrichment_place,
+            raw_place=raw_place,
+            primary_category=primary_category,
+            tags=tags,
+        )
     )
     return budget_parent_tags_allow_kind(parent_tags, budget_kind)
 
