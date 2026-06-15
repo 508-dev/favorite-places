@@ -51,11 +51,11 @@
     "export:cache:json": "uv run python3 scripts/build_data.py --export-cache-json"
   },
   "dependencies": {
-    "astro": "^6.1.6",
+    "astro": "^6.4.4",
     "leaflet": "^1.9.4"
   },
   "devDependencies": {
-    "@astrojs/check": "^0.9.4",
+    "@astrojs/check": "^0.9.9",
     "@biomejs/biome": "^2.4.12",
     "@playwright/test": "^1.59.1",
     "@tailwindcss/vite": "^4.2.4",
