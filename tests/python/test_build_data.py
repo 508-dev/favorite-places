@@ -6641,6 +6641,25 @@ class BuildDataTests(unittest.TestCase):
                 build_data.display_price_source_for_place(enrichment, country_name="Japan")
             )
 
+    def test_display_price_range_for_place_keeps_park_style_admission_price(self) -> None:
+        enrichment = EnrichmentPlace(
+            price_range=None,
+            admission_price="NT$100",
+            primary_type="national_forest",
+            primary_type_display_name="National forest",
+            types=["national_forest"],
+        )
+
+        with patch.object(
+            build_data,
+            "google_maps_place_price_display_config",
+            return_value={"currency_mode": "guide_local"},
+        ):
+            self.assertEqual(
+                build_data.display_price_source_for_place(enrichment, country_name="Taiwan"),
+                ("admission_price", "NT$100"),
+            )
+
     def test_derive_place_budget_fields_uses_restaurant_midpoint_threshold(self) -> None:
         enrichment = EnrichmentPlace(
             price_range="¥3,000–7,000",
@@ -6730,6 +6749,25 @@ class BuildDataTests(unittest.TestCase):
         self.assertEqual(hotel["budget_tier"], 2)
         self.assertEqual(admission["budget_kind"], "admission_per_person")
         self.assertEqual(admission["budget_tier"], 4)
+
+    def test_derive_place_budget_fields_keeps_park_style_admission_kind(self) -> None:
+        admission = build_data.derive_place_budget_fields(
+            enrichment_place=EnrichmentPlace(
+                admission_price="NT$100",
+                primary_type="national_forest",
+                primary_type_display_name="National forest",
+                types=["national_forest"],
+            ),
+            raw_place=RawPlace(name="Forest", maps_url="https://maps.example/forest"),
+            price_source="admission_price",
+            display_price="NT$100",
+            primary_category="National forest",
+            tags=["national-forest"],
+            country_name="Taiwan",
+        )
+
+        self.assertEqual(admission["budget_kind"], "admission_per_person")
+        self.assertEqual(admission["budget_tier"], 1)
 
     def test_derive_place_budget_fields_does_not_treat_dinner_as_inn(self) -> None:
         budget_fields = build_data.derive_place_budget_fields(
