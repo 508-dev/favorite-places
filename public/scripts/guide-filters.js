@@ -772,7 +772,7 @@ if (root) {
     }
 
     if (activeBudgetSelections.length === 0) {
-      budgetSummary.textContent = "Any";
+      budgetSummary.textContent = "";
       return;
     }
 
@@ -796,14 +796,14 @@ if (root) {
     if (!ratingSummary) {
       return;
     }
-    ratingSummary.textContent = activeMinRating > 0 ? `${activeMinRating.toFixed(1)}+` : "Any";
+    ratingSummary.textContent = activeMinRating > 0 ? `${activeMinRating.toFixed(1)}+` : "";
   };
 
   const updateReviewSummary = () => {
     if (!reviewSummary) {
       return;
     }
-    reviewSummary.textContent = activeMinReviews > 0 ? `${activeMinReviews}+` : "Any";
+    reviewSummary.textContent = activeMinReviews > 0 ? `${activeMinReviews}+` : "";
   };
 
   const getAutocompleteState = (value) => {
