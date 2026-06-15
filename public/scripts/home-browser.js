@@ -322,6 +322,7 @@ if (root) {
       const itemMeta = document.createElement("span");
       itemMeta.className = "search-country-item-meta";
       itemMeta.textContent = [entry.category, entry.neighborhood].filter(Boolean).join(" · ");
+      itemMeta.hidden = !itemMeta.textContent;
 
       const rating = ratingValue(entry.rating);
       const reviewCount = reviewCountValue(entry.user_rating_count);
@@ -547,8 +548,28 @@ if (root) {
       searchIndex && rawQuery
         ? new Set(searchGuides(rawQuery, { index: searchIndex }).map((result) => result.guide.slug))
         : null;
+    const scopedGuideMatchCount = guideMatches
+      ? countryBlocks.reduce((count, block) => {
+          const country = block.dataset.country || "";
+          if (activeCountry && country !== activeCountry) {
+            return count;
+          }
+
+          const cards = Array.from(block.querySelectorAll("[data-guide-card]"));
+          return (
+            count +
+            cards.filter((card) => {
+              const guideSlug = card.dataset.guideSlug || "";
+              return (
+                guideMatches.has(guideSlug) &&
+                (!nearbyGuideSlugs || nearbyGuideSlugs.has(guideSlug))
+              );
+            }).length
+          );
+        }, 0)
+      : 0;
     const shouldUsePlaceMatchFallback =
-      Boolean(rawQuery) && Boolean(placeMatchGuideSlugs) && (guideMatches?.size ?? 0) === 0;
+      Boolean(rawQuery) && (placeMatchGuideSlugs?.size ?? 0) > 0 && scopedGuideMatchCount === 0;
     const matchingGuidesByCountry = new Map();
     const visibleGuideSlugs = [];
     let visibleGuideCount = 0;
