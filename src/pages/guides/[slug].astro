@@ -67,6 +67,8 @@ const BUDGET_KIND_ORDER = [
   "admission_per_person",
 ] as const;
 const BUDGET_TIER_ORDER = [1, 2, 3, 4] as const;
+const RATING_FILTER_THRESHOLDS = [4.5, 4.7, 4.8] as const;
+const REVIEW_FILTER_THRESHOLDS = [100, 200, 500, 1000] as const;
 
 function isSuggestibleTag(tag: string, citySlug: string, countrySlug: string): boolean {
   return Boolean(
@@ -249,6 +251,17 @@ const budgetRows = BUDGET_KIND_ORDER.map((kind) => {
     availableTierCount: availableTiers.length,
   };
 }).filter((row) => row.availableTierCount > 1);
+const ratingFilterOptions = RATING_FILTER_THRESHOLDS.map((threshold) => ({
+  value: threshold,
+  label: `${threshold.toFixed(1)}+`,
+  count: visiblePlaces.filter((place) => typeof place.rating === "number" && place.rating >= threshold).length,
+})).filter((option) => option.count > 0 && option.count < visiblePlaces.length);
+const reviewFilterOptions = REVIEW_FILTER_THRESHOLDS.map((threshold) => ({
+  value: threshold,
+  label: `${threshold}+`,
+  count: visiblePlaces.filter((place) => typeof place.user_rating_count === "number" && place.user_rating_count >= threshold).length,
+})).filter((option) => option.count > 0 && option.count < visiblePlaces.length);
+const hasMetricFilters = budgetRows.length > 0 || ratingFilterOptions.length > 0 || reviewFilterOptions.length > 0;
 const guideDescriptionHtml = renderRichText(guide.description);
 const guideAsideHtml = getGuideAsideHtml(guide.slug);
 const guideBeforePlacesHtml = getTemplateHtml(`guide-before-places/${guide.slug}.html`) ?? getTemplateHtml("guide-before-places/default.html");
@@ -441,50 +454,96 @@ const guideJsonLd = [
               </div>
             )}
 
-            {budgetRows.length > 0 && (
-              <div class="control-group control-group-compact price-filter-group" style="grid-column: 1 / -1;">
-                <details class="price-filter-menu">
-                  <summary class="price-filter-trigger">
-                    <span class="price-filter-title">Price</span>
-                    <span class="price-filter-summary" data-budget-summary>Any</span>
-                  </summary>
-                  <div class="price-filter-panel">
-                    {budgetRows.map((row) => (
-                      <div class="price-filter-row">
-                        <div class="price-filter-row-head">
-                          <span class="price-filter-row-label">{row.label}</span>
-                          {row.hint && <span class="price-filter-row-hint">{row.hint}</span>}
-                        </div>
-                        <fieldset class="price-filter-options" aria-label={row.title}>
-                          <button
-                            class="price-filter-option price-filter-option-any"
-                            type="button"
-                            data-budget-clear-kind={row.kind}
-                          >
-                            Any
-                          </button>
-                          {row.tiers.map((filter) => (
-                            <button
-                              class="price-filter-option"
-                              type="button"
-                              data-budget-filter
-                              data-budget-kind={row.kind}
-                              data-budget-kind-label={row.label}
-                              data-budget-tier={String(filter.tier)}
-                              title={filter.title}
-                              aria-label={filter.title}
-                              aria-pressed="false"
-                              disabled={filter.count === 0}
-                            >
-                              <span aria-hidden="true">{"$".repeat(filter.tier)}</span>
-                              <span class="price-filter-count" data-filter-count>{filter.count}</span>
-                            </button>
-                          ))}
-                        </fieldset>
+            {hasMetricFilters && (
+              <div class="control-group control-group-compact metric-filter-group" style="grid-column: 1 / -1;">
+                <div class="metric-filter-row">
+                  {budgetRows.length > 0 && (
+                    <details class="price-filter-menu metric-filter-price">
+                      <summary class="price-filter-trigger">
+                        <span class="price-filter-title">Price</span>
+                        <span class="price-filter-summary" data-budget-summary>Any</span>
+                      </summary>
+                      <div class="price-filter-panel">
+                        {budgetRows.map((row) => (
+                          <div class="price-filter-row">
+                            <div class="price-filter-row-head">
+                              <span class="price-filter-row-label">{row.label}</span>
+                              {row.hint && <span class="price-filter-row-hint">{row.hint}</span>}
+                            </div>
+                            <fieldset class="price-filter-options" aria-label={row.title}>
+                              <button
+                                class="price-filter-option price-filter-option-any"
+                                type="button"
+                                data-budget-clear-kind={row.kind}
+                              >
+                                Any
+                              </button>
+                              {row.tiers.map((filter) => (
+                                <button
+                                  class="price-filter-option"
+                                  type="button"
+                                  data-budget-filter
+                                  data-budget-kind={row.kind}
+                                  data-budget-kind-label={row.label}
+                                  data-budget-tier={String(filter.tier)}
+                                  title={filter.title}
+                                  aria-label={filter.title}
+                                  aria-pressed="false"
+                                  disabled={filter.count === 0}
+                                >
+                                  <span aria-hidden="true">{"$".repeat(filter.tier)}</span>
+                                  <span class="price-filter-count" data-filter-count>{filter.count}</span>
+                                </button>
+                              ))}
+                            </fieldset>
+                          </div>
+                        ))}
                       </div>
-                    ))}
-                  </div>
-                </details>
+                    </details>
+                  )}
+
+                  {ratingFilterOptions.length > 0 && (
+                    <fieldset class="metric-filter-segment" aria-label="Minimum rating">
+                      <span class="metric-filter-label" aria-hidden="true">★</span>
+                      <button class="price-filter-option metric-filter-option" type="button" data-rating-filter data-rating-min="">
+                        Any
+                      </button>
+                      {ratingFilterOptions.map((option) => (
+                        <button
+                          class="price-filter-option metric-filter-option"
+                          type="button"
+                          data-rating-filter
+                          data-rating-min={String(option.value)}
+                          aria-pressed="false"
+                        >
+                          <span>{option.label}</span>
+                          <span class="price-filter-count" data-filter-count>{option.count}</span>
+                        </button>
+                      ))}
+                    </fieldset>
+                  )}
+
+                  {reviewFilterOptions.length > 0 && (
+                    <fieldset class="metric-filter-segment" aria-label="Minimum review count">
+                      <span class="metric-filter-label">Reviews</span>
+                      <button class="price-filter-option metric-filter-option" type="button" data-review-filter data-review-min="">
+                        Any
+                      </button>
+                      {reviewFilterOptions.map((option) => (
+                        <button
+                          class="price-filter-option metric-filter-option"
+                          type="button"
+                          data-review-filter
+                          data-review-min={String(option.value)}
+                          aria-pressed="false"
+                        >
+                          <span>{option.label}</span>
+                          <span class="price-filter-count" data-filter-count>{option.count}</span>
+                        </button>
+                      ))}
+                    </fieldset>
+                  )}
+                </div>
               </div>
             )}
 

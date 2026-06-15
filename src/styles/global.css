@@ -1930,6 +1930,43 @@
     transform: rotate(225deg) translate(-0.08rem, -0.02rem);
   }
 
+  .metric-filter-row {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    overflow-x: auto;
+    padding-bottom: 0.1rem;
+    scrollbar-width: thin;
+  }
+
+  .metric-filter-price {
+    flex: 0 0 auto;
+  }
+
+  .metric-filter-segment {
+    flex: 0 0 auto;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.32rem;
+    min-width: 0;
+    margin: 0;
+    padding: 0;
+    border: 0;
+  }
+
+  .metric-filter-label {
+    color: var(--muted);
+    font-size: 0.74rem;
+    font-weight: 800;
+    line-height: 1;
+    white-space: nowrap;
+  }
+
+  .metric-filter-option {
+    min-height: 2.15rem;
+    padding-inline: 0.48rem;
+  }
+
   .price-filter-title {
     font-family: Raleway, Lato, "Helvetica Neue", Helvetica, Arial, sans-serif;
     font-size: 0.76rem;

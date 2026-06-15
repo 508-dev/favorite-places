@@ -191,96 +191,42 @@ MIN_PLACE_PHOTO_SOURCE_DIMENSION = 200
 PLACE_PHOTO_SOURCE_DIMENSION_RE = re.compile(r"w(?P<width>\d+)-h(?P<height>\d+)")
 PRICE_DISPLAY_SOURCE_FIELDS = ("price_range", "admission_price", "room_price")
 DEFAULT_PRICE_DISPLAY_SOURCE_ORDER = ("price_range", "admission_price", "room_price")
-NUMERIC_PRICE_RANGE_CATEGORY_HINTS = (
-    "bar",
-    "bakery",
-    "bistro",
-    "brunch",
-    "cafe",
-    "coffee",
-    "deli",
-    "dessert",
-    "drink",
-    "food",
-    "izakaya",
-    "market",
-    "pub",
-    "ramen",
-    "restaurant",
-    "shop",
-    "soba",
-    "steak",
-    "store",
-    "sushi",
-    "tea",
-    "tonkatsu",
-    "udon",
-    "unagi",
-    "yakiniku",
-    "yakitori",
-)
 PRICE_BUDGET_KINDS = (
     "restaurant_per_person",
     "hotel_per_night",
     "admission_per_person",
 )
-RESTAURANT_BUDGET_CATEGORY_HINTS = (
-    "bar",
-    "bakery",
-    "bistro",
-    "brunch",
-    "cafe",
-    "coffee",
-    "deli",
-    "dessert",
-    "diner",
-    "drink",
-    "food",
-    "izakaya",
-    "pub",
-    "ramen",
-    "restaurant",
-    "soba",
-    "steak",
-    "sushi",
-    "tea",
-    "tonkatsu",
-    "udon",
-    "unagi",
-    "yakiniku",
-    "yakitori",
+RESTAURANT_BUDGET_PARENT_TAGS = frozenset(
+    {
+        "bakery",
+        "bar",
+        "cafe",
+        "restaurant",
+    }
 )
-HOTEL_BUDGET_CATEGORY_HINTS = (
-    "hotel",
-    "hostel",
-    "inn",
-    "lodging",
-    "resort",
-    "ryokan",
+HOTEL_BUDGET_PARENT_TAGS = frozenset({"hotel"})
+ADMISSION_BUDGET_PARENT_TAGS = frozenset(
+    {
+        "attraction",
+        "museum",
+        "park",
+    }
 )
-ADMISSION_BUDGET_CATEGORY_HINTS = (
-    "aquarium",
-    "attraction",
-    "botanical",
-    "castle",
-    "forest",
-    "gallery",
-    "garden",
-    "historic",
-    "landmark",
-    "museum",
-    "nature",
-    "observation",
-    "palace",
-    "park",
-    "recreation",
-    "reserve",
-    "shrine",
-    "temple",
-    "ticket",
-    "tourist",
-    "zoo",
+PRICE_RANGE_BUDGET_PARENT_TAGS = frozenset(
+    {
+        *RESTAURANT_BUDGET_PARENT_TAGS,
+        "shopping",
+    }
 )
+PRICE_SOURCE_BUDGET_KINDS = {
+    "admission_price": "admission_per_person",
+    "room_price": "hotel_per_night",
+}
+BUDGET_KIND_PARENT_TAGS = {
+    "restaurant_per_person": RESTAURANT_BUDGET_PARENT_TAGS,
+    "hotel_per_night": HOTEL_BUDGET_PARENT_TAGS,
+    "admission_per_person": ADMISSION_BUDGET_PARENT_TAGS,
+}
 PRICE_BUDGET_TIER_THRESHOLDS = {
     "restaurant_per_person": {
         "USD": (20, 60, 130),
@@ -1116,14 +1062,79 @@ INVALID_ENRICHMENT_PRIMARY_CATEGORY_DISPLAY_PATTERNS: tuple[re.Pattern[str], ...
     re.compile(r"^free cancellation\b", re.IGNORECASE),
 )
 PARENT_TYPE_TAG_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
-    ("restaurant", ("restaurant", "bistro", "diner", "grill", "eatery")),
+    (
+        "restaurant",
+        (
+            "restaurant",
+            "bistro",
+            "brunch",
+            "deli",
+            "diner",
+            "grill",
+            "eatery",
+            "ramen",
+            "soba",
+            "steak",
+            "sushi",
+            "tonkatsu",
+            "udon",
+            "unagi",
+            "yakiniku",
+            "yakitori",
+        ),
+    ),
     ("bar", ("bar", "pub", "brewery", "izakaya", "tavern", "speakeasy")),
-    ("cafe", ("cafe", "coffee", "coffee-shop", "espresso-bar", "tea-house")),
+    (
+        "cafe",
+        (
+            "cafe",
+            "coffee",
+            "coffee-shop",
+            "espresso-bar",
+            "tea-house",
+            "tea-room",
+        ),
+    ),
     ("bakery", ("bakery", "patisserie", "pastry", "dessert", "donut", "ice-cream")),
     ("museum", ("museum", "art-gallery", "library", "archive", "planetarium")),
-    ("attraction", ("tourist-attraction", "historical-landmark", "monument", "temple", "shrine", "church", "mosque", "synagogue")),
-    ("park", ("park", "botanical-garden", "garden", "trailhead", "campground", "nature-preserve")),
+    (
+        "attraction",
+        (
+            "tourist-attraction",
+            "historical-landmark",
+            "landmark",
+            "monument",
+            "temple",
+            "shrine",
+            "church",
+            "mosque",
+            "synagogue",
+            "castle",
+            "palace",
+            "aquarium",
+            "zoo",
+            "observation-deck",
+            "visitor-center",
+        ),
+    ),
+    (
+        "park",
+        (
+            "park",
+            "botanical-garden",
+            "garden",
+            "forest",
+            "national-forest",
+            "national-park",
+            "trailhead",
+            "campground",
+            "nature-preserve",
+            "recreation-area",
+            "reserve",
+        ),
+    ),
     ("shopping", ("market", "boutique", "mall", "shopping-center")),
+    ("hotel", ("lodging", "hotel", "hostel", "inn", "resort", "ryokan")),
 )
 INFERRED_PARENT_TYPE_TAG_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
     (
@@ -10763,50 +10774,61 @@ def derive_price_budget_kind(
     primary_category: str | None,
     tags: list[str],
 ) -> str | None:
-    category_values = [
+    parent_tags = budget_parent_tags_for_place(
+        enrichment_place=enrichment_place,
+        raw_place=raw_place,
+        primary_category=primary_category,
+        tags=tags,
+    )
+    if price_source in PRICE_SOURCE_BUDGET_KINDS:
+        budget_kind = PRICE_SOURCE_BUDGET_KINDS[price_source]
+        return budget_kind if budget_parent_tags_allow_kind(parent_tags, budget_kind) else None
+
+    for budget_kind in PRICE_BUDGET_KINDS:
+        if budget_parent_tags_allow_kind(parent_tags, budget_kind):
+            return budget_kind
+    return None
+
+
+def budget_parent_tags_for_place(
+    *,
+    enrichment_place: EnrichmentPlace,
+    raw_place: RawPlace | None = None,
+    primary_category: str | None = None,
+    tags: Iterable[str] = (),
+) -> set[str]:
+    values: list[str | None] = [
         primary_category,
         enrichment_place.primary_type,
         enrichment_place.primary_type_display_name,
         enrichment_place.primary_type_display_name_localized,
         *enrichment_place.types,
-        *raw_place.types,
         *tags,
     ]
-    category_text = normalize_budget_category_text(category_values)
-    has_hotel_hint = budget_category_has_hint(category_text, HOTEL_BUDGET_CATEGORY_HINTS)
-    has_restaurant_hint = budget_category_has_hint(category_text, RESTAURANT_BUDGET_CATEGORY_HINTS)
-    has_admission_hint = budget_category_has_hint(category_text, ADMISSION_BUDGET_CATEGORY_HINTS)
-
-    if price_source == "room_price":
-        return "hotel_per_night" if has_hotel_hint and not has_restaurant_hint else None
-    if price_source == "admission_price":
-        return "admission_per_person" if has_admission_hint else None
-    if has_restaurant_hint:
-        return "restaurant_per_person"
-    if has_hotel_hint:
-        return "hotel_per_night"
-    if has_admission_hint:
-        return "admission_per_person"
-    return None
+    if raw_place is not None:
+        values.extend(raw_place.types)
+    return budget_parent_tags_from_values(values)
 
 
-def normalize_budget_category_text(values: Iterable[str | None]) -> str:
-    return " ".join(slugify(value) for value in values if value)
+def budget_parent_tags_from_values(values: Iterable[str | None]) -> set[str]:
+    parent_tags: set[str] = set()
+    for value in values:
+        if not value:
+            continue
+        candidates = [slugify(value.replace("_", "-")), *infer_display_name_type_tags(value)]
+        for candidate in candidates:
+            if not candidate:
+                continue
+            parent_tags.add(candidate)
+            parent_tags.update(expanded_parent_type_tags(candidate))
+    return parent_tags
 
 
-def budget_category_has_hint(category_text: str, hints: Iterable[str]) -> bool:
-    category_tokens = {
-        token
-        for phrase in category_text.split()
-        for token in phrase.split("-")
-        if token
-    }
-    category_phrases = set(category_text.split())
-    for hint in hints:
-        normalized_hint = slugify(hint)
-        if normalized_hint in category_tokens or normalized_hint in category_phrases:
-            return True
-    return False
+def budget_parent_tags_allow_kind(parent_tags: set[str], budget_kind: str) -> bool:
+    if budget_kind == "hotel_per_night" and parent_tags & RESTAURANT_BUDGET_PARENT_TAGS:
+        return False
+    allowed_parent_tags = BUDGET_KIND_PARENT_TAGS.get(budget_kind, frozenset())
+    return bool(parent_tags & allowed_parent_tags)
 
 
 def derive_budget_tier(
@@ -10929,36 +10951,20 @@ def price_display_max_numeric_amount(source: str, currency: str) -> float | None
 
 
 def price_range_source_is_eligible(enrichment_place: EnrichmentPlace, value: str) -> bool:
-    category_values = [
-        enrichment_place.primary_type,
-        enrichment_place.primary_type_display_name,
-        enrichment_place.primary_type_display_name_localized,
-        *enrichment_place.types,
-    ]
-    category_text = normalize_budget_category_text(category_values)
+    parent_tags = budget_parent_tags_for_place(enrichment_place=enrichment_place)
     if re.fullmatch(r"\${1,4}", value.strip()):
-        return budget_category_has_hint(category_text, NUMERIC_PRICE_RANGE_CATEGORY_HINTS)
+        return bool(parent_tags & PRICE_RANGE_BUDGET_PARENT_TAGS)
     if parse_price_text(value) is None:
         return True
-    return budget_category_has_hint(category_text, NUMERIC_PRICE_RANGE_CATEGORY_HINTS)
+    return bool(parent_tags & PRICE_RANGE_BUDGET_PARENT_TAGS)
 
 
 def price_source_is_eligible_for_category(enrichment_place: EnrichmentPlace, source: str) -> bool:
-    category_values = [
-        enrichment_place.primary_type,
-        enrichment_place.primary_type_display_name,
-        enrichment_place.primary_type_display_name_localized,
-        *enrichment_place.types,
-    ]
-    category_text = normalize_budget_category_text(category_values)
-    if source == "room_price":
-        return budget_category_has_hint(
-            category_text,
-            HOTEL_BUDGET_CATEGORY_HINTS,
-        ) and not budget_category_has_hint(category_text, RESTAURANT_BUDGET_CATEGORY_HINTS)
-    if source == "admission_price":
-        return budget_category_has_hint(category_text, ADMISSION_BUDGET_CATEGORY_HINTS)
-    return True
+    budget_kind = PRICE_SOURCE_BUDGET_KINDS.get(source)
+    if budget_kind is None:
+        return True
+    parent_tags = budget_parent_tags_for_place(enrichment_place=enrichment_place)
+    return budget_parent_tags_allow_kind(parent_tags, budget_kind)
 
 
 def country_currency_code(country_name: str | None) -> str | None:
