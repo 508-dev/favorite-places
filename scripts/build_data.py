@@ -194,18 +194,30 @@ DEFAULT_PRICE_DISPLAY_SOURCE_ORDER = ("price_range", "admission_price", "room_pr
 NUMERIC_PRICE_RANGE_CATEGORY_HINTS = (
     "bar",
     "bakery",
+    "bistro",
+    "brunch",
     "cafe",
     "coffee",
     "deli",
     "dessert",
     "drink",
     "food",
+    "izakaya",
     "market",
     "pub",
+    "ramen",
     "restaurant",
     "shop",
+    "soba",
+    "steak",
     "store",
+    "sushi",
     "tea",
+    "tonkatsu",
+    "udon",
+    "unagi",
+    "yakiniku",
+    "yakitori",
 )
 PRICE_BUDGET_KINDS = (
     "restaurant_per_person",
@@ -228,8 +240,15 @@ RESTAURANT_BUDGET_CATEGORY_HINTS = (
     "pub",
     "ramen",
     "restaurant",
+    "soba",
+    "steak",
     "sushi",
     "tea",
+    "tonkatsu",
+    "udon",
+    "unagi",
+    "yakiniku",
+    "yakitori",
 )
 HOTEL_BUDGET_CATEGORY_HINTS = (
     "hotel",
@@ -254,7 +273,7 @@ ADMISSION_BUDGET_CATEGORY_HINTS = (
 PRICE_BUDGET_TIER_THRESHOLDS = {
     "restaurant_per_person": {
         "USD": (20, 60, 130),
-        "JPY": (2_999, 8_999, 18_999),
+        "JPY": (2_999, 8_999, 9_999),
         "TWD": (600, 1_800, 3_800),
         "HKD": (160, 480, 1_040),
         "SGD": (27, 80, 170),
@@ -10733,11 +10752,6 @@ def derive_price_budget_kind(
     primary_category: str | None,
     tags: list[str],
 ) -> str | None:
-    if price_source == "room_price":
-        return "hotel_per_night"
-    if price_source == "admission_price":
-        return "admission_per_person"
-
     category_values = [
         primary_category,
         enrichment_place.primary_type,
@@ -10748,18 +10762,40 @@ def derive_price_budget_kind(
         *tags,
     ]
     category_text = normalize_budget_category_text(category_values)
+    has_hotel_hint = budget_category_has_hint(category_text, HOTEL_BUDGET_CATEGORY_HINTS)
+    has_restaurant_hint = budget_category_has_hint(category_text, RESTAURANT_BUDGET_CATEGORY_HINTS)
+    has_admission_hint = budget_category_has_hint(category_text, ADMISSION_BUDGET_CATEGORY_HINTS)
 
-    if any(hint in category_text for hint in HOTEL_BUDGET_CATEGORY_HINTS):
-        return "hotel_per_night"
-    if any(hint in category_text for hint in RESTAURANT_BUDGET_CATEGORY_HINTS):
+    if price_source == "room_price":
+        return "hotel_per_night" if has_hotel_hint and not has_restaurant_hint else None
+    if price_source == "admission_price":
+        return "admission_per_person" if has_admission_hint else None
+    if has_restaurant_hint:
         return "restaurant_per_person"
-    if any(hint in category_text for hint in ADMISSION_BUDGET_CATEGORY_HINTS):
+    if has_hotel_hint:
+        return "hotel_per_night"
+    if has_admission_hint:
         return "admission_per_person"
     return None
 
 
 def normalize_budget_category_text(values: Iterable[str | None]) -> str:
     return " ".join(slugify(value) for value in values if value)
+
+
+def budget_category_has_hint(category_text: str, hints: Iterable[str]) -> bool:
+    category_tokens = {
+        token
+        for phrase in category_text.split()
+        for token in phrase.split("-")
+        if token
+    }
+    category_phrases = set(category_text.split())
+    for hint in hints:
+        normalized_hint = slugify(hint)
+        if normalized_hint in category_tokens or normalized_hint in category_phrases:
+            return True
+    return False
 
 
 def derive_budget_tier(
@@ -10780,8 +10816,8 @@ def derive_budget_tier(
         return None
 
     currency, amounts, _suffix = parsed_price
-    guide_currency = country_currency_code(country_name)
-    if guide_currency and guide_currency != currency:
+    expected_currency = budget_tier_currency_code(country_name)
+    if expected_currency and expected_currency != currency:
         return None
 
     thresholds = PRICE_BUDGET_TIER_THRESHOLDS.get(budget_kind, {}).get(currency)
@@ -10834,6 +10870,11 @@ def select_place_display_price(enrichment_place: EnrichmentPlace) -> tuple[str, 
         if value is not None:
             if source == "price_range" and not price_range_source_is_eligible(enrichment_place, value):
                 continue
+            if source in {"admission_price", "room_price"} and not price_source_is_eligible_for_category(
+                enrichment_place,
+                source,
+            ):
+                continue
             return source, value
     return None
 
@@ -10874,16 +10915,43 @@ def price_range_source_is_eligible(enrichment_place: EnrichmentPlace, value: str
         enrichment_place.primary_type_display_name_localized,
         *enrichment_place.types,
     ]
-    category_text = " ".join(value for value in category_values if value).casefold()
+    category_text = normalize_budget_category_text(category_values)
     if re.fullmatch(r"\${1,4}", value.strip()):
-        return any(hint in category_text for hint in NUMERIC_PRICE_RANGE_CATEGORY_HINTS)
+        return budget_category_has_hint(category_text, NUMERIC_PRICE_RANGE_CATEGORY_HINTS)
     if parse_price_text(value) is None:
         return True
-    return any(hint in category_text for hint in NUMERIC_PRICE_RANGE_CATEGORY_HINTS)
+    return budget_category_has_hint(category_text, NUMERIC_PRICE_RANGE_CATEGORY_HINTS)
+
+
+def price_source_is_eligible_for_category(enrichment_place: EnrichmentPlace, source: str) -> bool:
+    category_values = [
+        enrichment_place.primary_type,
+        enrichment_place.primary_type_display_name,
+        enrichment_place.primary_type_display_name_localized,
+        *enrichment_place.types,
+    ]
+    category_text = normalize_budget_category_text(category_values)
+    if source == "room_price":
+        return budget_category_has_hint(
+            category_text,
+            HOTEL_BUDGET_CATEGORY_HINTS,
+        ) and not budget_category_has_hint(category_text, RESTAURANT_BUDGET_CATEGORY_HINTS)
+    if source == "admission_price":
+        return budget_category_has_hint(category_text, ADMISSION_BUDGET_CATEGORY_HINTS)
+    return True
 
 
 def country_currency_code(country_name: str | None) -> str | None:
     return COUNTRY_CURRENCY_CODES.get(normalize_locality_key(country_name))
+
+
+def budget_tier_currency_code(country_name: str | None) -> str | None:
+    config = google_maps_place_price_display_config()
+    currency_mode = as_string(config.get("currency_mode")) or "raw"
+    if currency_mode == "target":
+        target_currency = as_string(config.get("target_currency"))
+        return target_currency.upper() if target_currency else None
+    return country_currency_code(country_name)
 
 
 def normalize_price_text_to_currency(value: str, *, target_currency: str) -> str | None:

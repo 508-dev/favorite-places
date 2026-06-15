@@ -80,15 +80,6 @@ const hasPhoto = Boolean(siteConfig.placeCard.showPhoto && placePhotosEnabled &&
 const ratingValue = typeof place.rating === "number" ? place.rating : null;
 const reviewCount = typeof place.user_rating_count === "number" ? place.user_rating_count : null;
 const priceRange = typeof place.price_range === "string" && place.price_range.trim().length > 0 ? place.price_range.trim() : null;
-const priceBasisLabel =
-  place.budget_kind === "restaurant_per_person"
-    ? "pp"
-    : place.budget_kind === "hotel_per_night"
-      ? "/night"
-      : place.budget_kind === "admission_per_person"
-        ? "entry"
-        : null;
-const displayPriceRange = priceRange && priceBasisLabel ? `${priceRange} ${priceBasisLabel}` : priceRange;
 const priceTitleBasis =
   place.budget_kind === "restaurant_per_person"
     ? "Restaurant spend per person"
@@ -113,7 +104,7 @@ const compactReviewLabel =
 const placeRatingMetaLabel = [
   siteConfig.placeCard.showRating && ratingValue !== null ? `${ratingFormatter.format(ratingValue)} ★` : null,
   siteConfig.placeCard.showReviewCount ? compactReviewLabel : null,
-  siteConfig.placeCard.showPriceRange ? displayPriceRange : null,
+  siteConfig.placeCard.showPriceRange ? priceRange : null,
 ]
   .filter(Boolean)
   .join(" · ");

@@ -6498,6 +6498,8 @@ class BuildDataTests(unittest.TestCase):
             price_range=None,
             admission_price="NT$100",
             room_price="NT$5,293",
+            primary_type_display_name="Museum",
+            types=["museum"],
         )
 
         with (
@@ -6605,6 +6607,40 @@ class BuildDataTests(unittest.TestCase):
                 "¥1,000–2,000",
             )
 
+    def test_display_price_range_for_place_keeps_numeric_specific_restaurant_price_range(self) -> None:
+        enrichment = EnrichmentPlace(
+            price_range="¥10,000+",
+            primary_type_display_name="Steak house",
+            types=["steak_house"],
+        )
+
+        with patch.object(
+            build_data,
+            "google_maps_place_price_display_config",
+            return_value={"currency_mode": "guide_local"},
+        ):
+            self.assertEqual(
+                build_data.display_price_source_for_place(enrichment, country_name="Japan"),
+                ("price_range", "¥10,000+"),
+            )
+
+    def test_display_price_range_for_place_skips_room_price_for_restaurant(self) -> None:
+        enrichment = EnrichmentPlace(
+            price_range=None,
+            room_price="¥18,000",
+            primary_type_display_name="Cafe",
+            types=["cafe"],
+        )
+
+        with patch.object(
+            build_data,
+            "google_maps_place_price_display_config",
+            return_value={"currency_mode": "guide_local"},
+        ):
+            self.assertIsNone(
+                build_data.display_price_source_for_place(enrichment, country_name="Japan")
+            )
+
     def test_derive_place_budget_fields_uses_restaurant_midpoint_threshold(self) -> None:
         enrichment = EnrichmentPlace(
             price_range="¥3,000–7,000",
@@ -6630,6 +6666,46 @@ class BuildDataTests(unittest.TestCase):
             },
         )
 
+    def test_derive_place_budget_fields_uses_japan_restaurant_top_tier_for_10000_plus(self) -> None:
+        enrichment = EnrichmentPlace(
+            price_range="¥10,000+",
+            primary_type_display_name="Restaurant",
+            types=["restaurant"],
+        )
+        raw_place = RawPlace(name="Omakase", maps_url="https://maps.example/omakase")
+
+        self.assertEqual(
+            build_data.derive_place_budget_fields(
+                enrichment_place=enrichment,
+                raw_place=raw_place,
+                price_source="price_range",
+                display_price="¥10,000+",
+                primary_category="Restaurant",
+                tags=["restaurant"],
+                country_name="Japan",
+            ),
+            {
+                "budget_kind": "restaurant_per_person",
+                "budget_tier": 4,
+                "budget_label": "$$$$",
+            },
+        )
+
+    def test_derive_budget_tier_uses_configured_target_currency(self) -> None:
+        with patch.object(
+            build_data,
+            "google_maps_place_price_display_config",
+            return_value={"currency_mode": "target", "target_currency": "USD"},
+        ):
+            self.assertEqual(
+                build_data.derive_budget_tier(
+                    "$50",
+                    budget_kind="restaurant_per_person",
+                    country_name="Japan",
+                ),
+                2,
+            )
+
     def test_derive_place_budget_fields_keeps_hotel_and_admission_tiers_separate(self) -> None:
         hotel = build_data.derive_place_budget_fields(
             enrichment_place=EnrichmentPlace(room_price="¥18,000"),
@@ -6654,6 +6730,44 @@ class BuildDataTests(unittest.TestCase):
         self.assertEqual(hotel["budget_tier"], 2)
         self.assertEqual(admission["budget_kind"], "admission_per_person")
         self.assertEqual(admission["budget_tier"], 4)
+
+    def test_derive_place_budget_fields_does_not_treat_dinner_as_inn(self) -> None:
+        budget_fields = build_data.derive_place_budget_fields(
+            enrichment_place=EnrichmentPlace(
+                price_range="¥4,000–8,000",
+                primary_type_display_name="Bistro",
+                types=["bistro"],
+            ),
+            raw_place=RawPlace(name="Bistro", maps_url="https://maps.example/bistro"),
+            price_source="price_range",
+            display_price="¥4,000–8,000",
+            primary_category="Bistro",
+            tags=["dinner", "bistro"],
+            country_name="Japan",
+        )
+
+        self.assertEqual(budget_fields["budget_kind"], "restaurant_per_person")
+        self.assertEqual(budget_fields["budget_tier"], 2)
+
+    def test_derive_place_budget_fields_rejects_room_price_for_cafe(self) -> None:
+        budget_fields = build_data.derive_place_budget_fields(
+            enrichment_place=EnrichmentPlace(
+                room_price="¥18,000",
+                primary_type_display_name="Cafe",
+                types=["cafe"],
+            ),
+            raw_place=RawPlace(name="Cafe", maps_url="https://maps.example/cafe"),
+            price_source="room_price",
+            display_price="¥18,000",
+            primary_category="Cafe",
+            tags=["cafe"],
+            country_name="Japan",
+        )
+
+        self.assertEqual(
+            budget_fields,
+            {"budget_kind": None, "budget_tier": None, "budget_label": None},
+        )
 
     def test_symbolic_budget_tier_does_not_misread_numeric_prefixed_currency(self) -> None:
         self.assertIsNone(build_data.symbolic_price_tier("CA$25"))

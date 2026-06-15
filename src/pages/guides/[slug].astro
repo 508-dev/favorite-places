@@ -48,17 +48,17 @@ const BUDGET_KIND_DISPLAY = {
   restaurant_per_person: {
     label: "Food",
     title: "Restaurant spend per person",
-    hint: "pp",
+    hint: "",
   },
   hotel_per_night: {
-    label: "Stay",
+    label: "Stay / night",
     title: "Hotel nightly rate",
-    hint: "/night",
+    hint: "",
   },
   admission_per_person: {
     label: "Entry",
     title: "Admission per person",
-    hint: "admission",
+    hint: "",
   },
 } as const;
 const BUDGET_KIND_ORDER = [
@@ -453,7 +453,7 @@ const guideJsonLd = [
                       <div class="price-filter-row">
                         <div class="price-filter-row-head">
                           <span class="price-filter-row-label">{row.label}</span>
-                          <span class="price-filter-row-hint">{row.hint}</span>
+                          {row.hint && <span class="price-filter-row-hint">{row.hint}</span>}
                         </div>
                         <fieldset class="price-filter-options" aria-label={row.title}>
                           <button
