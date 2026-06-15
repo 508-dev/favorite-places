@@ -29,6 +29,7 @@ export type MarkerIcon =
   | "shopping"
   | "hotel"
   | "spa";
+export type PlaceBudgetKind = "restaurant_per_person" | "hotel_per_night" | "admission_per_person";
 
 export interface PlaceField<T> {
   value: T;
@@ -107,6 +108,9 @@ export interface Place {
   visible_tags: string[];
   vibe_tags: string[];
   price_range: string | null;
+  budget_kind: PlaceBudgetKind | null;
+  budget_tier: number | null;
+  budget_label: string | null;
   website?: string | null;
   reservation_links?: PlaceReservationLink[];
   locality_path: string[];

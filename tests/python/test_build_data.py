@@ -6498,6 +6498,8 @@ class BuildDataTests(unittest.TestCase):
             price_range=None,
             admission_price="NT$100",
             room_price="NT$5,293",
+            primary_type_display_name="Museum",
+            types=["museum"],
         )
 
         with (
@@ -6581,6 +6583,42 @@ class BuildDataTests(unittest.TestCase):
                 build_data.display_price_range_for_place(enrichment, country_name="Japan")
             )
 
+    def test_display_price_range_for_place_keeps_generic_food_price_range(self) -> None:
+        enrichment = EnrichmentPlace(
+            price_range="$$",
+            admission_price=None,
+            primary_type="food",
+            types=["food"],
+        )
+
+        with patch.object(
+            build_data,
+            "google_maps_place_price_display_config",
+            return_value={"currency_mode": "raw"},
+        ):
+            self.assertEqual(
+                build_data.display_price_source_for_place(enrichment, country_name="Japan"),
+                ("price_range", "$$"),
+            )
+
+    def test_display_price_range_for_place_keeps_store_price_range(self) -> None:
+        enrichment = EnrichmentPlace(
+            price_range="$$",
+            admission_price=None,
+            primary_type="clothing_store",
+            types=["clothing_store"],
+        )
+
+        with patch.object(
+            build_data,
+            "google_maps_place_price_display_config",
+            return_value={"currency_mode": "raw"},
+        ):
+            self.assertEqual(
+                build_data.display_price_source_for_place(enrichment, country_name="Japan"),
+                ("price_range", "$$"),
+            )
+
     def test_display_price_range_for_place_keeps_numeric_restaurant_price_range(self) -> None:
         enrichment = EnrichmentPlace(
             price_range="NT$200–400",
@@ -6604,6 +6642,427 @@ class BuildDataTests(unittest.TestCase):
                 build_data.display_price_range_for_place(enrichment, country_name="Japan"),
                 "¥1,000–2,000",
             )
+
+    def test_display_price_range_for_place_keeps_numeric_specific_restaurant_price_range(self) -> None:
+        enrichment = EnrichmentPlace(
+            price_range="¥10,000+",
+            primary_type_display_name="Steak house",
+            types=["steak_house"],
+        )
+
+        with patch.object(
+            build_data,
+            "google_maps_place_price_display_config",
+            return_value={"currency_mode": "guide_local"},
+        ):
+            self.assertEqual(
+                build_data.display_price_source_for_place(enrichment, country_name="Japan"),
+                ("price_range", "¥10,000+"),
+            )
+
+    def test_display_price_range_for_place_keeps_food_shop_price_ranges(self) -> None:
+        noodle_shop = EnrichmentPlace(
+            price_range="NT$1–200",
+            primary_type="noodle_shop",
+            primary_type_display_name="Noodle shop",
+            types=["noodle_shop"],
+        )
+        sandwich_shop = EnrichmentPlace(
+            price_range="₫1–100,000",
+            primary_type="sandwich_shop",
+            primary_type_display_name="Sandwich shop",
+            types=["sandwich_shop"],
+        )
+
+        with patch.object(
+            build_data,
+            "google_maps_place_price_display_config",
+            return_value={"currency_mode": "guide_local"},
+        ):
+            self.assertEqual(
+                build_data.display_price_source_for_place(noodle_shop, country_name="Taiwan"),
+                ("price_range", "NT$1–200"),
+            )
+            self.assertEqual(
+                build_data.display_price_source_for_place(sandwich_shop, country_name="Vietnam"),
+                ("price_range", "₫1–100,000"),
+            )
+
+    def test_display_price_range_for_place_keeps_shopping_price_ranges(self) -> None:
+        book_store = EnrichmentPlace(
+            price_range="$",
+            primary_type="book_store",
+            primary_type_display_name="Book store",
+            types=["book_store"],
+        )
+        department_store = EnrichmentPlace(
+            price_range="$$$$",
+            primary_type="department_store",
+            primary_type_display_name="Department store",
+            types=["department_store"],
+        )
+
+        with patch.object(
+            build_data,
+            "google_maps_place_price_display_config",
+            return_value={"currency_mode": "guide_local"},
+        ):
+            self.assertEqual(
+                build_data.display_price_source_for_place(book_store, country_name="Azerbaijan"),
+                ("price_range", "$"),
+            )
+            self.assertEqual(
+                build_data.display_price_source_for_place(department_store, country_name="Germany"),
+                ("price_range", "€€€€"),
+            )
+
+    def test_display_price_range_for_place_prefers_room_price_for_hotel_bar(self) -> None:
+        enrichment = EnrichmentPlace(
+            display_name="UNWIND HOTEL&BAR SAPPORO",
+            price_range="¥8,335",
+            room_price="¥12,125",
+            primary_type="bar",
+            primary_type_display_name="Bar",
+            types=["bar"],
+        )
+
+        with patch.object(
+            build_data,
+            "google_maps_place_price_display_config",
+            return_value={"currency_mode": "guide_local"},
+        ):
+            self.assertEqual(
+                build_data.display_price_source_for_place(enrichment, country_name="Japan"),
+                ("room_price", "¥12,100"),
+            )
+
+    def test_display_price_range_for_place_keeps_food_price_for_bar_inside_hotel(self) -> None:
+        enrichment = EnrichmentPlace(
+            display_name="Lobby Bar at Sapporo Hotel",
+            price_range="¥8,335",
+            room_price="¥12,125",
+            primary_type="bar",
+            primary_type_display_name="Bar",
+            types=["bar"],
+        )
+
+        with patch.object(
+            build_data,
+            "google_maps_place_price_display_config",
+            return_value={"currency_mode": "guide_local"},
+        ):
+            self.assertEqual(
+                build_data.display_price_source_for_place(enrichment, country_name="Japan"),
+                ("price_range", "¥8,300"),
+            )
+
+    def test_display_price_range_for_place_skips_room_price_for_restaurant(self) -> None:
+        enrichment = EnrichmentPlace(
+            price_range=None,
+            room_price="¥18,000",
+            primary_type_display_name="Cafe",
+            types=["cafe"],
+        )
+
+        with patch.object(
+            build_data,
+            "google_maps_place_price_display_config",
+            return_value={"currency_mode": "guide_local"},
+        ):
+            self.assertIsNone(
+                build_data.display_price_source_for_place(enrichment, country_name="Japan")
+            )
+
+    def test_display_price_range_for_place_uses_raw_context_for_room_price(self) -> None:
+        enrichment = EnrichmentPlace(
+            price_range=None,
+            room_price="¥18,000",
+            primary_type_display_name=None,
+            types=[],
+        )
+        raw_place = RawPlace(
+            name="Quiet Inn",
+            maps_url="https://maps.example/quiet-inn",
+            types=["lodging"],
+        )
+
+        with patch.object(
+            build_data,
+            "google_maps_place_price_display_config",
+            return_value={"currency_mode": "guide_local", "source_order": ["room_price"]},
+        ):
+            self.assertEqual(
+                build_data.display_price_source_for_place(
+                    enrichment,
+                    country_name="Japan",
+                    raw_place=raw_place,
+                ),
+                ("room_price", "¥18,000"),
+            )
+
+    def test_display_price_range_for_place_uses_primary_category_for_admission_price(self) -> None:
+        enrichment = EnrichmentPlace(
+            price_range=None,
+            admission_price="NT$100",
+            primary_type_display_name=None,
+            types=[],
+        )
+
+        with patch.object(
+            build_data,
+            "google_maps_place_price_display_config",
+            return_value={"currency_mode": "guide_local", "source_order": ["admission_price"]},
+        ):
+            self.assertEqual(
+                build_data.display_price_source_for_place(
+                    enrichment,
+                    country_name="Taiwan",
+                    primary_category="Museum",
+                ),
+                ("admission_price", "NT$100"),
+            )
+
+    def test_display_price_range_for_place_keeps_park_style_admission_price(self) -> None:
+        enrichment = EnrichmentPlace(
+            price_range=None,
+            admission_price="NT$100",
+            primary_type="national_forest",
+            primary_type_display_name="National forest",
+            types=["national_forest"],
+        )
+
+        with patch.object(
+            build_data,
+            "google_maps_place_price_display_config",
+            return_value={"currency_mode": "guide_local"},
+        ):
+            self.assertEqual(
+                build_data.display_price_source_for_place(enrichment, country_name="Taiwan"),
+                ("admission_price", "NT$100"),
+            )
+
+    def test_derive_place_budget_fields_uses_restaurant_midpoint_threshold(self) -> None:
+        enrichment = EnrichmentPlace(
+            price_range="¥3,000–7,000",
+            primary_type_display_name="Restaurant",
+            types=["restaurant"],
+        )
+        raw_place = RawPlace(name="Soba Bar", maps_url="https://maps.example/soba")
+
+        self.assertEqual(
+            build_data.derive_place_budget_fields(
+                enrichment_place=enrichment,
+                raw_place=raw_place,
+                price_source="price_range",
+                display_price="¥3,000–7,000",
+                primary_category="Restaurant",
+                tags=["restaurant"],
+                country_name="Japan",
+            ),
+            {
+                "budget_kind": "restaurant_per_person",
+                "budget_tier": 2,
+                "budget_label": "$$",
+            },
+        )
+
+    def test_derive_place_budget_fields_uses_japan_restaurant_top_tier_for_10000_plus(self) -> None:
+        enrichment = EnrichmentPlace(
+            price_range="¥10,000+",
+            primary_type_display_name="Restaurant",
+            types=["restaurant"],
+        )
+        raw_place = RawPlace(name="Omakase", maps_url="https://maps.example/omakase")
+
+        self.assertEqual(
+            build_data.derive_place_budget_fields(
+                enrichment_place=enrichment,
+                raw_place=raw_place,
+                price_source="price_range",
+                display_price="¥10,000+",
+                primary_category="Restaurant",
+                tags=["restaurant"],
+                country_name="Japan",
+            ),
+            {
+                "budget_kind": "restaurant_per_person",
+                "budget_tier": 4,
+                "budget_label": "$$$$",
+            },
+        )
+
+    def test_derive_budget_tier_uses_configured_target_currency(self) -> None:
+        with patch.object(
+            build_data,
+            "google_maps_place_price_display_config",
+            return_value={"currency_mode": "target", "target_currency": "USD"},
+        ):
+            self.assertEqual(
+                build_data.derive_budget_tier(
+                    "$50",
+                    budget_kind="restaurant_per_person",
+                    country_name="Japan",
+                ),
+                2,
+            )
+
+    def test_derive_budget_tier_uses_china_guide_currency_for_ambiguous_yen_symbol(self) -> None:
+        with patch.object(
+            build_data,
+            "google_maps_place_price_display_config",
+            return_value={"currency_mode": "guide_local"},
+        ):
+            self.assertEqual(
+                build_data.derive_budget_tier(
+                    "¥145",
+                    budget_kind="restaurant_per_person",
+                    country_name="China",
+                ),
+                1,
+            )
+
+    def test_derive_budget_tier_uses_target_cny_for_ambiguous_yen_symbol(self) -> None:
+        with patch.object(
+            build_data,
+            "google_maps_place_price_display_config",
+            return_value={"currency_mode": "target", "target_currency": "CNY"},
+        ):
+            self.assertEqual(
+                build_data.derive_budget_tier(
+                    "¥435",
+                    budget_kind="restaurant_per_person",
+                    country_name="Japan",
+                ),
+                2,
+            )
+
+    def test_derive_place_budget_fields_keeps_hotel_and_admission_tiers_separate(self) -> None:
+        hotel = build_data.derive_place_budget_fields(
+            enrichment_place=EnrichmentPlace(room_price="¥18,000"),
+            raw_place=RawPlace(name="Hotel", maps_url="https://maps.example/hotel"),
+            price_source="room_price",
+            display_price="¥18,000",
+            primary_category="Hotel",
+            tags=["hotel"],
+            country_name="Japan",
+        )
+        admission = build_data.derive_place_budget_fields(
+            enrichment_place=EnrichmentPlace(admission_price="¥18,000"),
+            raw_place=RawPlace(name="Museum", maps_url="https://maps.example/museum"),
+            price_source="admission_price",
+            display_price="¥18,000",
+            primary_category="Museum",
+            tags=["museum"],
+            country_name="Japan",
+        )
+
+        self.assertEqual(hotel["budget_kind"], "hotel_per_night")
+        self.assertEqual(hotel["budget_tier"], 2)
+        self.assertEqual(admission["budget_kind"], "admission_per_person")
+        self.assertEqual(admission["budget_tier"], 4)
+
+    def test_derive_place_budget_fields_keeps_park_style_admission_kind(self) -> None:
+        admission = build_data.derive_place_budget_fields(
+            enrichment_place=EnrichmentPlace(
+                admission_price="NT$100",
+                primary_type="national_forest",
+                primary_type_display_name="National forest",
+                types=["national_forest"],
+            ),
+            raw_place=RawPlace(name="Forest", maps_url="https://maps.example/forest"),
+            price_source="admission_price",
+            display_price="NT$100",
+            primary_category="National forest",
+            tags=["national-forest"],
+            country_name="Taiwan",
+        )
+
+        self.assertEqual(admission["budget_kind"], "admission_per_person")
+        self.assertEqual(admission["budget_tier"], 1)
+
+    def test_derive_place_budget_fields_does_not_treat_dinner_as_inn(self) -> None:
+        budget_fields = build_data.derive_place_budget_fields(
+            enrichment_place=EnrichmentPlace(
+                price_range="¥4,000–8,000",
+                primary_type_display_name="Bistro",
+                types=["bistro"],
+            ),
+            raw_place=RawPlace(name="Bistro", maps_url="https://maps.example/bistro"),
+            price_source="price_range",
+            display_price="¥4,000–8,000",
+            primary_category="Bistro",
+            tags=["dinner", "bistro"],
+            country_name="Japan",
+        )
+
+        self.assertEqual(budget_fields["budget_kind"], "restaurant_per_person")
+        self.assertEqual(budget_fields["budget_tier"], 2)
+
+    def test_derive_place_budget_fields_uses_hotel_name_for_bar_room_price(self) -> None:
+        budget_fields = build_data.derive_place_budget_fields(
+            enrichment_place=EnrichmentPlace(
+                display_name="UNWIND HOTEL&BAR SAPPORO",
+                price_range="¥8,335",
+                room_price="¥12,125",
+                primary_type="bar",
+                primary_type_display_name="Bar",
+                types=["bar"],
+            ),
+            raw_place=RawPlace(name="UNWIND HOTEL&BAR SAPPORO", maps_url="https://maps.example/unwind"),
+            price_source="room_price",
+            display_price="¥12,125",
+            primary_category="Bar",
+            tags=["bar"],
+            country_name="Japan",
+        )
+
+        self.assertEqual(budget_fields["budget_kind"], "hotel_per_night")
+        self.assertEqual(budget_fields["budget_tier"], 2)
+
+    def test_derive_place_budget_fields_keeps_bar_inside_hotel_as_restaurant(self) -> None:
+        budget_fields = build_data.derive_place_budget_fields(
+            enrichment_place=EnrichmentPlace(
+                display_name="Lobby Bar at Sapporo Hotel",
+                price_range="¥8,335",
+                room_price="¥12,125",
+                primary_type="bar",
+                primary_type_display_name="Bar",
+                types=["bar"],
+            ),
+            raw_place=RawPlace(name="Lobby Bar at Sapporo Hotel", maps_url="https://maps.example/lobby-bar"),
+            price_source="price_range",
+            display_price="¥8,335",
+            primary_category="Bar",
+            tags=["bar"],
+            country_name="Japan",
+        )
+
+        self.assertEqual(budget_fields["budget_kind"], "restaurant_per_person")
+        self.assertEqual(budget_fields["budget_tier"], 2)
+
+    def test_derive_place_budget_fields_rejects_room_price_for_cafe(self) -> None:
+        budget_fields = build_data.derive_place_budget_fields(
+            enrichment_place=EnrichmentPlace(
+                room_price="¥18,000",
+                primary_type_display_name="Cafe",
+                types=["cafe"],
+            ),
+            raw_place=RawPlace(name="Cafe", maps_url="https://maps.example/cafe"),
+            price_source="room_price",
+            display_price="¥18,000",
+            primary_category="Cafe",
+            tags=["cafe"],
+            country_name="Japan",
+        )
+
+        self.assertEqual(
+            budget_fields,
+            {"budget_kind": None, "budget_tier": None, "budget_label": None},
+        )
+
+    def test_symbolic_budget_tier_does_not_misread_numeric_prefixed_currency(self) -> None:
+        self.assertIsNone(build_data.symbolic_price_tier("CA$25"))
+        self.assertEqual(build_data.symbolic_price_tier("CA$$$"), 3)
 
     def test_apply_semantic_enrichment_uses_optional_llm_response(self) -> None:
         enrichment = EnrichmentPlace(

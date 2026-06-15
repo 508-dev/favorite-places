@@ -80,6 +80,12 @@ const hasPhoto = Boolean(siteConfig.placeCard.showPhoto && placePhotosEnabled &&
 const ratingValue = typeof place.rating === "number" ? place.rating : null;
 const reviewCount = typeof place.user_rating_count === "number" ? place.user_rating_count : null;
 const priceRange = typeof place.price_range === "string" && place.price_range.trim().length > 0 ? place.price_range.trim() : null;
+const budgetKindPriceTitles = {
+  restaurant_per_person: "Restaurant spend per person",
+  hotel_per_night: "Hotel nightly rate",
+  admission_per_person: "Admission per person",
+} as const;
+const priceTitleBasis = place.budget_kind ? (budgetKindPriceTitles[place.budget_kind] ?? "Price range") : "Price range";
 const ratingFormatter = new Intl.NumberFormat("en-US", {
   minimumFractionDigits: 1,
   maximumFractionDigits: 1,
@@ -105,7 +111,7 @@ const placeRatingMetaTitle = [
   siteConfig.placeCard.showReviewCount && reviewCount !== null
     ? `${reviewCountFormatter.format(reviewCount)} Google Maps ${reviewCount === 1 ? "review" : "reviews"}`
     : null,
-  siteConfig.placeCard.showPriceRange && priceRange !== null ? `Price range ${priceRange}` : null,
+  siteConfig.placeCard.showPriceRange && priceRange !== null ? `${priceTitleBasis} ${priceRange}` : null,
 ]
   .filter(Boolean)
   .join(" · ");
@@ -376,6 +382,8 @@ const hasReservationOptions = reservationLinks.length > 1;
   data-place-status={place.status}
   data-rating={ratingValue !== null ? String(ratingValue) : ""}
   data-rating-count={reviewCount !== null ? String(reviewCount) : ""}
+  data-budget-kind={place.budget_kind ?? ""}
+  data-budget-tier={place.budget_tier !== null ? String(place.budget_tier) : ""}
   data-rank={String(place.manual_rank)}
   data-lat={place.lat !== null ? String(place.lat) : ""}
   data-lng={place.lng !== null ? String(place.lng) : ""}

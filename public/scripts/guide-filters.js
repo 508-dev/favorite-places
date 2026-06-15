@@ -221,10 +221,61 @@ export function cardMatchesType(card, { activeTypeValue = "", activeTypeSeedValu
   );
 }
 
+function budgetSelectionKey(kind, tier) {
+  return kind && tier ? `${kind}:${tier}` : "";
+}
+
+export function toggleBudgetSelection(activeBudgetSelections = [], selectionKey = "") {
+  if (!selectionKey) {
+    return activeBudgetSelections;
+  }
+  if (activeBudgetSelections.includes(selectionKey)) {
+    return activeBudgetSelections.filter((selection) => selection !== selectionKey);
+  }
+  const [budgetKind] = selectionKey.split(":");
+  return [
+    ...activeBudgetSelections.filter((selection) => selection.startsWith(`${budgetKind}:`)),
+    selectionKey,
+  ];
+}
+
+export function cardMatchesBudget(card, { activeBudgetSelections = [] } = {}) {
+  if (activeBudgetSelections.length === 0) {
+    return true;
+  }
+
+  return activeBudgetSelections.includes(
+    budgetSelectionKey(card.dataset.budgetKind || "", card.dataset.budgetTier || ""),
+  );
+}
+
+export function cardMatchesRating(card, { activeMinRating = 0 } = {}) {
+  const minRating = Number(activeMinRating) || 0;
+  if (minRating <= 0) {
+    return true;
+  }
+
+  const rating = Number(card.dataset.rating || 0);
+  return Number.isFinite(rating) && rating >= minRating;
+}
+
+export function cardMatchesReviewCount(card, { activeMinReviews = 0 } = {}) {
+  const minReviews = Number(activeMinReviews) || 0;
+  if (minReviews <= 0) {
+    return true;
+  }
+
+  const reviewCount = Number(card.dataset.ratingCount || 0);
+  return Number.isFinite(reviewCount) && reviewCount >= minReviews;
+}
+
 export function cardMatchesFilters(
   card,
   {
     activeAreaValue = "",
+    activeBudgetSelections = [],
+    activeMinRating = 0,
+    activeMinReviews = 0,
     activeTypeValue = "",
     activeTypeSeedValues = [],
     mapFramePlaceIds = null,
@@ -242,13 +293,30 @@ export function cardMatchesFilters(
     activeTypeValue,
     activeTypeSeedValues,
   });
-  return matchesSearch && matchesArea && matchesMapFrame && matchesSelectedTags && matchesType;
+  const matchesBudget = cardMatchesBudget(card, {
+    activeBudgetSelections,
+  });
+  const matchesRating = cardMatchesRating(card, { activeMinRating });
+  const matchesReviewCount = cardMatchesReviewCount(card, { activeMinReviews });
+  return (
+    matchesSearch &&
+    matchesArea &&
+    matchesMapFrame &&
+    matchesSelectedTags &&
+    matchesType &&
+    matchesBudget &&
+    matchesRating &&
+    matchesReviewCount
+  );
 }
 
 export function countMatchingCards(
   cards,
   {
     activeArea = "",
+    activeBudgetSelections = [],
+    activeMinRating = 0,
+    activeMinReviews = 0,
     activeTypeValue = "",
     activeTypeSeedValues = [],
     mapFramePlaceIds = null,
@@ -264,6 +332,9 @@ export function countMatchingCards(
   return cards.filter((card) =>
     cardMatchesFilters(card, {
       activeAreaValue: normalizedActiveArea,
+      activeBudgetSelections,
+      activeMinRating,
+      activeMinReviews,
       activeTypeValue,
       activeTypeSeedValues,
       mapFramePlaceIds,
@@ -279,6 +350,9 @@ export function countAreaOptionCards(
   {
     activeTypeValue = "",
     activeTypeSeedValues = [],
+    activeBudgetSelections = [],
+    activeMinRating = 0,
+    activeMinReviews = 0,
     mapFramePlaceIds = null,
     normalizedQuery = "",
     searchResultIds = null,
@@ -288,6 +362,9 @@ export function countAreaOptionCards(
 ) {
   return countMatchingCards(cards, {
     activeArea: areaValue,
+    activeBudgetSelections,
+    activeMinRating,
+    activeMinReviews,
     activeTypeValue,
     activeTypeSeedValues,
     mapFramePlaceIds,
@@ -301,6 +378,9 @@ export function countTypeOptionCards(
   cards,
   {
     activeArea = "",
+    activeBudgetSelections = [],
+    activeMinRating = 0,
+    activeMinReviews = 0,
     mapFramePlaceIds = null,
     normalizedQuery = "",
     searchResultIds = null,
@@ -310,6 +390,9 @@ export function countTypeOptionCards(
 ) {
   return countMatchingCards(cards, {
     activeArea,
+    activeBudgetSelections,
+    activeMinRating,
+    activeMinReviews,
     activeTypeValue: typeValue,
     activeTypeSeedValues: typeSeedValues,
     mapFramePlaceIds,
@@ -323,6 +406,9 @@ export function countTagOptionCards(
   cards,
   {
     activeArea = "",
+    activeBudgetSelections = [],
+    activeMinRating = 0,
+    activeMinReviews = 0,
     activeTypeValue = "",
     activeTypeSeedValues = [],
     mapFramePlaceIds = null,
@@ -334,6 +420,9 @@ export function countTagOptionCards(
 ) {
   return countMatchingCards(cards, {
     activeArea,
+    activeBudgetSelections,
+    activeMinRating,
+    activeMinReviews,
     activeTypeValue,
     activeTypeSeedValues,
     mapFramePlaceIds,
@@ -341,6 +430,95 @@ export function countTagOptionCards(
     searchResultIds,
     selectedTagValues,
     tag,
+  });
+}
+
+export function countBudgetOptionCards(
+  cards,
+  {
+    activeArea = "",
+    activeTypeValue = "",
+    activeTypeSeedValues = [],
+    activeMinRating = 0,
+    activeMinReviews = 0,
+    mapFramePlaceIds = null,
+    normalizedQuery = "",
+    searchResultIds = null,
+    selectedTagValues = [],
+  } = {},
+  { budgetKind = "", budgetTier = "" } = {},
+) {
+  return countMatchingCards(cards, {
+    activeArea,
+    activeBudgetSelections: budgetSelectionKey(budgetKind, budgetTier)
+      ? [budgetSelectionKey(budgetKind, budgetTier)]
+      : [],
+    activeMinRating,
+    activeMinReviews,
+    activeTypeValue,
+    activeTypeSeedValues,
+    mapFramePlaceIds,
+    normalizedQuery,
+    searchResultIds,
+    selectedTagValues,
+  });
+}
+
+export function countRatingOptionCards(
+  cards,
+  {
+    activeArea = "",
+    activeBudgetSelections = [],
+    activeMinReviews = 0,
+    activeTypeValue = "",
+    activeTypeSeedValues = [],
+    mapFramePlaceIds = null,
+    normalizedQuery = "",
+    searchResultIds = null,
+    selectedTagValues = [],
+  } = {},
+  minRating = 0,
+) {
+  return countMatchingCards(cards, {
+    activeArea,
+    activeBudgetSelections,
+    activeMinRating: minRating,
+    activeMinReviews,
+    activeTypeValue,
+    activeTypeSeedValues,
+    mapFramePlaceIds,
+    normalizedQuery,
+    searchResultIds,
+    selectedTagValues,
+  });
+}
+
+export function countReviewOptionCards(
+  cards,
+  {
+    activeArea = "",
+    activeBudgetSelections = [],
+    activeMinRating = 0,
+    activeTypeValue = "",
+    activeTypeSeedValues = [],
+    mapFramePlaceIds = null,
+    normalizedQuery = "",
+    searchResultIds = null,
+    selectedTagValues = [],
+  } = {},
+  minReviews = 0,
+) {
+  return countMatchingCards(cards, {
+    activeArea,
+    activeBudgetSelections,
+    activeMinRating,
+    activeMinReviews: minReviews,
+    activeTypeValue,
+    activeTypeSeedValues,
+    mapFramePlaceIds,
+    normalizedQuery,
+    searchResultIds,
+    selectedTagValues,
   });
 }
 
@@ -380,6 +558,9 @@ export function buildAreaFilterStatusMessage({
 export function hasAdditionalGuideFilters({
   activeType = "",
   activeTypeValue = "",
+  activeBudgetSelections = [],
+  activeMinRating = 0,
+  activeMinReviews = 0,
   mapFramePlaceIds = null,
   normalizedQuery = "",
   selectedTags = [],
@@ -389,7 +570,14 @@ export function hasAdditionalGuideFilters({
   const nextActiveType = activeTypeValue || activeType;
   const nextSelectedTags = selectedTagValues.length > 0 ? selectedTagValues : selectedTags;
 
-  if (Boolean(normalizedQuery) || Boolean(nextActiveType) || nextSelectedTags.length > 0) {
+  if (
+    Boolean(normalizedQuery) ||
+    Boolean(nextActiveType) ||
+    activeBudgetSelections.length > 0 ||
+    Number(activeMinRating) > 0 ||
+    Number(activeMinReviews) > 0 ||
+    nextSelectedTags.length > 0
+  ) {
     return true;
   }
 
@@ -453,6 +641,14 @@ if (root) {
   const sortSelect = root.querySelector("[data-sort-select]");
   const areaButtons = Array.from(root.querySelectorAll("[data-area-filter]"));
   const typeButtons = Array.from(root.querySelectorAll("[data-type-filter]"));
+  const budgetButtons = Array.from(root.querySelectorAll("[data-budget-filter]"));
+  const budgetClearButtons = Array.from(root.querySelectorAll("[data-budget-clear-kind]"));
+  const budgetSummary = root.querySelector("[data-budget-summary]");
+  const ratingButtons = Array.from(root.querySelectorAll("[data-rating-filter]"));
+  const ratingSummary = root.querySelector("[data-rating-summary]");
+  const reviewButtons = Array.from(root.querySelectorAll("[data-review-filter]"));
+  const reviewSummary = root.querySelector("[data-review-summary]");
+  const metricMenus = Array.from(root.querySelectorAll(".metric-filter-menu"));
   const selectedTagsRow = root.querySelector("[data-selected-tags]");
   const suggestionList = root.querySelector("[data-suggestion-list]");
   const suggestionGroup = suggestionList?.closest(".control-group") || null;
@@ -495,6 +691,9 @@ if (root) {
 
   let activeArea = "";
   let activeType = "";
+  let activeBudgetSelections = [];
+  let activeMinRating = 0;
+  let activeMinReviews = 0;
   let selectedTags = [];
   let mapFramePlaceIds = null;
   let searchIndex = null;
@@ -517,6 +716,95 @@ if (root) {
       .replaceAll("<", "&lt;")
       .replaceAll(">", "&gt;")
       .replaceAll('"', "&quot;");
+
+  const getBudgetSelectionKey = (button) =>
+    budgetSelectionKey(button.dataset.budgetKind || "", button.dataset.budgetTier || "");
+
+  const closeMetricMenus = (exceptMenu = null) => {
+    metricMenus.forEach((menu) => {
+      if (menu !== exceptMenu) {
+        menu.open = false;
+      }
+    });
+  };
+
+  const closeContainingDetails = (button) => {
+    const menu = button.closest("details");
+    if (menu) {
+      menu.open = false;
+    }
+  };
+
+  const budgetKindLabels = Object.fromEntries(
+    budgetButtons.map((button) => [
+      button.dataset.budgetKind || "",
+      button.dataset.budgetKindLabel || button.dataset.budgetKind || "",
+    ]),
+  );
+
+  const tierLabel = (tier) => "$".repeat(Number(tier) || 0);
+
+  const summarizeBudgetTiers = (tiers) => {
+    const values = [...new Set(tiers.map((tier) => Number(tier)).filter(Boolean))].sort(
+      (left, right) => left - right,
+    );
+    if (values.length === 0) {
+      return "";
+    }
+    if (values.length === 1) {
+      return tierLabel(values[0]);
+    }
+    const contiguous = values.every(
+      (value, index) => index === 0 || value === values[index - 1] + 1,
+    );
+    if (contiguous && values[values.length - 1] === 4) {
+      return `${tierLabel(values[0])}+`;
+    }
+    if (contiguous) {
+      return `${tierLabel(values[0])}-${tierLabel(values[values.length - 1])}`;
+    }
+    return values.map(tierLabel).join(",");
+  };
+
+  const updateBudgetSummary = () => {
+    if (!budgetSummary) {
+      return;
+    }
+
+    if (activeBudgetSelections.length === 0) {
+      budgetSummary.textContent = "Any";
+      return;
+    }
+
+    const tiersByKind = new Map();
+    activeBudgetSelections.forEach((selection) => {
+      const [kind, tier] = selection.split(":");
+      if (!kind || !tier) {
+        return;
+      }
+      tiersByKind.set(kind, [...(tiersByKind.get(kind) || []), tier]);
+    });
+
+    budgetSummary.textContent = [...tiersByKind.entries()]
+      .map(([kind, tiers]) =>
+        [budgetKindLabels[kind] || kind, summarizeBudgetTiers(tiers)].filter(Boolean).join(" "),
+      )
+      .join(" · ");
+  };
+
+  const updateRatingSummary = () => {
+    if (!ratingSummary) {
+      return;
+    }
+    ratingSummary.textContent = activeMinRating > 0 ? `${activeMinRating.toFixed(1)}+` : "Any";
+  };
+
+  const updateReviewSummary = () => {
+    if (!reviewSummary) {
+      return;
+    }
+    reviewSummary.textContent = activeMinReviews > 0 ? `${activeMinReviews}+` : "Any";
+  };
 
   const getAutocompleteState = (value) => {
     const match = value.match(TAG_QUERY_PATTERN);
@@ -924,6 +1212,9 @@ if (root) {
     const visibleCards = cards.filter((card) => {
       const visible = cardMatchesFilters(card, {
         activeAreaValue: activeArea,
+        activeBudgetSelections,
+        activeMinRating,
+        activeMinReviews,
         activeTypeValue: activeType,
         activeTypeSeedValues: activeTypeSeeds,
         mapFramePlaceIds,
@@ -940,6 +1231,9 @@ if (root) {
     const areaCountFilters = {
       activeTypeValue: activeType,
       activeTypeSeedValues: activeTypeSeeds,
+      activeBudgetSelections,
+      activeMinRating,
+      activeMinReviews,
       mapFramePlaceIds,
       normalizedQuery,
       searchResultIds,
@@ -947,6 +1241,9 @@ if (root) {
     };
     const typeCountFilters = {
       activeArea,
+      activeBudgetSelections,
+      activeMinRating,
+      activeMinReviews,
       mapFramePlaceIds,
       normalizedQuery,
       searchResultIds,
@@ -954,8 +1251,22 @@ if (root) {
     };
     const tagCountFilters = {
       activeArea,
+      activeBudgetSelections,
+      activeMinRating,
+      activeMinReviews,
       activeTypeValue: activeType,
       activeTypeSeedValues: activeTypeSeeds,
+      mapFramePlaceIds,
+      normalizedQuery,
+      searchResultIds,
+      selectedTagValues: selectedTags,
+    };
+    const budgetCountFilters = {
+      activeArea,
+      activeTypeValue: activeType,
+      activeTypeSeedValues: activeTypeSeeds,
+      activeMinRating,
+      activeMinReviews,
       mapFramePlaceIds,
       normalizedQuery,
       searchResultIds,
@@ -970,6 +1281,9 @@ if (root) {
     const areaOverflowCount = activeArea ? Math.max(0, broaderAreaCount - areaMatchCount) : 0;
     const hasAdditionalFilters = hasAdditionalGuideFilters({
       activeTypeValue: activeType,
+      activeBudgetSelections,
+      activeMinRating,
+      activeMinReviews,
       mapFramePlaceIds,
       normalizedQuery,
       selectedTagValues: selectedTags,
@@ -1020,6 +1334,86 @@ if (root) {
       };
     });
     reorderFilterButtons(typeButtons, typeOptions);
+
+    budgetButtons.forEach((button) => {
+      const budgetKind = button.dataset.budgetKind || "";
+      const budgetTier = button.dataset.budgetTier || "";
+      const selectionKey = getBudgetSelectionKey(button);
+      const count = countBudgetOptionCards(cards, budgetCountFilters, {
+        budgetKind,
+        budgetTier,
+      });
+      const isActive = activeBudgetSelections.includes(selectionKey);
+      const unavailable = Boolean(budgetKind && budgetTier) && !isActive && count === 0;
+      setFilterCount(button, count);
+      setToggleButtonState(button, {
+        active: isActive,
+        unavailable,
+        disabled: unavailable,
+      });
+    });
+    budgetClearButtons.forEach((button) => {
+      const kind = button.dataset.budgetClearKind || "";
+      const hasKindSelection = activeBudgetSelections.some((selection) =>
+        selection.startsWith(`${kind}:`),
+      );
+      setToggleButtonState(button, {
+        active: !hasKindSelection,
+        unavailable: false,
+        disabled: false,
+      });
+    });
+    updateBudgetSummary();
+
+    const ratingCountFilters = {
+      activeArea,
+      activeBudgetSelections,
+      activeMinReviews,
+      activeTypeValue: activeType,
+      activeTypeSeedValues: activeTypeSeeds,
+      mapFramePlaceIds,
+      normalizedQuery,
+      searchResultIds,
+      selectedTagValues: selectedTags,
+    };
+    ratingButtons.forEach((button) => {
+      const minRating = Number(button.dataset.ratingMin || 0) || 0;
+      const count = countRatingOptionCards(cards, ratingCountFilters, minRating);
+      const isActive = minRating === activeMinRating;
+      const unavailable = minRating > 0 && !isActive && count === 0;
+      setFilterCount(button, count);
+      setToggleButtonState(button, {
+        active: isActive,
+        unavailable,
+        disabled: unavailable,
+      });
+    });
+    updateRatingSummary();
+
+    const reviewCountFilters = {
+      activeArea,
+      activeBudgetSelections,
+      activeMinRating,
+      activeTypeValue: activeType,
+      activeTypeSeedValues: activeTypeSeeds,
+      mapFramePlaceIds,
+      normalizedQuery,
+      searchResultIds,
+      selectedTagValues: selectedTags,
+    };
+    reviewButtons.forEach((button) => {
+      const minReviews = Number(button.dataset.reviewMin || 0) || 0;
+      const count = countReviewOptionCards(cards, reviewCountFilters, minReviews);
+      const isActive = minReviews === activeMinReviews;
+      const unavailable = minReviews > 0 && !isActive && count === 0;
+      setFilterCount(button, count);
+      setToggleButtonState(button, {
+        active: isActive,
+        unavailable,
+        disabled: unavailable,
+      });
+    });
+    updateReviewSummary();
 
     if (suggestionList) {
       const suggestionButtons = Array.from(
@@ -1164,6 +1558,77 @@ if (root) {
     button.addEventListener("click", () => {
       const nextArea = normalizeTag(button.dataset.area || "");
       activeArea = activeArea === nextArea ? "" : nextArea;
+      update();
+    });
+  });
+
+  metricMenus.forEach((menu) => {
+    menu.addEventListener("toggle", () => {
+      if (menu.open) {
+        closeMetricMenus(menu);
+      }
+    });
+  });
+
+  document.addEventListener("click", (event) => {
+    if (!(event.target instanceof Element)) {
+      return;
+    }
+    if (!event.target.closest(".metric-filter-menu")) {
+      closeMetricMenus();
+    }
+  });
+
+  document.addEventListener("focusin", (event) => {
+    if (!(event.target instanceof Element)) {
+      return;
+    }
+    if (!event.target.closest(".metric-filter-menu")) {
+      closeMetricMenus();
+    }
+  });
+
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") {
+      closeMetricMenus();
+    }
+  });
+
+  budgetButtons.forEach((button) => {
+    button.addEventListener("click", () => {
+      const selectionKey = getBudgetSelectionKey(button);
+      if (!selectionKey) {
+        return;
+      }
+      activeBudgetSelections = toggleBudgetSelection(activeBudgetSelections, selectionKey);
+      update();
+    });
+  });
+
+  budgetClearButtons.forEach((button) => {
+    button.addEventListener("click", () => {
+      const kind = button.dataset.budgetClearKind || "";
+      activeBudgetSelections = activeBudgetSelections.filter(
+        (selection) => !selection.startsWith(`${kind}:`),
+      );
+      update();
+    });
+  });
+
+  ratingButtons.forEach((button) => {
+    button.addEventListener("click", () => {
+      const nextMinRating = Number(button.dataset.ratingMin || 0) || 0;
+      activeMinRating = activeMinRating === nextMinRating ? 0 : nextMinRating;
+      closeContainingDetails(button);
+      update();
+    });
+  });
+
+  reviewButtons.forEach((button) => {
+    button.addEventListener("click", () => {
+      const nextMinReviews = Number(button.dataset.reviewMin || 0) || 0;
+      activeMinReviews = activeMinReviews === nextMinReviews ? 0 : nextMinReviews;
+      closeContainingDetails(button);
       update();
     });
   });

@@ -5,12 +5,18 @@ import {
   buildEmptyStateMessage,
   buildNearbyDistanceMap,
   cardHasTag,
+  cardMatchesBudget,
+  cardMatchesRating,
+  cardMatchesReviewCount,
   cardMatchesType,
   compareCardsByCurated,
   compareCardsByNearby,
   compareCardsByNeighborhood,
   countAreaOptionCards,
+  countBudgetOptionCards,
   countMatchingCards,
+  countRatingOptionCards,
+  countReviewOptionCards,
   countTagOptionCards,
   countTypeOptionCards,
   getInitialSelectedTags,
@@ -19,11 +25,14 @@ import {
   normalizeUserLocationDetail,
   resolveLocationSortState,
   sortFilterOptions,
+  toggleBudgetSelection,
 } from "../../public/scripts/guide-filters.js";
 
 const makeCard = ({
   bestHit = "false",
   category = "",
+  budgetKind = "",
+  budgetTier = "",
   featured = "false",
   lat = "",
   lng = "",
@@ -33,6 +42,8 @@ const makeCard = ({
   neighborhoodToken = "",
   placeId,
   rank = "0",
+  rating = "",
+  ratingCount = "",
   search = "",
   tags = "",
   topPick = "false",
@@ -40,6 +51,8 @@ const makeCard = ({
 } = {}) => ({
   dataset: {
     bestHit,
+    budgetKind,
+    budgetTier,
     category,
     featured,
     lat,
@@ -50,6 +63,8 @@ const makeCard = ({
     neighborhoodToken,
     placeId,
     rank,
+    rating,
+    ratingCount,
     search,
     tags,
     topPick,
@@ -118,6 +133,150 @@ describe("guide filters", () => {
         activeTypeSeedValues: [],
       }),
     ).toBe(true);
+  });
+
+  it("matches explicit budget kind and tier filters", () => {
+    const card = makeCard({
+      budgetKind: "restaurant_per_person",
+      budgetTier: "2",
+      placeId: "1",
+    });
+
+    expect(cardMatchesBudget(card)).toBe(true);
+    expect(
+      cardMatchesBudget(card, {
+        activeBudgetSelections: ["restaurant_per_person:2"],
+      }),
+    ).toBe(true);
+    expect(
+      cardMatchesBudget(card, {
+        activeBudgetSelections: ["hotel_per_night:2"],
+      }),
+    ).toBe(false);
+  });
+
+  it("matches any selected budget tier for range-style filtering", () => {
+    const cards = [
+      makeCard({
+        budgetKind: "restaurant_per_person",
+        budgetTier: "1",
+        placeId: "cheap",
+      }),
+      makeCard({
+        budgetKind: "restaurant_per_person",
+        budgetTier: "2",
+        placeId: "moderate",
+      }),
+      makeCard({
+        budgetKind: "restaurant_per_person",
+        budgetTier: "3",
+        placeId: "splurge",
+      }),
+    ];
+
+    expect(
+      countMatchingCards(cards, {
+        activeBudgetSelections: ["restaurant_per_person:2", "restaurant_per_person:3"],
+      }),
+    ).toBe(2);
+  });
+
+  it("lets one budget category be active at a time while preserving same-kind ranges", () => {
+    expect(toggleBudgetSelection(["restaurant_per_person:2"], "restaurant_per_person:3")).toEqual([
+      "restaurant_per_person:2",
+      "restaurant_per_person:3",
+    ]);
+    expect(
+      toggleBudgetSelection(
+        ["restaurant_per_person:2", "restaurant_per_person:3"],
+        "admission_per_person:1",
+      ),
+    ).toEqual(["admission_per_person:1"]);
+    expect(toggleBudgetSelection(["restaurant_per_person:2"], "restaurant_per_person:2")).toEqual(
+      [],
+    );
+  });
+
+  it("matches minimum rating and review-count thresholds", () => {
+    const card = makeCard({
+      placeId: "1",
+      rating: "4.6",
+      ratingCount: "350",
+    });
+
+    expect(cardMatchesRating(card, { activeMinRating: 4.5 })).toBe(true);
+    expect(cardMatchesRating(card, { activeMinRating: 4.7 })).toBe(false);
+    expect(cardMatchesReviewCount(card, { activeMinReviews: 200 })).toBe(true);
+    expect(cardMatchesReviewCount(card, { activeMinReviews: 500 })).toBe(false);
+  });
+
+  it("counts rating and review threshold options with other filters applied", () => {
+    const cards = [
+      makeCard({
+        budgetKind: "restaurant_per_person",
+        budgetTier: "2",
+        placeId: "1",
+        rating: "4.6",
+        ratingCount: "250",
+      }),
+      makeCard({
+        budgetKind: "restaurant_per_person",
+        budgetTier: "2",
+        placeId: "2",
+        rating: "4.4",
+        ratingCount: "700",
+      }),
+      makeCard({
+        budgetKind: "admission_per_person",
+        budgetTier: "1",
+        placeId: "3",
+        rating: "4.8",
+        ratingCount: "1200",
+      }),
+    ];
+
+    const filters = {
+      activeBudgetSelections: ["restaurant_per_person:2"],
+    };
+
+    expect(countRatingOptionCards(cards, filters, 4.5)).toBe(1);
+    expect(countReviewOptionCards(cards, filters, 500)).toBe(1);
+  });
+
+  it("counts budget options with other filters applied", () => {
+    const cards = [
+      makeCard({
+        budgetKind: "restaurant_per_person",
+        budgetTier: "2",
+        neighborhood: "ginza",
+        placeId: "1",
+      }),
+      makeCard({
+        budgetKind: "restaurant_per_person",
+        budgetTier: "3",
+        neighborhood: "ginza",
+        placeId: "2",
+      }),
+      makeCard({
+        budgetKind: "restaurant_per_person",
+        budgetTier: "2",
+        neighborhood: "shibuya",
+        placeId: "3",
+      }),
+    ];
+
+    expect(
+      countBudgetOptionCards(
+        cards,
+        {
+          activeArea: "ginza",
+        },
+        {
+          budgetKind: "restaurant_per_person",
+          budgetTier: "2",
+        },
+      ),
+    ).toBe(1);
   });
 
   it("builds area-aware status and empty messages when broader matches exist", () => {

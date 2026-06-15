@@ -1895,6 +1895,240 @@
     gap: 0.45rem;
   }
 
+  .control-group-compact {
+    gap: 0.35rem;
+  }
+
+  .price-filter-group {
+    align-items: start;
+  }
+
+  .price-filter-menu {
+    position: relative;
+    width: min(100%, 24rem);
+  }
+
+  .price-filter-trigger {
+    min-height: 2.35rem;
+    width: 100%;
+    display: inline-flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.8rem;
+    padding: 0.35rem 0.72rem;
+    border: 1px solid var(--line);
+    border-radius: var(--radius-md);
+    background: var(--surface);
+    color: var(--ink);
+    cursor: pointer;
+    list-style: none;
+  }
+
+  .price-filter-trigger::-webkit-details-marker {
+    display: none;
+  }
+
+  .price-filter-trigger::after {
+    content: "";
+    width: 0.48rem;
+    height: 0.48rem;
+    border-right: 2px solid currentColor;
+    border-bottom: 2px solid currentColor;
+    transform: rotate(45deg) translateY(-0.12rem);
+    opacity: 0.72;
+  }
+
+  .price-filter-menu[open] .price-filter-trigger::after {
+    transform: rotate(225deg) translate(-0.08rem, -0.02rem);
+  }
+
+  .metric-filter-row {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    justify-content: flex-start;
+    width: max-content;
+    max-width: 100%;
+    overflow: visible;
+  }
+
+  .metric-filter-menu {
+    width: auto;
+    min-width: 0;
+    flex: 0 1 auto;
+  }
+
+  .metric-filter-price {
+    width: clamp(7.8rem, 22vw, 9.25rem);
+  }
+
+  .metric-filter-rating {
+    width: clamp(5rem, 12vw, 5.75rem);
+  }
+
+  .metric-filter-reviews {
+    width: clamp(7rem, 16vw, 7.8rem);
+  }
+
+  .metric-filter-menu .price-filter-trigger {
+    gap: 0.45rem;
+    padding-inline: 0.58rem;
+    background: var(--surface-strong);
+  }
+
+  .metric-filter-segment {
+    flex: 0 0 auto;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.32rem;
+    min-width: 0;
+    margin: 0;
+    padding: 0;
+    border: 0;
+  }
+
+  .metric-filter-label {
+    color: var(--muted);
+    font-size: 0.74rem;
+    font-weight: 800;
+    line-height: 1;
+    white-space: nowrap;
+  }
+
+  .metric-filter-option {
+    min-height: 2.15rem;
+    padding-inline: 0.48rem;
+  }
+
+  .metric-filter-panel {
+    width: min(18rem, calc(100vw - 2rem));
+  }
+
+  .metric-filter-price-panel {
+    width: min(32rem, calc(100vw - 2rem));
+  }
+
+  .metric-filter-rating .metric-filter-panel {
+    left: 50%;
+    transform: translateX(-50%);
+  }
+
+  .metric-filter-reviews .metric-filter-panel {
+    right: 0;
+    left: auto;
+  }
+
+  .metric-filter-options {
+    grid-template-columns: repeat(auto-fit, minmax(3.5rem, 1fr));
+  }
+
+  .price-filter-title {
+    font-family: Raleway, Lato, "Helvetica Neue", Helvetica, Arial, sans-serif;
+    font-size: 0.76rem;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--muted);
+  }
+
+  .price-filter-summary {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--ink);
+    font-size: 0.82rem;
+    font-weight: 700;
+  }
+
+  .price-filter-panel {
+    position: absolute;
+    top: calc(100% + 0.45rem);
+    left: 0;
+    z-index: 20;
+    width: min(32rem, calc(100vw - 2rem));
+    display: grid;
+    gap: 0.65rem;
+    padding: 0.72rem;
+    border: 1px solid var(--line);
+    border-radius: var(--radius-md);
+    background: var(--surface);
+    box-shadow: 0 16px 34px rgba(31, 37, 34, 0.14);
+  }
+
+  .price-filter-row {
+    display: grid;
+    grid-template-columns: minmax(5.4rem, 0.55fr) minmax(0, 1fr);
+    align-items: center;
+    gap: 0.65rem;
+  }
+
+  .price-filter-row-head {
+    min-width: 0;
+    display: grid;
+    gap: 0.05rem;
+  }
+
+  .price-filter-row-label {
+    color: var(--ink);
+    font-size: 0.82rem;
+    font-weight: 700;
+    line-height: 1.15;
+  }
+
+  .price-filter-row-hint {
+    color: var(--muted);
+    font-size: 0.72rem;
+    line-height: 1.15;
+  }
+
+  .price-filter-options {
+    display: grid;
+    grid-template-columns: minmax(3rem, 0.8fr) repeat(4, minmax(2.6rem, 1fr));
+    gap: 0.35rem;
+    min-width: 0;
+    margin: 0;
+    padding: 0;
+    border: 0;
+  }
+
+  .price-filter-option {
+    min-width: 0;
+    min-height: 2rem;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.28rem;
+    padding: 0.25rem 0.42rem;
+    border: 1px solid var(--line);
+    border-radius: var(--radius-sm);
+    background: var(--surface-strong);
+    color: var(--muted);
+    cursor: pointer;
+    font-size: 0.74rem;
+    font-weight: 700;
+    line-height: 1;
+    white-space: nowrap;
+  }
+
+  .price-filter-option[data-active="true"] {
+    border-color: transparent;
+    background: var(--accent);
+    color: var(--surface);
+  }
+
+  .price-filter-option:disabled,
+  .price-filter-option[data-unavailable="true"] {
+    cursor: not-allowed;
+    opacity: 0.42;
+  }
+
+  .price-filter-count {
+    font-size: 0.68rem;
+    font-weight: 700;
+    opacity: 0.78;
+  }
+
   .control-label {
     font-family: Raleway, Lato, "Helvetica Neue", Helvetica, Arial, sans-serif;
     font-size: 0.78rem;
@@ -1980,6 +2214,7 @@
   .tag-row-mobile-grid-scroll {
     width: 100%;
   }
+
   .selected-tag-chip {
     display: inline-flex;
     align-items: center;
@@ -3075,6 +3310,56 @@
 
     .control-label {
       font-size: 0.74rem;
+    }
+
+    .price-filter-menu {
+      width: min(100%, 20rem);
+    }
+
+    .metric-filter-menu {
+      width: auto;
+    }
+
+    .metric-filter-price {
+      width: 7.4rem;
+    }
+
+    .metric-filter-rating {
+      width: 4.95rem;
+    }
+
+    .metric-filter-reviews {
+      width: 6.95rem;
+    }
+
+    .price-filter-panel {
+      position: static;
+      width: 100%;
+      margin-top: 0.45rem;
+      padding: 0.58rem;
+      box-shadow: none;
+    }
+
+    .metric-filter-panel {
+      position: absolute;
+      top: calc(100% + 0.45rem);
+      width: min(18rem, calc(100vw - 2rem));
+      margin-top: 0;
+      box-shadow: 0 16px 34px rgba(31, 37, 34, 0.14);
+    }
+
+    .metric-filter-price-panel {
+      width: min(32rem, calc(100vw - 4.5rem));
+    }
+
+    .price-filter-row {
+      grid-template-columns: minmax(0, 1fr);
+      gap: 0.35rem;
+    }
+
+    .price-filter-options {
+      grid-template-columns: minmax(2.8rem, 0.8fr) repeat(4, minmax(2.35rem, 1fr));
+      gap: 0.28rem;
     }
 
     .search-hint {
