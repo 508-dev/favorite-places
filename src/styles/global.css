@@ -1934,6 +1934,8 @@
     display: flex;
     align-items: center;
     gap: 0.5rem;
+    justify-content: flex-start;
+    width: max-content;
     max-width: 100%;
     overflow: visible;
   }
@@ -1941,24 +1943,25 @@
   .metric-filter-menu {
     width: auto;
     min-width: 0;
-    flex: 1 1 0;
+    flex: 0 1 auto;
   }
 
   .metric-filter-price {
-    flex-grow: 1.35;
+    width: clamp(7.8rem, 22vw, 9.25rem);
   }
 
   .metric-filter-rating {
-    flex-grow: 0.72;
+    width: clamp(5rem, 12vw, 5.75rem);
   }
 
   .metric-filter-reviews {
-    flex-grow: 0.96;
+    width: clamp(7rem, 16vw, 7.8rem);
   }
 
   .metric-filter-menu .price-filter-trigger {
     gap: 0.45rem;
     padding-inline: 0.58rem;
+    background: var(--surface-strong);
   }
 
   .metric-filter-segment {
@@ -3303,6 +3306,18 @@
 
     .metric-filter-menu {
       width: auto;
+    }
+
+    .metric-filter-price {
+      width: 7.4rem;
+    }
+
+    .metric-filter-rating {
+      width: 4.95rem;
+    }
+
+    .metric-filter-reviews {
+      width: 6.95rem;
     }
 
     .price-filter-panel {

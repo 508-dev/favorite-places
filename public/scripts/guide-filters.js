@@ -648,6 +648,7 @@ if (root) {
   const ratingSummary = root.querySelector("[data-rating-summary]");
   const reviewButtons = Array.from(root.querySelectorAll("[data-review-filter]"));
   const reviewSummary = root.querySelector("[data-review-summary]");
+  const metricMenus = Array.from(root.querySelectorAll(".metric-filter-menu"));
   const selectedTagsRow = root.querySelector("[data-selected-tags]");
   const suggestionList = root.querySelector("[data-suggestion-list]");
   const suggestionGroup = suggestionList?.closest(".control-group") || null;
@@ -718,6 +719,14 @@ if (root) {
 
   const getBudgetSelectionKey = (button) =>
     budgetSelectionKey(button.dataset.budgetKind || "", button.dataset.budgetTier || "");
+
+  const closeMetricMenus = (exceptMenu = null) => {
+    metricMenus.forEach((menu) => {
+      if (menu !== exceptMenu) {
+        menu.open = false;
+      }
+    });
+  };
 
   const closeContainingDetails = (button) => {
     const menu = button.closest("details");
@@ -1551,6 +1560,38 @@ if (root) {
       activeArea = activeArea === nextArea ? "" : nextArea;
       update();
     });
+  });
+
+  metricMenus.forEach((menu) => {
+    menu.addEventListener("toggle", () => {
+      if (menu.open) {
+        closeMetricMenus(menu);
+      }
+    });
+  });
+
+  document.addEventListener("click", (event) => {
+    if (!(event.target instanceof Element)) {
+      return;
+    }
+    if (!event.target.closest(".metric-filter-menu")) {
+      closeMetricMenus();
+    }
+  });
+
+  document.addEventListener("focusin", (event) => {
+    if (!(event.target instanceof Element)) {
+      return;
+    }
+    if (!event.target.closest(".metric-filter-menu")) {
+      closeMetricMenus();
+    }
+  });
+
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") {
+      closeMetricMenus();
+    }
   });
 
   budgetButtons.forEach((button) => {

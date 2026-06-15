@@ -1078,7 +1078,10 @@ PARENT_TYPE_TAG_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
             "diner",
             "grill",
             "eatery",
+            "food-court",
+            "noodle-shop",
             "ramen",
+            "sandwich-shop",
             "soba",
             "steak",
             "sushi",
@@ -1139,7 +1142,20 @@ PARENT_TYPE_TAG_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
             "reserve",
         ),
     ),
-    ("shopping", ("market", "boutique", "mall", "shopping-center")),
+    (
+        "shopping",
+        (
+            "antique-store",
+            "book-store",
+            "boutique",
+            "clothing-store",
+            "department-store",
+            "gift-shop",
+            "market",
+            "mall",
+            "shopping-center",
+        ),
+    ),
     ("hotel", ("lodging", "hotel", "hostel", "inn", "resort", "ryokan")),
 )
 BUDGET_PARENT_TYPE_TAG_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (

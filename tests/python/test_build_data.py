@@ -6660,6 +6660,62 @@ class BuildDataTests(unittest.TestCase):
                 ("price_range", "¥10,000+"),
             )
 
+    def test_display_price_range_for_place_keeps_food_shop_price_ranges(self) -> None:
+        noodle_shop = EnrichmentPlace(
+            price_range="NT$1–200",
+            primary_type="noodle_shop",
+            primary_type_display_name="Noodle shop",
+            types=["noodle_shop"],
+        )
+        sandwich_shop = EnrichmentPlace(
+            price_range="₫1–100,000",
+            primary_type="sandwich_shop",
+            primary_type_display_name="Sandwich shop",
+            types=["sandwich_shop"],
+        )
+
+        with patch.object(
+            build_data,
+            "google_maps_place_price_display_config",
+            return_value={"currency_mode": "guide_local"},
+        ):
+            self.assertEqual(
+                build_data.display_price_source_for_place(noodle_shop, country_name="Taiwan"),
+                ("price_range", "NT$1–200"),
+            )
+            self.assertEqual(
+                build_data.display_price_source_for_place(sandwich_shop, country_name="Vietnam"),
+                ("price_range", "₫1–100,000"),
+            )
+
+    def test_display_price_range_for_place_keeps_shopping_price_ranges(self) -> None:
+        book_store = EnrichmentPlace(
+            price_range="$",
+            primary_type="book_store",
+            primary_type_display_name="Book store",
+            types=["book_store"],
+        )
+        department_store = EnrichmentPlace(
+            price_range="$$$$",
+            primary_type="department_store",
+            primary_type_display_name="Department store",
+            types=["department_store"],
+        )
+
+        with patch.object(
+            build_data,
+            "google_maps_place_price_display_config",
+            return_value={"currency_mode": "guide_local"},
+        ):
+            self.assertEqual(
+                build_data.display_price_source_for_place(book_store, country_name="Azerbaijan"),
+                ("price_range", "$"),
+            )
+            self.assertEqual(
+                build_data.display_price_source_for_place(department_store, country_name="Germany"),
+                ("price_range", "€€€€"),
+            )
+
     def test_display_price_range_for_place_prefers_room_price_for_hotel_bar(self) -> None:
         enrichment = EnrichmentPlace(
             display_name="UNWIND HOTEL&BAR SAPPORO",
