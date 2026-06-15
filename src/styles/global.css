@@ -1934,13 +1934,31 @@
     display: flex;
     align-items: center;
     gap: 0.5rem;
-    overflow-x: auto;
-    padding-bottom: 0.1rem;
-    scrollbar-width: thin;
+    max-width: 100%;
+    overflow: visible;
+  }
+
+  .metric-filter-menu {
+    width: auto;
+    min-width: 0;
+    flex: 1 1 0;
   }
 
   .metric-filter-price {
-    flex: 0 0 auto;
+    flex-grow: 1.35;
+  }
+
+  .metric-filter-rating {
+    flex-grow: 0.72;
+  }
+
+  .metric-filter-reviews {
+    flex-grow: 0.96;
+  }
+
+  .metric-filter-menu .price-filter-trigger {
+    gap: 0.45rem;
+    padding-inline: 0.58rem;
   }
 
   .metric-filter-segment {
@@ -1965,6 +1983,28 @@
   .metric-filter-option {
     min-height: 2.15rem;
     padding-inline: 0.48rem;
+  }
+
+  .metric-filter-panel {
+    width: min(18rem, calc(100vw - 2rem));
+  }
+
+  .metric-filter-price-panel {
+    width: min(32rem, calc(100vw - 2rem));
+  }
+
+  .metric-filter-rating .metric-filter-panel {
+    left: 50%;
+    transform: translateX(-50%);
+  }
+
+  .metric-filter-reviews .metric-filter-panel {
+    right: 0;
+    left: auto;
+  }
+
+  .metric-filter-options {
+    grid-template-columns: repeat(auto-fit, minmax(3.5rem, 1fr));
   }
 
   .price-filter-title {
@@ -3261,12 +3301,28 @@
       width: min(100%, 20rem);
     }
 
+    .metric-filter-menu {
+      width: auto;
+    }
+
     .price-filter-panel {
       position: static;
       width: 100%;
       margin-top: 0.45rem;
       padding: 0.58rem;
       box-shadow: none;
+    }
+
+    .metric-filter-panel {
+      position: absolute;
+      top: calc(100% + 0.45rem);
+      width: min(18rem, calc(100vw - 2rem));
+      margin-top: 0;
+      box-shadow: 0 16px 34px rgba(31, 37, 34, 0.14);
+    }
+
+    .metric-filter-price-panel {
+      width: min(32rem, calc(100vw - 4.5rem));
     }
 
     .price-filter-row {

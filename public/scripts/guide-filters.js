@@ -645,7 +645,9 @@ if (root) {
   const budgetClearButtons = Array.from(root.querySelectorAll("[data-budget-clear-kind]"));
   const budgetSummary = root.querySelector("[data-budget-summary]");
   const ratingButtons = Array.from(root.querySelectorAll("[data-rating-filter]"));
+  const ratingSummary = root.querySelector("[data-rating-summary]");
   const reviewButtons = Array.from(root.querySelectorAll("[data-review-filter]"));
+  const reviewSummary = root.querySelector("[data-review-summary]");
   const selectedTagsRow = root.querySelector("[data-selected-tags]");
   const suggestionList = root.querySelector("[data-suggestion-list]");
   const suggestionGroup = suggestionList?.closest(".control-group") || null;
@@ -717,6 +719,13 @@ if (root) {
   const getBudgetSelectionKey = (button) =>
     budgetSelectionKey(button.dataset.budgetKind || "", button.dataset.budgetTier || "");
 
+  const closeContainingDetails = (button) => {
+    const menu = button.closest("details");
+    if (menu) {
+      menu.open = false;
+    }
+  };
+
   const budgetKindLabels = Object.fromEntries(
     budgetButtons.map((button) => [
       button.dataset.budgetKind || "",
@@ -772,6 +781,20 @@ if (root) {
         [budgetKindLabels[kind] || kind, summarizeBudgetTiers(tiers)].filter(Boolean).join(" "),
       )
       .join(" · ");
+  };
+
+  const updateRatingSummary = () => {
+    if (!ratingSummary) {
+      return;
+    }
+    ratingSummary.textContent = activeMinRating > 0 ? `${activeMinRating.toFixed(1)}+` : "Any";
+  };
+
+  const updateReviewSummary = () => {
+    if (!reviewSummary) {
+      return;
+    }
+    reviewSummary.textContent = activeMinReviews > 0 ? `${activeMinReviews}+` : "Any";
   };
 
   const getAutocompleteState = (value) => {
@@ -1356,6 +1379,7 @@ if (root) {
         disabled: unavailable,
       });
     });
+    updateRatingSummary();
 
     const reviewCountFilters = {
       activeArea,
@@ -1380,6 +1404,7 @@ if (root) {
         disabled: unavailable,
       });
     });
+    updateReviewSummary();
 
     if (suggestionList) {
       const suggestionButtons = Array.from(
@@ -1553,6 +1578,7 @@ if (root) {
     button.addEventListener("click", () => {
       const nextMinRating = Number(button.dataset.ratingMin || 0) || 0;
       activeMinRating = activeMinRating === nextMinRating ? 0 : nextMinRating;
+      closeContainingDetails(button);
       update();
     });
   });
@@ -1561,6 +1587,7 @@ if (root) {
     button.addEventListener("click", () => {
       const nextMinReviews = Number(button.dataset.reviewMin || 0) || 0;
       activeMinReviews = activeMinReviews === nextMinReviews ? 0 : nextMinReviews;
+      closeContainingDetails(button);
       update();
     });
   });

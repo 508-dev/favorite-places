@@ -222,6 +222,12 @@ PRICE_SOURCE_BUDGET_KINDS = {
     "admission_price": "admission_per_person",
     "room_price": "hotel_per_night",
 }
+LODGING_DISPLAY_NAME_TERMS_RE = re.compile(r"\b(?:hotel|hostel|inn|resort|ryokan)\b", re.IGNORECASE)
+LODGING_DISPLAY_NAME_LOCATION_RE = re.compile(
+    r"\b(?:at|in|inside|within)\s+(?:the\s+)?[-&'a-z0-9 ]*"
+    r"(?:hotel|hostel|inn|resort|ryokan)\b",
+    re.IGNORECASE,
+)
 BUDGET_KIND_PARENT_TAGS = {
     "restaurant_per_person": RESTAURANT_BUDGET_PARENT_TAGS,
     "hotel_per_night": HOTEL_BUDGET_PARENT_TAGS,
@@ -10852,9 +10858,21 @@ def room_price_budget_parent_tags_for_place(
         primary_category=primary_category,
         tags=tags,
     )
-    if as_string(enrichment_place.room_price) is not None:
-        parent_tags.update(budget_parent_tags_from_values([enrichment_place.display_name]))
+    if room_price_display_name_indicates_lodging_listing(enrichment_place):
+        parent_tags.add("hotel")
     return parent_tags
+
+
+def room_price_display_name_indicates_lodging_listing(enrichment_place: EnrichmentPlace) -> bool:
+    if as_string(enrichment_place.room_price) is None:
+        return False
+    display_name = as_string(enrichment_place.display_name)
+    if display_name is None:
+        return False
+    normalized = normalize_type_lookup_text(display_name)
+    if not LODGING_DISPLAY_NAME_TERMS_RE.search(normalized):
+        return False
+    return LODGING_DISPLAY_NAME_LOCATION_RE.search(normalized) is None
 
 
 def budget_parent_tags_allow_kind(parent_tags: set[str], budget_kind: str) -> bool:

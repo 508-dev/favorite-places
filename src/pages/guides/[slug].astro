@@ -458,12 +458,12 @@ const guideJsonLd = [
               <div class="control-group control-group-compact metric-filter-group" style="grid-column: 1 / -1;">
                 <div class="metric-filter-row">
                   {budgetRows.length > 0 && (
-                    <details class="price-filter-menu metric-filter-price">
+                    <details class="price-filter-menu metric-filter-menu metric-filter-price">
                       <summary class="price-filter-trigger">
                         <span class="price-filter-title">Price</span>
                         <span class="price-filter-summary" data-budget-summary>Any</span>
                       </summary>
-                      <div class="price-filter-panel">
+                      <div class="price-filter-panel metric-filter-panel metric-filter-price-panel">
                         {budgetRows.map((row) => (
                           <div class="price-filter-row">
                             <div class="price-filter-row-head">
@@ -503,45 +503,59 @@ const guideJsonLd = [
                   )}
 
                   {ratingFilterOptions.length > 0 && (
-                    <fieldset class="metric-filter-segment" aria-label="Minimum rating">
-                      <span class="metric-filter-label" aria-hidden="true">★</span>
-                      <button class="price-filter-option metric-filter-option" type="button" data-rating-filter data-rating-min="">
-                        Any
-                      </button>
-                      {ratingFilterOptions.map((option) => (
-                        <button
-                          class="price-filter-option metric-filter-option"
-                          type="button"
-                          data-rating-filter
-                          data-rating-min={String(option.value)}
-                          aria-pressed="false"
-                        >
-                          <span>{option.label}</span>
-                          <span class="price-filter-count" data-filter-count>{option.count}</span>
-                        </button>
-                      ))}
-                    </fieldset>
+                    <details class="price-filter-menu metric-filter-menu metric-filter-rating">
+                      <summary class="price-filter-trigger">
+                        <span class="price-filter-title">★</span>
+                        <span class="price-filter-summary" data-rating-summary>Any</span>
+                      </summary>
+                      <div class="price-filter-panel metric-filter-panel">
+                        <fieldset class="price-filter-options metric-filter-options" aria-label="Minimum rating">
+                          <button class="price-filter-option metric-filter-option" type="button" data-rating-filter data-rating-min="">
+                            Any
+                          </button>
+                          {ratingFilterOptions.map((option) => (
+                            <button
+                              class="price-filter-option metric-filter-option"
+                              type="button"
+                              data-rating-filter
+                              data-rating-min={String(option.value)}
+                              aria-pressed="false"
+                            >
+                              <span>{option.label}</span>
+                              <span class="price-filter-count" data-filter-count>{option.count}</span>
+                            </button>
+                          ))}
+                        </fieldset>
+                      </div>
+                    </details>
                   )}
 
                   {reviewFilterOptions.length > 0 && (
-                    <fieldset class="metric-filter-segment" aria-label="Minimum review count">
-                      <span class="metric-filter-label">Reviews</span>
-                      <button class="price-filter-option metric-filter-option" type="button" data-review-filter data-review-min="">
-                        Any
-                      </button>
-                      {reviewFilterOptions.map((option) => (
-                        <button
-                          class="price-filter-option metric-filter-option"
-                          type="button"
-                          data-review-filter
-                          data-review-min={String(option.value)}
-                          aria-pressed="false"
-                        >
-                          <span>{option.label}</span>
-                          <span class="price-filter-count" data-filter-count>{option.count}</span>
-                        </button>
-                      ))}
-                    </fieldset>
+                    <details class="price-filter-menu metric-filter-menu metric-filter-reviews">
+                      <summary class="price-filter-trigger">
+                        <span class="price-filter-title">Reviews</span>
+                        <span class="price-filter-summary" data-review-summary>Any</span>
+                      </summary>
+                      <div class="price-filter-panel metric-filter-panel">
+                        <fieldset class="price-filter-options metric-filter-options" aria-label="Minimum review count">
+                          <button class="price-filter-option metric-filter-option" type="button" data-review-filter data-review-min="">
+                            Any
+                          </button>
+                          {reviewFilterOptions.map((option) => (
+                            <button
+                              class="price-filter-option metric-filter-option"
+                              type="button"
+                              data-review-filter
+                              data-review-min={String(option.value)}
+                              aria-pressed="false"
+                            >
+                              <span>{option.label}</span>
+                              <span class="price-filter-count" data-filter-count>{option.count}</span>
+                            </button>
+                          ))}
+                        </fieldset>
+                      </div>
+                    </details>
                   )}
                 </div>
               </div>

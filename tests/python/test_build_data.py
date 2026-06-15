@@ -6644,6 +6644,26 @@ class BuildDataTests(unittest.TestCase):
                 ("room_price", "¥12,100"),
             )
 
+    def test_display_price_range_for_place_keeps_food_price_for_bar_inside_hotel(self) -> None:
+        enrichment = EnrichmentPlace(
+            display_name="Lobby Bar at Sapporo Hotel",
+            price_range="¥8,335",
+            room_price="¥12,125",
+            primary_type="bar",
+            primary_type_display_name="Bar",
+            types=["bar"],
+        )
+
+        with patch.object(
+            build_data,
+            "google_maps_place_price_display_config",
+            return_value={"currency_mode": "guide_local"},
+        ):
+            self.assertEqual(
+                build_data.display_price_source_for_place(enrichment, country_name="Japan"),
+                ("price_range", "¥8,300"),
+            )
+
     def test_display_price_range_for_place_skips_room_price_for_restaurant(self) -> None:
         enrichment = EnrichmentPlace(
             price_range=None,
@@ -6856,6 +6876,27 @@ class BuildDataTests(unittest.TestCase):
         )
 
         self.assertEqual(budget_fields["budget_kind"], "hotel_per_night")
+        self.assertEqual(budget_fields["budget_tier"], 2)
+
+    def test_derive_place_budget_fields_keeps_bar_inside_hotel_as_restaurant(self) -> None:
+        budget_fields = build_data.derive_place_budget_fields(
+            enrichment_place=EnrichmentPlace(
+                display_name="Lobby Bar at Sapporo Hotel",
+                price_range="¥8,335",
+                room_price="¥12,125",
+                primary_type="bar",
+                primary_type_display_name="Bar",
+                types=["bar"],
+            ),
+            raw_place=RawPlace(name="Lobby Bar at Sapporo Hotel", maps_url="https://maps.example/lobby-bar"),
+            price_source="price_range",
+            display_price="¥8,335",
+            primary_category="Bar",
+            tags=["bar"],
+            country_name="Japan",
+        )
+
+        self.assertEqual(budget_fields["budget_kind"], "restaurant_per_person")
         self.assertEqual(budget_fields["budget_tier"], 2)
 
     def test_derive_place_budget_fields_rejects_room_price_for_cafe(self) -> None:
