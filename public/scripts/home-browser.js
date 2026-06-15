@@ -182,21 +182,31 @@ if (root) {
     [
       ...results
         .reduce((groups, result) => {
-          const country = result.entry.country || "Unknown";
-          if (!groups.has(country)) {
-            groups.set(country, []);
+          const key = result.entry.guide_slug || result.entry.guide_title || "unknown-guide";
+          if (!groups.has(key)) {
+            groups.set(key, []);
           }
-          groups.get(country).push(result);
+          groups.get(key).push(result);
           return groups;
         }, new Map())
         .entries(),
     ]
-      .map(([country, items]) => ({ country, items }))
+      .map(([key, items]) => {
+        const entry = items[0]?.entry || {};
+        return {
+          key,
+          guideSlug: entry.guide_slug || "",
+          guideTitle: entry.guide_title || "Guide",
+          city: entry.city || "",
+          country: entry.country || "",
+          items,
+        };
+      })
       .sort(
         (left, right) =>
           right.items.length - left.items.length ||
           right.items[0].score - left.items[0].score ||
-          left.country.localeCompare(right.country),
+          left.guideTitle.localeCompare(right.guideTitle),
       );
 
   const updateSearchViewButtons = () => {
@@ -267,15 +277,25 @@ if (root) {
     return card;
   };
 
-  const createGroupedCountryCard = (group, query) => {
+  const createGroupedGuideCard = (group, query) => {
     const card = document.createElement("article");
     card.className = "search-country-card";
 
     const header = document.createElement("div");
     header.className = "search-country-card-head";
 
+    const titleBlock = document.createElement("div");
+    titleBlock.className = "search-country-card-title";
+
     const title = document.createElement("h4");
-    title.textContent = group.country;
+    title.textContent = group.guideTitle;
+
+    const meta = document.createElement("p");
+    meta.className = "search-country-item-meta";
+    meta.textContent = [group.city, group.country].filter(Boolean).join(", ");
+    meta.hidden = !meta.textContent;
+
+    titleBlock.append(title, meta);
 
     const count = document.createElement("p");
     count.className = "small-copy";
@@ -284,7 +304,7 @@ if (root) {
         ? `${pluralize(group.items.length, "match", "matches")} · top ${GROUP_LIMIT} shown`
         : pluralize(group.items.length, "match", "matches");
 
-    header.append(title, count);
+    header.append(titleBlock, count);
 
     const list = document.createElement("div");
     list.className = "search-country-list";
@@ -301,13 +321,7 @@ if (root) {
 
       const itemMeta = document.createElement("span");
       itemMeta.className = "search-country-item-meta";
-      itemMeta.textContent = [
-        entry.guide_title,
-        [entry.category, entry.neighborhood].filter(Boolean).join(" · "),
-        entry.city,
-      ]
-        .filter(Boolean)
-        .join(" · ");
+      itemMeta.textContent = [entry.category, entry.neighborhood].filter(Boolean).join(" · ");
 
       const rating = ratingValue(entry.rating);
       const reviewCount = reviewCountValue(entry.user_rating_count);
@@ -432,7 +446,7 @@ if (root) {
       ...visibleIndividualResults.map((result) => createSearchResultCard(result, query)),
     );
     groupedResultsList.replaceChildren(
-      ...groupedResults.map((group) => createGroupedCountryCard(group, query)),
+      ...groupedResults.map((group) => createGroupedGuideCard(group, query)),
     );
 
     globalResultsList.hidden = searchResultView !== "individual";
@@ -453,8 +467,7 @@ if (root) {
         searchResultView === "grouped"
           ? `${pluralize(visibleResults.length, "matching place")} across ${pluralize(
               groupedResults.length,
-              "country",
-              "countries",
+              "guide",
             )}`
           : `${pluralize(visibleResults.length, "matching place")}`;
     }
@@ -477,7 +490,7 @@ if (root) {
       }
 
       if (searchResultView === "grouped" && visibleResults.length > 0) {
-        summaryBits.push(`Showing up to ${GROUP_LIMIT} places per country`);
+        summaryBits.push(`Showing up to ${GROUP_LIMIT} places per guide`);
       } else if (
         searchResultView === "individual" &&
         visibleResults.length > INDIVIDUAL_RESULT_LIMIT
@@ -534,6 +547,8 @@ if (root) {
       searchIndex && rawQuery
         ? new Set(searchGuides(rawQuery, { index: searchIndex }).map((result) => result.guide.slug))
         : null;
+    const shouldUsePlaceMatchFallback =
+      Boolean(rawQuery) && Boolean(placeMatchGuideSlugs) && (guideMatches?.size ?? 0) === 0;
     const matchingGuidesByCountry = new Map();
     const visibleGuideSlugs = [];
     let visibleGuideCount = 0;
@@ -552,8 +567,8 @@ if (root) {
           return true;
         }
         return (
-          placeMatchGuideSlugs?.has(guideSlug) ||
           guideMatches?.has(guideSlug) ||
+          (shouldUsePlaceMatchFallback && placeMatchGuideSlugs?.has(guideSlug)) ||
           (!searchIndex && (card.dataset.search || "").includes(normalizedQuery))
         );
       });
@@ -665,11 +680,12 @@ if (root) {
   const setSearchView = (view) => {
     const nextView = view === "individual" ? "individual" : "grouped";
     if (searchResultView === nextView) {
+      renderGlobalSearch((searchInput?.value || "").trim());
       return;
     }
 
     searchResultView = nextView;
-    renderGlobalSearch((searchInput?.value || "").trim().toLowerCase());
+    renderGlobalSearch((searchInput?.value || "").trim());
   };
 
   searchInput?.addEventListener("input", update);
