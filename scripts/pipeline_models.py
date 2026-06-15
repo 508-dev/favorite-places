@@ -373,6 +373,13 @@ class NormalizedPlace(PipelineModel):
     visible_tags: list[str] = Field(default_factory=list)
     vibe_tags: list[str] = Field(default_factory=list)
     price_range: str | None = None
+    budget_kind: Literal[
+        "restaurant_per_person",
+        "hotel_per_night",
+        "admission_per_person",
+    ] | None = None
+    budget_tier: int | None = None
+    budget_label: str | None = None
     website: str | None = None
     reservation_links: list[PlaceReservationLink] = Field(default_factory=list)
     neighborhood: str | None = None

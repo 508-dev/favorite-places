@@ -44,6 +44,29 @@ const TYPE_SUGGESTION_PRIORITY: Record<string, string[]> = {
   bakery: ["coffee", "breakfast", "pastries", "dessert", "takeaway"],
   "tourist-attraction": ["scenic", "rainy-day", "iconic", "museum", "viewpoint"],
 };
+const BUDGET_KIND_DISPLAY = {
+  restaurant_per_person: {
+    label: "Food",
+    title: "Restaurant spend per person",
+    hint: "pp",
+  },
+  hotel_per_night: {
+    label: "Stay",
+    title: "Hotel nightly rate",
+    hint: "/night",
+  },
+  admission_per_person: {
+    label: "Entry",
+    title: "Admission per person",
+    hint: "admission",
+  },
+} as const;
+const BUDGET_KIND_ORDER = [
+  "restaurant_per_person",
+  "hotel_per_night",
+  "admission_per_person",
+] as const;
+const BUDGET_TIER_ORDER = [1, 2, 3, 4] as const;
 
 function isSuggestibleTag(tag: string, citySlug: string, countrySlug: string): boolean {
   return Boolean(
@@ -203,6 +226,29 @@ for (const placeData of placeBrowseData) {
 }
 
 const typeCounts = typeCountsAccumulator;
+const budgetCounts = visiblePlaces.reduce((counts, place) => {
+  if (place.budget_kind && typeof place.budget_tier === "number") {
+    const key = `${place.budget_kind}:${place.budget_tier}`;
+    counts.set(key, (counts.get(key) ?? 0) + 1);
+  }
+  return counts;
+}, new Map<string, number>());
+const budgetRows = BUDGET_KIND_ORDER.map((kind) => {
+  const tiers = BUDGET_TIER_ORDER.map((tier) => ({
+    tier,
+    count: budgetCounts.get(`${kind}:${tier}`) ?? 0,
+    title: `${BUDGET_KIND_DISPLAY[kind].title} ${"$".repeat(tier)}`,
+  }));
+  const availableTiers = tiers.filter((tier) => tier.count > 0);
+  return {
+    kind,
+    label: BUDGET_KIND_DISPLAY[kind].label,
+    hint: BUDGET_KIND_DISPLAY[kind].hint,
+    title: BUDGET_KIND_DISPLAY[kind].title,
+    tiers,
+    availableTierCount: availableTiers.length,
+  };
+}).filter((row) => row.availableTierCount > 1);
 const guideDescriptionHtml = renderRichText(guide.description);
 const guideAsideHtml = getGuideAsideHtml(guide.slug);
 const guideBeforePlacesHtml = getTemplateHtml(`guide-before-places/${guide.slug}.html`) ?? getTemplateHtml("guide-before-places/default.html");
@@ -392,6 +438,53 @@ const guideJsonLd = [
                     </button>
                   ))}
                 </div>
+              </div>
+            )}
+
+            {budgetRows.length > 0 && (
+              <div class="control-group control-group-compact price-filter-group" style="grid-column: 1 / -1;">
+                <details class="price-filter-menu">
+                  <summary class="price-filter-trigger">
+                    <span class="price-filter-title">Price</span>
+                    <span class="price-filter-summary" data-budget-summary>Any</span>
+                  </summary>
+                  <div class="price-filter-panel">
+                    {budgetRows.map((row) => (
+                      <div class="price-filter-row">
+                        <div class="price-filter-row-head">
+                          <span class="price-filter-row-label">{row.label}</span>
+                          <span class="price-filter-row-hint">{row.hint}</span>
+                        </div>
+                        <fieldset class="price-filter-options" aria-label={row.title}>
+                          <button
+                            class="price-filter-option price-filter-option-any"
+                            type="button"
+                            data-budget-clear-kind={row.kind}
+                          >
+                            Any
+                          </button>
+                          {row.tiers.map((filter) => (
+                            <button
+                              class="price-filter-option"
+                              type="button"
+                              data-budget-filter
+                              data-budget-kind={row.kind}
+                              data-budget-kind-label={row.label}
+                              data-budget-tier={String(filter.tier)}
+                              title={filter.title}
+                              aria-label={filter.title}
+                              aria-pressed="false"
+                              disabled={filter.count === 0}
+                            >
+                              <span aria-hidden="true">{"$".repeat(filter.tier)}</span>
+                              <span class="price-filter-count" data-filter-count>{filter.count}</span>
+                            </button>
+                          ))}
+                        </fieldset>
+                      </div>
+                    ))}
+                  </div>
+                </details>
               </div>
             )}
 

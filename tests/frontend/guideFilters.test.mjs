@@ -5,11 +5,13 @@ import {
   buildEmptyStateMessage,
   buildNearbyDistanceMap,
   cardHasTag,
+  cardMatchesBudget,
   cardMatchesType,
   compareCardsByCurated,
   compareCardsByNearby,
   compareCardsByNeighborhood,
   countAreaOptionCards,
+  countBudgetOptionCards,
   countMatchingCards,
   countTagOptionCards,
   countTypeOptionCards,
@@ -24,6 +26,8 @@ import {
 const makeCard = ({
   bestHit = "false",
   category = "",
+  budgetKind = "",
+  budgetTier = "",
   featured = "false",
   lat = "",
   lng = "",
@@ -40,6 +44,8 @@ const makeCard = ({
 } = {}) => ({
   dataset: {
     bestHit,
+    budgetKind,
+    budgetTier,
     category,
     featured,
     lat,
@@ -118,6 +124,88 @@ describe("guide filters", () => {
         activeTypeSeedValues: [],
       }),
     ).toBe(true);
+  });
+
+  it("matches explicit budget kind and tier filters", () => {
+    const card = makeCard({
+      budgetKind: "restaurant_per_person",
+      budgetTier: "2",
+      placeId: "1",
+    });
+
+    expect(cardMatchesBudget(card)).toBe(true);
+    expect(
+      cardMatchesBudget(card, {
+        activeBudgetSelections: ["restaurant_per_person:2"],
+      }),
+    ).toBe(true);
+    expect(
+      cardMatchesBudget(card, {
+        activeBudgetSelections: ["hotel_per_night:2"],
+      }),
+    ).toBe(false);
+  });
+
+  it("matches any selected budget tier for range-style filtering", () => {
+    const cards = [
+      makeCard({
+        budgetKind: "restaurant_per_person",
+        budgetTier: "1",
+        placeId: "cheap",
+      }),
+      makeCard({
+        budgetKind: "restaurant_per_person",
+        budgetTier: "2",
+        placeId: "moderate",
+      }),
+      makeCard({
+        budgetKind: "restaurant_per_person",
+        budgetTier: "3",
+        placeId: "splurge",
+      }),
+    ];
+
+    expect(
+      countMatchingCards(cards, {
+        activeBudgetSelections: ["restaurant_per_person:2", "restaurant_per_person:3"],
+      }),
+    ).toBe(2);
+  });
+
+  it("counts budget options with other filters applied", () => {
+    const cards = [
+      makeCard({
+        budgetKind: "restaurant_per_person",
+        budgetTier: "2",
+        neighborhood: "ginza",
+        placeId: "1",
+      }),
+      makeCard({
+        budgetKind: "restaurant_per_person",
+        budgetTier: "3",
+        neighborhood: "ginza",
+        placeId: "2",
+      }),
+      makeCard({
+        budgetKind: "restaurant_per_person",
+        budgetTier: "2",
+        neighborhood: "shibuya",
+        placeId: "3",
+      }),
+    ];
+
+    expect(
+      countBudgetOptionCards(
+        cards,
+        {
+          activeArea: "ginza",
+        },
+        {
+          budgetKind: "restaurant_per_person",
+          budgetTier: "2",
+        },
+      ),
+    ).toBe(1);
   });
 
   it("builds area-aware status and empty messages when broader matches exist", () => {

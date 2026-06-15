@@ -6605,6 +6605,60 @@ class BuildDataTests(unittest.TestCase):
                 "¥1,000–2,000",
             )
 
+    def test_derive_place_budget_fields_uses_restaurant_midpoint_threshold(self) -> None:
+        enrichment = EnrichmentPlace(
+            price_range="¥3,000–7,000",
+            primary_type_display_name="Restaurant",
+            types=["restaurant"],
+        )
+        raw_place = RawPlace(name="Soba Bar", maps_url="https://maps.example/soba")
+
+        self.assertEqual(
+            build_data.derive_place_budget_fields(
+                enrichment_place=enrichment,
+                raw_place=raw_place,
+                price_source="price_range",
+                display_price="¥3,000–7,000",
+                primary_category="Restaurant",
+                tags=["restaurant"],
+                country_name="Japan",
+            ),
+            {
+                "budget_kind": "restaurant_per_person",
+                "budget_tier": 2,
+                "budget_label": "$$",
+            },
+        )
+
+    def test_derive_place_budget_fields_keeps_hotel_and_admission_tiers_separate(self) -> None:
+        hotel = build_data.derive_place_budget_fields(
+            enrichment_place=EnrichmentPlace(room_price="¥18,000"),
+            raw_place=RawPlace(name="Hotel", maps_url="https://maps.example/hotel"),
+            price_source="room_price",
+            display_price="¥18,000",
+            primary_category="Hotel",
+            tags=["hotel"],
+            country_name="Japan",
+        )
+        admission = build_data.derive_place_budget_fields(
+            enrichment_place=EnrichmentPlace(admission_price="¥18,000"),
+            raw_place=RawPlace(name="Museum", maps_url="https://maps.example/museum"),
+            price_source="admission_price",
+            display_price="¥18,000",
+            primary_category="Museum",
+            tags=["museum"],
+            country_name="Japan",
+        )
+
+        self.assertEqual(hotel["budget_kind"], "hotel_per_night")
+        self.assertEqual(hotel["budget_tier"], 2)
+        self.assertEqual(admission["budget_kind"], "admission_per_person")
+        self.assertEqual(admission["budget_tier"], 4)
+
+    def test_symbolic_budget_tier_does_not_misread_numeric_prefixed_currency(self) -> None:
+        self.assertIsNone(build_data.symbolic_price_tier("CA$25"))
+        self.assertEqual(build_data.symbolic_price_tier("CA$$$"), 3)
+
     def test_apply_semantic_enrichment_uses_optional_llm_response(self) -> None:
         enrichment = EnrichmentPlace(
             display_name="Tea House",

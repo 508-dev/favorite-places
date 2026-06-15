@@ -221,10 +221,25 @@ export function cardMatchesType(card, { activeTypeValue = "", activeTypeSeedValu
   );
 }
 
+function budgetSelectionKey(kind, tier) {
+  return kind && tier ? `${kind}:${tier}` : "";
+}
+
+export function cardMatchesBudget(card, { activeBudgetSelections = [] } = {}) {
+  if (activeBudgetSelections.length === 0) {
+    return true;
+  }
+
+  return activeBudgetSelections.includes(
+    budgetSelectionKey(card.dataset.budgetKind || "", card.dataset.budgetTier || ""),
+  );
+}
+
 export function cardMatchesFilters(
   card,
   {
     activeAreaValue = "",
+    activeBudgetSelections = [],
     activeTypeValue = "",
     activeTypeSeedValues = [],
     mapFramePlaceIds = null,
@@ -242,13 +257,24 @@ export function cardMatchesFilters(
     activeTypeValue,
     activeTypeSeedValues,
   });
-  return matchesSearch && matchesArea && matchesMapFrame && matchesSelectedTags && matchesType;
+  const matchesBudget = cardMatchesBudget(card, {
+    activeBudgetSelections,
+  });
+  return (
+    matchesSearch &&
+    matchesArea &&
+    matchesMapFrame &&
+    matchesSelectedTags &&
+    matchesType &&
+    matchesBudget
+  );
 }
 
 export function countMatchingCards(
   cards,
   {
     activeArea = "",
+    activeBudgetSelections = [],
     activeTypeValue = "",
     activeTypeSeedValues = [],
     mapFramePlaceIds = null,
@@ -264,6 +290,7 @@ export function countMatchingCards(
   return cards.filter((card) =>
     cardMatchesFilters(card, {
       activeAreaValue: normalizedActiveArea,
+      activeBudgetSelections,
       activeTypeValue,
       activeTypeSeedValues,
       mapFramePlaceIds,
@@ -279,6 +306,7 @@ export function countAreaOptionCards(
   {
     activeTypeValue = "",
     activeTypeSeedValues = [],
+    activeBudgetSelections = [],
     mapFramePlaceIds = null,
     normalizedQuery = "",
     searchResultIds = null,
@@ -288,6 +316,7 @@ export function countAreaOptionCards(
 ) {
   return countMatchingCards(cards, {
     activeArea: areaValue,
+    activeBudgetSelections,
     activeTypeValue,
     activeTypeSeedValues,
     mapFramePlaceIds,
@@ -301,6 +330,7 @@ export function countTypeOptionCards(
   cards,
   {
     activeArea = "",
+    activeBudgetSelections = [],
     mapFramePlaceIds = null,
     normalizedQuery = "",
     searchResultIds = null,
@@ -310,6 +340,7 @@ export function countTypeOptionCards(
 ) {
   return countMatchingCards(cards, {
     activeArea,
+    activeBudgetSelections,
     activeTypeValue: typeValue,
     activeTypeSeedValues: typeSeedValues,
     mapFramePlaceIds,
@@ -323,6 +354,7 @@ export function countTagOptionCards(
   cards,
   {
     activeArea = "",
+    activeBudgetSelections = [],
     activeTypeValue = "",
     activeTypeSeedValues = [],
     mapFramePlaceIds = null,
@@ -334,6 +366,7 @@ export function countTagOptionCards(
 ) {
   return countMatchingCards(cards, {
     activeArea,
+    activeBudgetSelections,
     activeTypeValue,
     activeTypeSeedValues,
     mapFramePlaceIds,
@@ -341,6 +374,33 @@ export function countTagOptionCards(
     searchResultIds,
     selectedTagValues,
     tag,
+  });
+}
+
+export function countBudgetOptionCards(
+  cards,
+  {
+    activeArea = "",
+    activeTypeValue = "",
+    activeTypeSeedValues = [],
+    mapFramePlaceIds = null,
+    normalizedQuery = "",
+    searchResultIds = null,
+    selectedTagValues = [],
+  } = {},
+  { budgetKind = "", budgetTier = "" } = {},
+) {
+  return countMatchingCards(cards, {
+    activeArea,
+    activeBudgetSelections: budgetSelectionKey(budgetKind, budgetTier)
+      ? [budgetSelectionKey(budgetKind, budgetTier)]
+      : [],
+    activeTypeValue,
+    activeTypeSeedValues,
+    mapFramePlaceIds,
+    normalizedQuery,
+    searchResultIds,
+    selectedTagValues,
   });
 }
 
@@ -380,6 +440,7 @@ export function buildAreaFilterStatusMessage({
 export function hasAdditionalGuideFilters({
   activeType = "",
   activeTypeValue = "",
+  activeBudgetSelections = [],
   mapFramePlaceIds = null,
   normalizedQuery = "",
   selectedTags = [],
@@ -389,7 +450,12 @@ export function hasAdditionalGuideFilters({
   const nextActiveType = activeTypeValue || activeType;
   const nextSelectedTags = selectedTagValues.length > 0 ? selectedTagValues : selectedTags;
 
-  if (Boolean(normalizedQuery) || Boolean(nextActiveType) || nextSelectedTags.length > 0) {
+  if (
+    Boolean(normalizedQuery) ||
+    Boolean(nextActiveType) ||
+    activeBudgetSelections.length > 0 ||
+    nextSelectedTags.length > 0
+  ) {
     return true;
   }
 
@@ -453,6 +519,9 @@ if (root) {
   const sortSelect = root.querySelector("[data-sort-select]");
   const areaButtons = Array.from(root.querySelectorAll("[data-area-filter]"));
   const typeButtons = Array.from(root.querySelectorAll("[data-type-filter]"));
+  const budgetButtons = Array.from(root.querySelectorAll("[data-budget-filter]"));
+  const budgetClearButtons = Array.from(root.querySelectorAll("[data-budget-clear-kind]"));
+  const budgetSummary = root.querySelector("[data-budget-summary]");
   const selectedTagsRow = root.querySelector("[data-selected-tags]");
   const suggestionList = root.querySelector("[data-suggestion-list]");
   const suggestionGroup = suggestionList?.closest(".control-group") || null;
@@ -495,6 +564,7 @@ if (root) {
 
   let activeArea = "";
   let activeType = "";
+  let activeBudgetSelections = [];
   let selectedTags = [];
   let mapFramePlaceIds = null;
   let searchIndex = null;
@@ -517,6 +587,66 @@ if (root) {
       .replaceAll("<", "&lt;")
       .replaceAll(">", "&gt;")
       .replaceAll('"', "&quot;");
+
+  const getBudgetSelectionKey = (button) =>
+    budgetSelectionKey(button.dataset.budgetKind || "", button.dataset.budgetTier || "");
+
+  const budgetKindLabels = Object.fromEntries(
+    budgetButtons.map((button) => [
+      button.dataset.budgetKind || "",
+      button.dataset.budgetKindLabel || button.dataset.budgetKind || "",
+    ]),
+  );
+
+  const tierLabel = (tier) => "$".repeat(Number(tier) || 0);
+
+  const summarizeBudgetTiers = (tiers) => {
+    const values = [...new Set(tiers.map((tier) => Number(tier)).filter(Boolean))].sort(
+      (left, right) => left - right,
+    );
+    if (values.length === 0) {
+      return "";
+    }
+    if (values.length === 1) {
+      return tierLabel(values[0]);
+    }
+    const contiguous = values.every(
+      (value, index) => index === 0 || value === values[index - 1] + 1,
+    );
+    if (contiguous && values[values.length - 1] === 4) {
+      return `${tierLabel(values[0])}+`;
+    }
+    if (contiguous) {
+      return `${tierLabel(values[0])}-${tierLabel(values[values.length - 1])}`;
+    }
+    return values.map(tierLabel).join(",");
+  };
+
+  const updateBudgetSummary = () => {
+    if (!budgetSummary) {
+      return;
+    }
+
+    if (activeBudgetSelections.length === 0) {
+      budgetSummary.textContent = "Any";
+      return;
+    }
+
+    const tiersByKind = new Map();
+    activeBudgetSelections.forEach((selection) => {
+      const [kind, tier] = selection.split(":");
+      if (!kind || !tier) {
+        return;
+      }
+      tiersByKind.set(kind, [...(tiersByKind.get(kind) || []), tier]);
+    });
+
+    budgetSummary.textContent = [...tiersByKind.entries()]
+      .map(([kind, tiers]) =>
+        [budgetKindLabels[kind] || kind, summarizeBudgetTiers(tiers)].filter(Boolean).join(" "),
+      )
+      .join(" · ");
+  };
 
   const getAutocompleteState = (value) => {
     const match = value.match(TAG_QUERY_PATTERN);
@@ -924,6 +1054,7 @@ if (root) {
     const visibleCards = cards.filter((card) => {
       const visible = cardMatchesFilters(card, {
         activeAreaValue: activeArea,
+        activeBudgetSelections,
         activeTypeValue: activeType,
         activeTypeSeedValues: activeTypeSeeds,
         mapFramePlaceIds,
@@ -940,6 +1071,7 @@ if (root) {
     const areaCountFilters = {
       activeTypeValue: activeType,
       activeTypeSeedValues: activeTypeSeeds,
+      activeBudgetSelections,
       mapFramePlaceIds,
       normalizedQuery,
       searchResultIds,
@@ -947,12 +1079,23 @@ if (root) {
     };
     const typeCountFilters = {
       activeArea,
+      activeBudgetSelections,
       mapFramePlaceIds,
       normalizedQuery,
       searchResultIds,
       selectedTagValues: selectedTags,
     };
     const tagCountFilters = {
+      activeArea,
+      activeBudgetSelections,
+      activeTypeValue: activeType,
+      activeTypeSeedValues: activeTypeSeeds,
+      mapFramePlaceIds,
+      normalizedQuery,
+      searchResultIds,
+      selectedTagValues: selectedTags,
+    };
+    const budgetCountFilters = {
       activeArea,
       activeTypeValue: activeType,
       activeTypeSeedValues: activeTypeSeeds,
@@ -970,6 +1113,7 @@ if (root) {
     const areaOverflowCount = activeArea ? Math.max(0, broaderAreaCount - areaMatchCount) : 0;
     const hasAdditionalFilters = hasAdditionalGuideFilters({
       activeTypeValue: activeType,
+      activeBudgetSelections,
       mapFramePlaceIds,
       normalizedQuery,
       selectedTagValues: selectedTags,
@@ -1020,6 +1164,36 @@ if (root) {
       };
     });
     reorderFilterButtons(typeButtons, typeOptions);
+
+    budgetButtons.forEach((button) => {
+      const budgetKind = button.dataset.budgetKind || "";
+      const budgetTier = button.dataset.budgetTier || "";
+      const selectionKey = getBudgetSelectionKey(button);
+      const count = countBudgetOptionCards(cards, budgetCountFilters, {
+        budgetKind,
+        budgetTier,
+      });
+      const isActive = activeBudgetSelections.includes(selectionKey);
+      const unavailable = Boolean(budgetKind && budgetTier) && !isActive && count === 0;
+      setFilterCount(button, count);
+      setToggleButtonState(button, {
+        active: isActive,
+        unavailable,
+        disabled: unavailable,
+      });
+    });
+    budgetClearButtons.forEach((button) => {
+      const kind = button.dataset.budgetClearKind || "";
+      const hasKindSelection = activeBudgetSelections.some((selection) =>
+        selection.startsWith(`${kind}:`),
+      );
+      setToggleButtonState(button, {
+        active: !hasKindSelection,
+        unavailable: false,
+        disabled: false,
+      });
+    });
+    updateBudgetSummary();
 
     if (suggestionList) {
       const suggestionButtons = Array.from(
@@ -1164,6 +1338,29 @@ if (root) {
     button.addEventListener("click", () => {
       const nextArea = normalizeTag(button.dataset.area || "");
       activeArea = activeArea === nextArea ? "" : nextArea;
+      update();
+    });
+  });
+
+  budgetButtons.forEach((button) => {
+    button.addEventListener("click", () => {
+      const selectionKey = getBudgetSelectionKey(button);
+      if (!selectionKey) {
+        return;
+      }
+      activeBudgetSelections = activeBudgetSelections.includes(selectionKey)
+        ? activeBudgetSelections.filter((selection) => selection !== selectionKey)
+        : [...activeBudgetSelections, selectionKey];
+      update();
+    });
+  });
+
+  budgetClearButtons.forEach((button) => {
+    button.addEventListener("click", () => {
+      const kind = button.dataset.budgetClearKind || "";
+      activeBudgetSelections = activeBudgetSelections.filter(
+        (selection) => !selection.startsWith(`${kind}:`),
+      );
       update();
     });
   });
