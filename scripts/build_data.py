@@ -10774,16 +10774,31 @@ def derive_price_budget_kind(
     primary_category: str | None,
     tags: list[str],
 ) -> str | None:
+    if price_source in PRICE_SOURCE_BUDGET_KINDS:
+        budget_kind = PRICE_SOURCE_BUDGET_KINDS[price_source]
+        parent_tags = (
+            room_price_budget_parent_tags_for_place(
+                enrichment_place=enrichment_place,
+                raw_place=raw_place,
+                primary_category=primary_category,
+                tags=tags,
+            )
+            if price_source == "room_price"
+            else budget_parent_tags_for_place(
+                enrichment_place=enrichment_place,
+                raw_place=raw_place,
+                primary_category=primary_category,
+                tags=tags,
+            )
+        )
+        return budget_kind if budget_parent_tags_allow_kind(parent_tags, budget_kind) else None
+
     parent_tags = budget_parent_tags_for_place(
         enrichment_place=enrichment_place,
         raw_place=raw_place,
         primary_category=primary_category,
         tags=tags,
     )
-    if price_source in PRICE_SOURCE_BUDGET_KINDS:
-        budget_kind = PRICE_SOURCE_BUDGET_KINDS[price_source]
-        return budget_kind if budget_parent_tags_allow_kind(parent_tags, budget_kind) else None
-
     for budget_kind in PRICE_BUDGET_KINDS:
         if budget_parent_tags_allow_kind(parent_tags, budget_kind):
             return budget_kind
@@ -10824,8 +10839,30 @@ def budget_parent_tags_from_values(values: Iterable[str | None]) -> set[str]:
     return parent_tags
 
 
+def room_price_budget_parent_tags_for_place(
+    *,
+    enrichment_place: EnrichmentPlace,
+    raw_place: RawPlace | None = None,
+    primary_category: str | None = None,
+    tags: Iterable[str] = (),
+) -> set[str]:
+    parent_tags = budget_parent_tags_for_place(
+        enrichment_place=enrichment_place,
+        raw_place=raw_place,
+        primary_category=primary_category,
+        tags=tags,
+    )
+    if as_string(enrichment_place.room_price) is not None:
+        parent_tags.update(budget_parent_tags_from_values([enrichment_place.display_name]))
+    return parent_tags
+
+
 def budget_parent_tags_allow_kind(parent_tags: set[str], budget_kind: str) -> bool:
-    if budget_kind == "hotel_per_night" and parent_tags & RESTAURANT_BUDGET_PARENT_TAGS:
+    if (
+        budget_kind == "hotel_per_night"
+        and parent_tags & RESTAURANT_BUDGET_PARENT_TAGS
+        and not parent_tags & HOTEL_BUDGET_PARENT_TAGS
+    ):
         return False
     allowed_parent_tags = BUDGET_KIND_PARENT_TAGS.get(budget_kind, frozenset())
     return bool(parent_tags & allowed_parent_tags)
@@ -10951,6 +10988,8 @@ def price_display_max_numeric_amount(source: str, currency: str) -> float | None
 
 
 def price_range_source_is_eligible(enrichment_place: EnrichmentPlace, value: str) -> bool:
+    if room_price_should_preempt_price_range(enrichment_place):
+        return False
     parent_tags = budget_parent_tags_for_place(enrichment_place=enrichment_place)
     if re.fullmatch(r"\${1,4}", value.strip()):
         return bool(parent_tags & PRICE_RANGE_BUDGET_PARENT_TAGS)
@@ -10959,11 +10998,22 @@ def price_range_source_is_eligible(enrichment_place: EnrichmentPlace, value: str
     return bool(parent_tags & PRICE_RANGE_BUDGET_PARENT_TAGS)
 
 
+def room_price_should_preempt_price_range(enrichment_place: EnrichmentPlace) -> bool:
+    if as_string(enrichment_place.room_price) is None:
+        return False
+    parent_tags = room_price_budget_parent_tags_for_place(enrichment_place=enrichment_place)
+    return budget_parent_tags_allow_kind(parent_tags, "hotel_per_night")
+
+
 def price_source_is_eligible_for_category(enrichment_place: EnrichmentPlace, source: str) -> bool:
     budget_kind = PRICE_SOURCE_BUDGET_KINDS.get(source)
     if budget_kind is None:
         return True
-    parent_tags = budget_parent_tags_for_place(enrichment_place=enrichment_place)
+    parent_tags = (
+        room_price_budget_parent_tags_for_place(enrichment_place=enrichment_place)
+        if source == "room_price"
+        else budget_parent_tags_for_place(enrichment_place=enrichment_place)
+    )
     return budget_parent_tags_allow_kind(parent_tags, budget_kind)
 
 
