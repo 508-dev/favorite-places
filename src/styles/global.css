@@ -1959,15 +1959,15 @@
   }
 
   .metric-filter-price {
-    width: clamp(7.8rem, 22vw, 9.25rem);
+    width: clamp(6.2rem, 14vw, 6.8rem);
   }
 
   .metric-filter-rating {
-    width: clamp(5rem, 12vw, 5.75rem);
+    width: clamp(6rem, 10vw, 6.35rem);
   }
 
   .metric-filter-reviews {
-    width: clamp(7rem, 16vw, 7.8rem);
+    width: clamp(6.5rem, 13vw, 7rem);
   }
 
   .metric-filter-menu .price-filter-trigger {
@@ -2000,11 +2000,11 @@
     padding-inline: 0.48rem;
   }
 
-  .metric-filter-panel {
-    width: min(18rem, calc(100vw - 2rem));
+  .price-filter-panel.metric-filter-panel {
+    width: min(22rem, calc(100vw - 2rem));
   }
 
-  .metric-filter-price-panel {
+  .price-filter-panel.metric-filter-price-panel {
     width: min(32rem, calc(100vw - 2rem));
   }
 
@@ -2014,12 +2014,11 @@
   }
 
   .metric-filter-reviews .metric-filter-panel {
-    right: 0;
-    left: auto;
+    left: 0;
   }
 
-  .metric-filter-options {
-    grid-template-columns: repeat(auto-fit, minmax(3.5rem, 1fr));
+  .price-filter-options.metric-filter-options {
+    grid-template-columns: repeat(auto-fit, minmax(5.75rem, 1fr));
   }
 
   .price-filter-title {
@@ -2039,6 +2038,10 @@
     color: var(--ink);
     font-size: 0.82rem;
     font-weight: 700;
+  }
+
+  .price-filter-summary:empty {
+    display: none;
   }
 
   .price-filter-panel {
@@ -3321,15 +3324,15 @@
     }
 
     .metric-filter-price {
-      width: 7.4rem;
+      width: 5.9rem;
     }
 
     .metric-filter-rating {
-      width: 4.95rem;
+      width: 6.1rem;
     }
 
     .metric-filter-reviews {
-      width: 6.95rem;
+      width: 6.6rem;
     }
 
     .price-filter-panel {
@@ -3340,16 +3343,21 @@
       box-shadow: none;
     }
 
-    .metric-filter-panel {
+    .price-filter-panel.metric-filter-panel {
       position: absolute;
       top: calc(100% + 0.45rem);
-      width: min(18rem, calc(100vw - 2rem));
+      width: min(22rem, calc(100vw - 2rem));
       margin-top: 0;
       box-shadow: 0 16px 34px rgba(31, 37, 34, 0.14);
     }
 
-    .metric-filter-price-panel {
+    .price-filter-panel.metric-filter-price-panel {
       width: min(32rem, calc(100vw - 4.5rem));
+    }
+
+    .metric-filter-reviews .metric-filter-panel {
+      right: 0;
+      left: auto;
     }
 
     .price-filter-row {

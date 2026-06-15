@@ -6177,12 +6177,17 @@ def coerce_string_list(value: Any) -> list[str]:
     return [item.strip() for item in value if isinstance(item, str) and item.strip()]
 
 
+@lru_cache(maxsize=1)
+def places_settings() -> PlacesSettings:
+    return PlacesSettings()
+
+
 def google_places_api_key() -> str | None:
-    return PlacesSettings().google_places_api_key
+    return places_settings().google_places_api_key
 
 
 def google_places_enrichment_strategy() -> Literal["scrape", "api", "scrape_then_api"]:
-    return PlacesSettings().google_places_enrichment_strategy
+    return places_settings().google_places_enrichment_strategy
 
 
 @lru_cache(maxsize=1)
@@ -6202,7 +6207,7 @@ def site_google_maps_place_config_value(key: str) -> Any:
 
 
 def google_maps_place_llm_repair_mode() -> Literal["off", "dom", "dom_then_translation"]:
-    configured = PlacesSettings().google_maps_place_llm_repair
+    configured = places_settings().google_maps_place_llm_repair
     if configured is not None:
         return configured
     site_value = as_string(site_google_maps_place_config_value("llm_repair"))
@@ -6217,7 +6222,7 @@ def google_maps_place_llm_repair_mode() -> Literal["off", "dom", "dom_then_trans
 
 
 def google_maps_place_llm_cache_dir() -> Path:
-    configured = PlacesSettings().google_maps_place_llm_cache_dir
+    configured = places_settings().google_maps_place_llm_cache_dir
     if configured:
         path = Path(configured).expanduser()
         return path if path.is_absolute() else ROOT / path
@@ -6225,7 +6230,7 @@ def google_maps_place_llm_cache_dir() -> Path:
 
 
 def google_maps_place_collect_reviews() -> bool:
-    configured = PlacesSettings().google_maps_place_collect_reviews
+    configured = places_settings().google_maps_place_collect_reviews
     if configured is not None:
         return configured
     site_value = as_bool(site_google_maps_place_config_value("collect_reviews"))
@@ -6233,7 +6238,7 @@ def google_maps_place_collect_reviews() -> bool:
 
 
 def google_maps_place_collect_about() -> bool:
-    configured = PlacesSettings().google_maps_place_collect_about
+    configured = places_settings().google_maps_place_collect_about
     if configured is not None:
         return configured
     site_value = as_bool(site_google_maps_place_config_value("collect_about"))
@@ -6241,7 +6246,7 @@ def google_maps_place_collect_about() -> bool:
 
 
 def google_maps_place_semantic_llm_enabled() -> bool:
-    configured = PlacesSettings().google_maps_place_semantic_llm
+    configured = places_settings().google_maps_place_semantic_llm
     if configured is not None:
         return configured
     site_value = as_bool(site_google_maps_place_config_value("semantic_llm"))
@@ -6249,7 +6254,7 @@ def google_maps_place_semantic_llm_enabled() -> bool:
 
 
 def google_maps_place_semantic_descriptions_enabled() -> bool:
-    configured = PlacesSettings().google_maps_place_semantic_descriptions
+    configured = places_settings().google_maps_place_semantic_descriptions
     if configured is not None:
         return configured
     site_value = as_bool(site_google_maps_place_config_value("semantic_descriptions"))
@@ -6257,7 +6262,7 @@ def google_maps_place_semantic_descriptions_enabled() -> bool:
 
 
 def google_maps_place_semantic_description_force_refresh() -> bool:
-    configured = PlacesSettings().google_maps_place_semantic_description_force_refresh
+    configured = places_settings().google_maps_place_semantic_description_force_refresh
     if configured is not None:
         return configured
     site_value = as_bool(site_google_maps_place_config_value("semantic_description_force_refresh"))
