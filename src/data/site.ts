@@ -161,7 +161,7 @@ const defaultSiteConfig: SiteConfig = {
     guidesEyebrow: "Guides",
     guidesHeading: "Browse by country",
     guidesLinkText: null,
-    searchPlaceholder: "Search quiet coffee, date night, rainy day museums",
+    searchPlaceholder: "Search a city, country, or guide",
     showHero: true,
     showHeroStats: true,
     showGuideBrowser: true,
@@ -176,7 +176,7 @@ const defaultSiteConfig: SiteConfig = {
     emptyStateText: "No matching guides. Try a broader search or choose all countries.",
     searchResultsEyebrow: "Search results",
     searchResultsHeading: "Matching places",
-    searchResultsGroupedLabel: "By country",
+    searchResultsGroupedLabel: "By guide",
     searchResultsIndividualLabel: "Individual",
     searchResultsEmptyText: "No matching places. Try a broader search.",
     guideCard: {

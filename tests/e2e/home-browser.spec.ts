@@ -16,10 +16,16 @@ test("filters guides by country and renders global place search results", async 
   await expect(page.locator('[data-guide-card][data-guide-slug="taipei-taiwan"]')).toBeVisible();
   await expect(page.locator('[data-guide-card][data-guide-slug="tokyo-japan"]')).toBeHidden();
 
+  await page.locator("[data-home-search-input]").fill("bar");
+  await expect(page.locator("[data-home-results-count]")).toHaveText("1 guide across 1 country");
+  await expect(page.locator('[data-guide-card][data-guide-slug="taipei-taiwan"]')).toBeVisible();
+
   await page.locator("[data-home-search-input]").fill("museum");
   await expect(page.locator("[data-global-search-results]")).toBeVisible();
   await expect(page.locator("[data-global-search-title]")).toContainText("matching");
-  await expect(page.locator("[data-grouped-search-list]")).toContainText("Taiwan");
+  await expect(page.locator("[data-global-search-disclosure]")).toHaveCount(0);
+  await expect(page.locator("[data-grouped-search-list]")).toBeVisible();
+  await expect(page.locator("[data-grouped-search-list]")).toContainText("Taipei");
   await expect(page.locator("[data-grouped-search-list]")).toContainText(
     "Museum of Contemporary Art Taipei",
   );
