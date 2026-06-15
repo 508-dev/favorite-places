@@ -10826,8 +10826,9 @@ def derive_budget_tier(
     if parsed_price is None:
         return None
 
-    currency, amounts, _suffix = parsed_price
+    parsed_currency, amounts, _suffix = parsed_price
     expected_currency = budget_tier_currency_code(country_name)
+    currency = resolve_budget_tier_currency(parsed_currency, expected_currency)
     if expected_currency and expected_currency != currency:
         return None
 
@@ -10844,6 +10845,14 @@ def derive_budget_tier(
         if reference_amount <= threshold:
             return index
     return 4
+
+
+def resolve_budget_tier_currency(parsed_currency: str, expected_currency: str | None) -> str:
+    if expected_currency == parsed_currency:
+        return parsed_currency
+    if expected_currency == "CNY" and parsed_currency == "JPY":
+        return expected_currency
+    return parsed_currency
 
 
 def symbolic_price_tier(value: str) -> int | None:

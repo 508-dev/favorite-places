@@ -6725,6 +6725,36 @@ class BuildDataTests(unittest.TestCase):
                 2,
             )
 
+    def test_derive_budget_tier_uses_china_guide_currency_for_ambiguous_yen_symbol(self) -> None:
+        with patch.object(
+            build_data,
+            "google_maps_place_price_display_config",
+            return_value={"currency_mode": "guide_local"},
+        ):
+            self.assertEqual(
+                build_data.derive_budget_tier(
+                    "¥145",
+                    budget_kind="restaurant_per_person",
+                    country_name="China",
+                ),
+                1,
+            )
+
+    def test_derive_budget_tier_uses_target_cny_for_ambiguous_yen_symbol(self) -> None:
+        with patch.object(
+            build_data,
+            "google_maps_place_price_display_config",
+            return_value={"currency_mode": "target", "target_currency": "CNY"},
+        ):
+            self.assertEqual(
+                build_data.derive_budget_tier(
+                    "¥435",
+                    budget_kind="restaurant_per_person",
+                    country_name="Japan",
+                ),
+                2,
+            )
+
     def test_derive_place_budget_fields_keeps_hotel_and_admission_tiers_separate(self) -> None:
         hotel = build_data.derive_place_budget_fields(
             enrichment_place=EnrichmentPlace(room_price="¥18,000"),
