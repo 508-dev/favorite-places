@@ -10,6 +10,15 @@ test("filters guides by country and renders global place search results", async 
     page.locator('[data-guide-card][data-guide-slug="hong-kong-wanderlog-example"]'),
   ).toBeVisible();
 
+  await page.locator("[data-home-search-input]").fill("bar");
+  await expect(page.locator("[data-home-results-count]")).toHaveText("3 guides across 3 countries");
+  await expect(page.locator('[data-guide-card][data-guide-slug="tokyo-japan"]')).toBeVisible();
+  await expect(page.locator('[data-guide-card][data-guide-slug="taipei-taiwan"]')).toBeVisible();
+  await expect(
+    page.locator('[data-guide-card][data-guide-slug="hong-kong-wanderlog-example"]'),
+  ).toBeVisible();
+  await page.locator("[data-home-search-input]").clear();
+
   await page.locator('[data-country-filter][data-country="taiwan"]').click();
 
   await expect(page.locator("[data-home-results-count]")).toHaveText("1 guide across 1 country");

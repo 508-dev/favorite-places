@@ -548,28 +548,6 @@ if (root) {
       searchIndex && rawQuery
         ? new Set(searchGuides(rawQuery, { index: searchIndex }).map((result) => result.guide.slug))
         : null;
-    const scopedGuideMatchCount = guideMatches
-      ? countryBlocks.reduce((count, block) => {
-          const country = block.dataset.country || "";
-          if (activeCountry && country !== activeCountry) {
-            return count;
-          }
-
-          const cards = Array.from(block.querySelectorAll("[data-guide-card]"));
-          return (
-            count +
-            cards.filter((card) => {
-              const guideSlug = card.dataset.guideSlug || "";
-              return (
-                guideMatches.has(guideSlug) &&
-                (!nearbyGuideSlugs || nearbyGuideSlugs.has(guideSlug))
-              );
-            }).length
-          );
-        }, 0)
-      : 0;
-    const shouldUsePlaceMatchFallback =
-      Boolean(rawQuery) && (placeMatchGuideSlugs?.size ?? 0) > 0 && scopedGuideMatchCount === 0;
     const matchingGuidesByCountry = new Map();
     const visibleGuideSlugs = [];
     let visibleGuideCount = 0;
@@ -589,7 +567,7 @@ if (root) {
         }
         return (
           guideMatches?.has(guideSlug) ||
-          (shouldUsePlaceMatchFallback && placeMatchGuideSlugs?.has(guideSlug)) ||
+          placeMatchGuideSlugs?.has(guideSlug) ||
           (!searchIndex && (card.dataset.search || "").includes(normalizedQuery))
         );
       });
