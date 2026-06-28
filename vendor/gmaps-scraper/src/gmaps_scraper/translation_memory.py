@@ -218,16 +218,20 @@ def _merge_learned_translation_memory(
     candidates: list[dict[str, object]],
 ) -> None:
     existing = _read_pending_payload(path)
-    entries = existing.setdefault("entries", [])
-    if not isinstance(entries, list):
+    raw_entries = existing.setdefault("entries", [])
+    if isinstance(raw_entries, list):
+        entries: list[object] = raw_entries
+    else:
         entries = []
         existing["entries"] = entries
     index: dict[tuple[object, object, tuple[object, ...]], dict[object, object]] = {}
     for entry in entries:
         if not isinstance(entry, dict):
             continue
-        field_kinds = entry.get("field_kinds")
-        if not isinstance(field_kinds, list):
+        raw_field_kinds = entry.get("field_kinds")
+        if isinstance(raw_field_kinds, list):
+            field_kinds: list[object] = raw_field_kinds
+        else:
             field_kinds = []
         index[(entry.get("source"), entry.get("target"), tuple(field_kinds))] = entry
     for candidate in candidates:
@@ -263,8 +267,10 @@ def _write_json_atomic(path: Path, payload: Mapping[str, object]) -> None:
 
 
 def _memory_entry_key(entry: Mapping[str, object]) -> tuple[object, object, tuple[object, ...]]:
-    field_kinds = entry.get("field_kinds")
-    if not isinstance(field_kinds, list):
+    raw_field_kinds = entry.get("field_kinds")
+    if isinstance(raw_field_kinds, list):
+        field_kinds: list[object] = raw_field_kinds
+    else:
         field_kinds = []
     return (entry.get("source"), entry.get("target"), tuple(field_kinds))
 

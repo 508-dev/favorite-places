@@ -220,7 +220,7 @@ requires-dist = [
 [package.metadata.requires-dev]
 dev = [
     { name = "prek" },
-    { name = "pyrefly", specifier = ">=1.0.0,<2.0.0" },
+    { name = "pyrefly", specifier = ">=1.1.1" },
     { name = "ruff" },
 ]
 

@@ -1,4 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-uv run pyrefly check
+if [[ "${GITHUB_ACTIONS:-}" == "true" ]]; then
+  uv run pyrefly check --output-format=github
+else
+  uv run pyrefly check --summarize-errors
+fi

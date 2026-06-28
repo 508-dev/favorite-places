@@ -299,7 +299,9 @@ def _repaired_display_diagnostics(
     repair_source: str,
 ) -> PlaceExtractionDiagnostics:
     existing = place.diagnostics
-    quality_flags = list(existing.quality_flags) if existing is not None else []
+    quality_flags: list[str] = (
+        list(existing.quality_flags) if existing is not None else []
+    )
     if "category_display_en" in repaired_fields:
         quality_flags = [
             flag for flag in quality_flags if flag != "needs_category_display_en"
