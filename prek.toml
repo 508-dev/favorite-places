@@ -16,8 +16,8 @@ entry = "uv run ruff check --force-exclude"
 files = "^(scripts|tests/python)/.*\\.py$"
 
 [[repos.hooks]]
-id = "mypy-check"
-name = "mypy"
+id = "pyrefly-check"
+name = "Pyrefly"
 language = "system"
-entry = "uv run mypy --config-file pyproject.toml"
+entry = "uv run pyrefly check"
 files = "^scripts/(pipeline_models|refresh_profiles|refresh_summary)\\.py$"

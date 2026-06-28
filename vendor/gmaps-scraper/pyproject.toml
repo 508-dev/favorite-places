@@ -19,18 +19,21 @@ gmaps-scraper = "gmaps_scraper.cli:main"
 
 [dependency-groups]
 dev = [
-  "mypy",
   "prek",
+  "pyrefly>=1.0.0,<2.0.0",
   "ruff",
 ]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/gmaps_scraper"]
 
-[tool.mypy]
-files = ["src"]
-python_version = "3.14"
-strict = true
+[tool.pyrefly]
+project-includes = ["src"]
+python-version = "3.14.0"
+preset = "legacy"
+
+[tool.pyrefly.errors]
+redundant-cast = "warn"
 
 [tool.ruff]
 line-length = 100

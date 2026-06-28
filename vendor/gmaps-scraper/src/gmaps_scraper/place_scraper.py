@@ -3309,7 +3309,7 @@ def _build_place_diagnostics(
 
     raw_sources = snapshot.get("field_sources")
     field_sources = {
-        key: str(value)
+        key: value
         for key, value in raw_sources.items()
         if isinstance(key, str)
         and isinstance(value, str)
