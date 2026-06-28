@@ -210,6 +210,42 @@ class CliTests(unittest.TestCase):
             http_session=None,
         )
 
+    def test_forwards_browser_humanization_flags(self) -> None:
+        stdout = io.StringIO()
+        artifacts = _artifacts()
+        parsed_payload = _parsed_payload()
+        result = _result(parsed_payload)
+
+        with (
+            patch(
+                "sys.argv",
+                [
+                    "gmaps-scraper",
+                    "https://maps.app.goo.gl/TestSavedListShortUrl",
+                    "--human-mouse",
+                    "--disable-random-window-size",
+                ],
+            ),
+            patch(
+                "gmaps_scraper.cli.collect_saved_list_result",
+                return_value=(artifacts, result),
+            ) as collect_saved_list_result,
+            redirect_stdout(stdout),
+        ):
+            exit_code = main()
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(json.loads(stdout.getvalue()), parsed_payload)
+        collect_saved_list_result.assert_called_once_with(
+            "https://maps.app.goo.gl/TestSavedListShortUrl",
+            headless=True,
+            timeout_ms=30_000,
+            settle_time_ms=3_000,
+            collection_mode="auto",
+            browser_session=BrowserSessionConfig(window_size=None, human_mouse=True),
+            http_session=None,
+        )
+
     def test_place_kind_calls_place_scraper(self) -> None:
         stdout = io.StringIO()
         details = PlaceDetails(

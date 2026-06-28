@@ -179,7 +179,13 @@ class ScraperConsentTests(unittest.TestCase):
             launch_persistent_context=lambda *_args, **_kwargs: None,
         )
 
-        with patch.dict("sys.modules", {"cloakbrowser": fake_module}):
+        with (
+            patch.dict("sys.modules", {"cloakbrowser": fake_module}),
+            patch(
+                "gmaps_scraper.scraper.resolve_browser_window_size",
+                return_value=(1366, 768),
+            ),
+        ):
             context = _launch_browser_context(
                 headless=False,
                 browser_session=BrowserSessionConfig(),
@@ -191,9 +197,11 @@ class ScraperConsentTests(unittest.TestCase):
             [
                 {
                     "extra_http_headers": {"Accept-Language": "en-US,en;q=0.9"},
+                    "args": ["--window-size=1366,768"],
                     "headless": False,
-                    "humanize": True,
+                    "humanize": False,
                     "locale": "en-US",
+                    "viewport": {"width": 1366, "height": 768},
                 }
             ],
         )
@@ -213,12 +221,19 @@ class ScraperConsentTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp_dir:
             profile_dir = Path(tmp_dir) / "session"
-            with patch.dict("sys.modules", {"cloakbrowser": fake_module}):
+            with (
+                patch.dict("sys.modules", {"cloakbrowser": fake_module}),
+                patch(
+                    "gmaps_scraper.scraper.resolve_browser_window_size",
+                    return_value=(1536, 864),
+                ),
+            ):
                 context = _launch_browser_context(
                     headless=True,
                     browser_session=BrowserSessionConfig(
                         profile_dir=profile_dir,
                         proxy="http://proxy.example:8080",
+                        human_mouse=True,
                     ),
                 )
             self.assertTrue(profile_dir.is_dir())
@@ -231,10 +246,12 @@ class ScraperConsentTests(unittest.TestCase):
                     profile_dir,
                     {
                         "extra_http_headers": {"Accept-Language": "en-US,en;q=0.9"},
+                        "args": ["--window-size=1536,864"],
                         "headless": True,
                         "humanize": True,
                         "locale": "en-US",
                         "proxy": "http://proxy.example:8080",
+                        "viewport": {"width": 1536, "height": 864},
                     },
                 )
             ],

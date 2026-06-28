@@ -16,7 +16,7 @@ dependencies = [
 
 [dependency-groups]
 dev = [
-  "mypy>=1.18.2,<2.0.0",
+  "pyrefly>=1.0.0,<2.0.0",
   "ruff>=0.14.1,<0.15.0",
 ]
 
@@ -30,16 +30,16 @@ gmaps-scraper = { path = "vendor/gmaps-scraper" }
 target-version = "py314"
 extend-exclude = ["vendor"]
 
-[tool.mypy]
-python_version = "3.14"
-files = [
+[tool.pyrefly]
+project-includes = [
   "scripts/pipeline_models.py",
   "scripts/refresh_profiles.py",
   "scripts/refresh_summary.py",
 ]
-exclude = ["^vendor/"]
-check_untyped_defs = true
-follow_imports = "silent"
-ignore_missing_imports = true
-warn_redundant_casts = true
-warn_unused_ignores = true
+project-excludes = ["**/vendor/"]
+python-version = "3.14.0"
+preset = "legacy"
+ignore-missing-imports = ["*"]
+
+[tool.pyrefly.errors]
+redundant-cast = "warn"

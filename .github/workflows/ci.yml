@@ -127,6 +127,11 @@ jobs:
       - name: Install Python dependencies
         run: uv sync --frozen
 
+      - name: Type-check Python pipeline
+        run: |
+          uv run pyrefly check
+          uv run pyrefly check --config vendor/gmaps-scraper/pyproject.toml
+
       - name: Run Python tests
         run: |
           uv run python3 -m unittest discover -s tests/python -p 'test_*.py'

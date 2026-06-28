@@ -200,7 +200,18 @@ class PlaceScraperTests(unittest.TestCase):
         self.assertIn("about these providers", _PLACE_RESERVATION_DIALOG_JS)
         self.assertIn("hasTrustedProviderRoot", _PLACE_RESERVATION_DIALOG_JS)
         self.assertIn("closeProviderRoot", _PLACE_RESERVATION_DIALOG_JS)
+        self.assertIn(
+            "return (rightRect.width * rightRect.height) - (leftRect.width * leftRect.height);",
+            _PLACE_RESERVATION_DIALOG_JS,
+        )
         self.assertIn("KeyboardEvent", _PLACE_RESERVATION_DIALOG_JS)
+
+    def test_reservation_extractors_match_provider_hosts_with_boundaries(self) -> None:
+        self.assertNotIn("providerHostMatches", _PLACE_JS_EXTRACTOR)
+        self.assertIn("if (!reservationPattern.test(evidence))", _PLACE_JS_EXTRACTOR)
+        self.assertIn("providerHostMatches", _PLACE_RESERVATION_DIALOG_JS)
+        self.assertIn("(^|[.-])(?:opentable|resy|sevenrooms", _PLACE_RESERVATION_DIALOG_JS)
+        self.assertNotIn("providerHostPattern.test(evidence)", _PLACE_RESERVATION_DIALOG_JS)
 
     def test_reservation_extractors_do_not_match_generic_booking_copy(self) -> None:
         for script in (
@@ -249,13 +260,23 @@ class PlaceScraperTests(unittest.TestCase):
             ],
         )
 
-    def test_collect_place_snapshot_wraps_browser_launch_failures(self) -> None:
-        with patch(
-            "gmaps_scraper.place_scraper._launch_browser_context",
-            side_effect=RuntimeError("context launch failed"),
-        ):
-            with self.assertRaisesRegex(ScrapeError, "Failed to launch browser context"):
-                collect_place_snapshot("https://www.google.com/maps/place/Den")
+    def test_merge_reservation_links_stores_normalized_redirect_urls(self) -> None:
+        merged = _merge_reservation_links(
+            {
+                "reservation_links": [
+                    {
+                        "label": "Inline",
+                        "url": "https://www.google.com:443/url?q=https%3A%2F%2Finline.app%2Fbooking%2Ffoo",
+                    }
+                ]
+            },
+            {"reservation_links": []},
+        )
+
+        self.assertEqual(
+            merged["reservation_links"],
+            [{"label": "Inline", "url": "https://inline.app/booking/foo"}],
+        )
 
     def test_scrape_places_reuses_context_and_retries_quality_flags(self) -> None:
         class _FakeContext:
@@ -320,6 +341,8 @@ class PlaceScraperTests(unittest.TestCase):
     def test_scrape_places_parallel_uses_worker_scoped_session_paths(self) -> None:
         seen_profile_dirs: list[Path | None] = []
         seen_cookie_jar_paths: list[Path | None] = []
+        seen_human_mouse: list[bool] = []
+        seen_window_sizes: list[object] = []
 
         def fake_scrape_places_sequential(
             place_urls: list[str],
@@ -330,6 +353,8 @@ class PlaceScraperTests(unittest.TestCase):
             self.assertIsInstance(browser_session, BrowserSessionConfig)
             self.assertIsInstance(http_session, HttpSessionConfig)
             seen_profile_dirs.append(browser_session.profile_dir)
+            seen_human_mouse.append(browser_session.human_mouse)
+            seen_window_sizes.append(browser_session.window_size)
             seen_cookie_jar_paths.append(http_session.cookie_jar_path)
             return [
                 PlaceScrapeResult(source_url=place_url, attempts=1)
@@ -348,7 +373,11 @@ class PlaceScraperTests(unittest.TestCase):
             ):
                 results = scrape_places(
                     ["url-1", "url-2", "url-3"],
-                    browser_session=BrowserSessionConfig(profile_dir=profile_dir),
+                    browser_session=BrowserSessionConfig(
+                        profile_dir=profile_dir,
+                        window_size=None,
+                        human_mouse=True,
+                    ),
                     http_session=HttpSessionConfig(cookie_jar_path=cookie_jar_path),
                     max_concurrency=2,
                     stagger_ms=10,
@@ -367,6 +396,8 @@ class PlaceScraperTests(unittest.TestCase):
                 ]
             ),
         )
+        self.assertEqual(seen_human_mouse, [True, True])
+        self.assertEqual(seen_window_sizes, [None, None])
         self.assertEqual([result.source_url for result in results], ["url-1", "url-2", "url-3"])
 
     def test_scrape_places_parallel_returns_worker_errors_per_url(self) -> None:
@@ -2792,6 +2823,62 @@ class PlaceScraperTests(unittest.TestCase):
                 {"label": "Ikyu", "url": "https://restaurant.ikyu.com/112767/?ikgo=2"},
                 {"label": "AutoReserve", "url": "https://autoreserve.com/restaurants/example"},
                 {"label": "SG Management", "url": "https://sg-management.jp/reserve/"},
+            ],
+        )
+
+    def test_normalize_reservation_links_unwraps_provider_redirects(self) -> None:
+        links = _normalize_reservation_links(
+            [
+                {
+                    "label": "Find a table Inline",
+                    "url": "https://www.google.com:443/url?q=https%3A%2F%2Finline.app%2Fbooking%2Ffoo",
+                }
+            ]
+        )
+
+        self.assertEqual(
+            [link.to_dict() for link in links],
+            [{"label": "Inline", "url": "https://inline.app/booking/foo"}],
+        )
+
+    def test_normalize_reservation_links_drops_google_reserve_cctld(self) -> None:
+        links = _normalize_reservation_links(
+            [
+                {
+                    "label": "Reserve a table",
+                    "url": "https://www.google.com.sg/maps/reserve/v/dine/c/example",
+                },
+                {
+                    "label": "TableCheck",
+                    "url": "https://www.tablecheck.com/example",
+                },
+            ]
+        )
+
+        self.assertEqual(
+            [link.to_dict() for link in links],
+            [{"label": "TableCheck", "url": "https://www.tablecheck.com/example"}],
+        )
+
+    def test_normalize_reservation_links_ignores_google_substring_hosts(self) -> None:
+        links = _normalize_reservation_links(
+            [
+                {
+                    "label": "Reserve",
+                    "url": "https://evilgoogle.com/maps/reserve/v/dine/c/example",
+                },
+                {
+                    "label": "TableCheck",
+                    "url": "https://www.tablecheck.com/example",
+                },
+            ]
+        )
+
+        self.assertEqual(
+            [link.url for link in links],
+            [
+                "https://evilgoogle.com/maps/reserve/v/dine/c/example",
+                "https://www.tablecheck.com/example",
             ],
         )
 

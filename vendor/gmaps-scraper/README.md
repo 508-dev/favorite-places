@@ -62,7 +62,7 @@ Batch scrape places:
 uv run gmaps-scraper \
   --kind place \
   --input places.txt \
-  --session-dir "$CONDUCTOR_ROOT_PATH/.gmaps-scraper/session" \
+  --session-dir .gmaps-scraper/session \
   --max-retries 2 \
   --stagger-ms 500 \
   --output place-results.json
@@ -91,7 +91,7 @@ uv run gmaps-scraper \
   --kind place \
   --input places.txt \
   --llm-repair \
-  --llm-cache-dir "$CONDUCTOR_ROOT_PATH/.gmaps-scraper/llm-cache"
+  --llm-cache-dir .gmaps-scraper/llm-cache
 ```
 
 ## Library Usage
@@ -117,6 +117,7 @@ place = scrape_place(
     place_url,
     browser_session=BrowserSessionConfig(
         profile_dir=Path(".gmaps-scraper/session"),
+        human_mouse=True,
     ),
 )
 
@@ -195,8 +196,12 @@ the CLI, when a refresh only needs overview facts.
   LLM setup, cache behavior, and downstream refresh examples
 - [Architecture](docs/ARCHITECTURE.md): extraction layers, diagnostics, LLM repair,
   translation memory, and session/concurrency design
+- [Supply Chain](docs/supply-chain.md): dependency cooldowns, locked installs,
+  and local artifact handling
 - [Contributing](CONTRIBUTING.md): local development, tests, PR expectations,
   and translation-memory promotion
+- [Security](SECURITY.md): vulnerability reporting, secret handling, and
+  dependency policy
 
 ## Development
 
@@ -204,5 +209,11 @@ the CLI, when a refresh only needs overview facts.
 uv sync --dev
 ./scripts/lint.sh
 ./scripts/typecheck.sh
-uv run python -m unittest discover -s tests
+./scripts/test.sh
+```
+
+Run the complete local gate with:
+
+```bash
+./scripts/check-all.sh
 ```

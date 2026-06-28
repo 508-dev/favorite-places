@@ -19,22 +19,30 @@ gmaps-scraper = "gmaps_scraper.cli:main"
 
 [dependency-groups]
 dev = [
-  "mypy",
   "prek",
+  "pyrefly>=1.1.1",
   "ruff",
 ]
+
+[tool.uv]
+exclude-newer = "7 days"
+
+[tool.uv.pip]
+exclude-newer = "7 days"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/gmaps_scraper"]
 
-[tool.mypy]
-files = ["src"]
-python_version = "3.14"
-strict = true
+[tool.pyrefly]
+project-includes = ["src"]
+python-version = "3.14"
+preset = "strict"
+check-unannotated-defs = true
 
 [tool.ruff]
 line-length = 100
 target-version = "py314"
+src = ["src", "tests"]
 
 [tool.ruff.lint]
 select = ["B", "E", "F", "I", "UP"]

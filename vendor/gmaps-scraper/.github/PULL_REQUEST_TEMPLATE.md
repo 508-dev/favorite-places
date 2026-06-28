@@ -1,15 +1,21 @@
-<!--- Provide a general summary of your changes in the Title above. -->
+## Summary
 
-<!--- Optionally prefix with feat/chore/fix: -->
+-
 
-## Description
+## Scraper Impact
 
-<!--- Describe your changes in detail. What component does this change affect? -->
+- [ ] Saved-list extraction
+- [ ] Place-page extraction
+- [ ] CLI or public API
+- [ ] Documentation/tooling only
 
-## Related Issue
+## Validation
 
-<!--- If there are any related issues or Notion tasks, please link here, or delete this section or write N/A. -->
+- [ ] Ran the narrowest relevant checks.
+- [ ] Added or updated focused tests for parser, scraper, CLI, or public API changes.
+- [ ] Updated docs or examples when behavior changed.
 
-## How Has This Been Tested?
+## Risk
 
-<!--- Please describe how you tested or plan to test your changes. -->
+- [ ] Low risk, isolated change.
+- [ ] Needs reviewer attention for schema drift, browser behavior, LLM repair, dependency changes, or output-contract compatibility.
