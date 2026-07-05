@@ -6512,6 +6512,143 @@ def raw_place_address_is_preservable(existing_place: RawPlace, refreshed_place: 
     )
 
 
+def raw_place_cid_identity(place: RawPlace) -> str | None:
+    return as_string(place.cid) or extract_maps_cid(place.maps_url)
+
+
+def score_duplicate_raw_place_cid_candidate(
+    place: RawPlace,
+    *,
+    cid: str,
+    prior_places: Sequence[RawPlace],
+) -> int:
+    score = 0
+    if as_string(place.cid) == cid:
+        score += 20
+    if extract_maps_cid(place.maps_url) == cid:
+        score += 25
+
+    best_prior_score = 0
+    for prior_place in prior_places:
+        prior_score = 0
+        if raw_place_names_are_compatible(as_string(prior_place.name), as_string(place.name)):
+            prior_score += 80
+
+        if (
+            as_string(prior_place.google_id)
+            and as_string(prior_place.google_id) == as_string(place.google_id)
+        ):
+            prior_score += 60
+
+        prior_address = normalize_text(prior_place.address)
+        place_address = normalize_text(place.address)
+        if prior_address and place_address:
+            if prior_address == place_address:
+                prior_score += 50
+            else:
+                prior_score += token_overlap_score(prior_address, place_address)
+
+        if (
+            prior_place.lat is not None
+            and prior_place.lng is not None
+            and place.lat is not None
+            and place.lng is not None
+        ):
+            distance_m = haversine_meters(
+                prior_place.lat,
+                prior_place.lng,
+                place.lat,
+                place.lng,
+            )
+            if distance_m <= 100:
+                prior_score += 60
+            elif distance_m <= 400:
+                prior_score += 40
+            elif distance_m <= 1200:
+                prior_score += 10
+
+        best_prior_score = max(best_prior_score, prior_score)
+
+    return score + best_prior_score
+
+
+def strip_duplicate_raw_place_cid(place: RawPlace, *, cid: str) -> RawPlace:
+    updates: dict[str, Any] = {}
+    if as_string(place.cid) == cid:
+        updates["cid"] = None
+    if extract_maps_cid(place.maps_url) == cid:
+        updates["maps_url"] = build_public_google_maps_url(
+            name=place.name,
+            address=place.address,
+            lat=place.lat,
+            lng=place.lng,
+            raw_maps_url=None,
+        )
+    if not updates:
+        return place
+    return place.model_copy(update=updates)
+
+
+def clear_duplicate_raw_place_cids(
+    *,
+    slug: str,
+    payload: RawSavedList,
+    existing_payload: RawSavedList | None,
+) -> RawSavedList:
+    indexes_by_cid: dict[str, list[int]] = {}
+    for index, place in enumerate(payload.places):
+        cid = raw_place_cid_identity(place)
+        if cid:
+            indexes_by_cid.setdefault(cid, []).append(index)
+
+    duplicate_indexes_by_cid = {
+        cid: indexes for cid, indexes in indexes_by_cid.items() if len(indexes) > 1
+    }
+    if not duplicate_indexes_by_cid:
+        return payload
+
+    prior_places_by_cid: dict[str, list[RawPlace]] = {}
+    if existing_payload is not None:
+        for prior_place in existing_payload.places:
+            cid = raw_place_cid_identity(prior_place)
+            if cid:
+                prior_places_by_cid.setdefault(cid, []).append(prior_place)
+
+    updated_places = list(payload.places)
+    for cid, indexes in duplicate_indexes_by_cid.items():
+        prior_places = prior_places_by_cid.get(cid, [])
+        keep_index = max(
+            indexes,
+            key=lambda index: (
+                score_duplicate_raw_place_cid_candidate(
+                    updated_places[index],
+                    cid=cid,
+                    prior_places=prior_places,
+                ),
+                -index,
+            ),
+        )
+        cleared_names: list[str] = []
+        for index in indexes:
+            if index == keep_index:
+                continue
+            original_place = updated_places[index]
+            updated_place = strip_duplicate_raw_place_cid(original_place, cid=cid)
+            if updated_place != original_place:
+                updated_places[index] = updated_place
+                cleared_names.append(updated_place.name or f"place #{index + 1}")
+
+        if cleared_names:
+            kept_name = updated_places[keep_index].name or f"place #{keep_index + 1}"
+            print(
+                f"WARNING: Clearing duplicate raw CID {cid} in {slug}: "
+                f"kept [{kept_name}], cleared [{', '.join(cleared_names)}].",
+                flush=True,
+            )
+
+    return payload.model_copy(update={"places": updated_places})
+
+
 def preserve_existing_raw_saved_list(
     *,
     source: SourceConfig | None = None,
@@ -6520,16 +6657,28 @@ def preserve_existing_raw_saved_list(
     refreshed_payload: RawSavedList,
 ) -> RawSavedList:
     if existing_payload is None:
-        return refreshed_payload
+        return clear_duplicate_raw_place_cids(
+            slug=slug,
+            payload=refreshed_payload,
+            existing_payload=None,
+        )
     if source is not None:
         if not raw_source_signature_matches(source, existing_payload.source_signature):
-            return refreshed_payload
+            return clear_duplicate_raw_place_cids(
+                slug=slug,
+                payload=refreshed_payload,
+                existing_payload=None,
+            )
     elif (
         existing_payload.source_signature
         and refreshed_payload.source_signature
         and existing_payload.source_signature != refreshed_payload.source_signature
     ):
-        return refreshed_payload
+        return clear_duplicate_raw_place_cids(
+            slug=slug,
+            payload=refreshed_payload,
+            existing_payload=None,
+        )
 
     source_type = refreshed_payload.configured_source_type or existing_payload.configured_source_type
     existing_index = build_raw_place_preservation_index(existing_payload, source_type=source_type)
@@ -6559,7 +6708,11 @@ def preserve_existing_raw_saved_list(
             )
         updated_places.append(merged_place)
 
-    return refreshed_payload.model_copy(update={"places": updated_places})
+    return clear_duplicate_raw_place_cids(
+        slug=slug,
+        payload=refreshed_payload.model_copy(update={"places": updated_places}),
+        existing_payload=existing_payload,
+    )
 
 
 def raw_source_refresh_after(fetched_at: datetime, source: SourceConfig, *, source_signature: str) -> datetime:

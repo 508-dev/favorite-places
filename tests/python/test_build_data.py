@@ -1518,6 +1518,70 @@ class BuildDataTests(unittest.TestCase):
         self.assertIsNone(merged.places[0].maps_place_token)
         self.assertFalse(merged.places[0].is_favorite)
 
+    def test_preserve_existing_raw_saved_list_clears_new_duplicate_cid(self) -> None:
+        duplicate_cid = "945416459406974027"
+        existing_payload = RawSavedList(
+            configured_source_type="google_list_url",
+            places=[
+                RawPlace(
+                    name="Jerónimos Monastery",
+                    address="Praça do Império 1400-206 Lisboa, Portugal",
+                    lat=38.6978909,
+                    lng=-9.2067039,
+                    maps_url=(
+                        "https://www.google.com/maps/search/?api=1&query="
+                        "Jer%C3%B3nimos+Monastery%2C+Pra%C3%A7a+do+Imp%C3%A9rio"
+                    ),
+                    cid=duplicate_cid,
+                ),
+                RawPlace(
+                    name="Belém Tower",
+                    address=None,
+                    lat=38.6915837,
+                    lng=-9.2159773,
+                    maps_url="https://www.google.com/maps/search/?api=1&query=Bel%C3%A9m+Tower",
+                    cid=None,
+                ),
+            ],
+        )
+        refreshed_payload = RawSavedList(
+            configured_source_type="google_list_url",
+            places=[
+                RawPlace(
+                    name="Jerónimos Monastery",
+                    address="Praça do Império 1400-206 Lisboa, Portugal",
+                    lat=38.6978909,
+                    lng=-9.2067039,
+                    maps_url=(
+                        "https://www.google.com/maps/search/?api=1&query="
+                        "Jer%C3%B3nimos+Monastery%2C+Pra%C3%A7a+do+Imp%C3%A9rio"
+                    ),
+                    cid=duplicate_cid,
+                ),
+                RawPlace(
+                    name="Belém Tower",
+                    address=None,
+                    lat=38.6915837,
+                    lng=-9.2159773,
+                    maps_url="https://www.google.com/maps/search/?api=1&query=Bel%C3%A9m+Tower",
+                    cid=duplicate_cid,
+                ),
+            ],
+        )
+
+        merged = build_data.preserve_existing_raw_saved_list(
+            slug="lisbon-portugal",
+            existing_payload=existing_payload,
+            refreshed_payload=refreshed_payload,
+        )
+
+        self.assertEqual(merged.places[0].cid, duplicate_cid)
+        self.assertIsNone(merged.places[1].cid)
+        self.assertNotEqual(
+            build_data.stable_place_id(merged.places[0], source_type=merged.configured_source_type),
+            build_data.stable_place_id(merged.places[1], source_type=merged.configured_source_type),
+        )
+
     def test_build_place_page_candidate_urls_prefers_search_for_cid_inputs(self) -> None:
         place = RawPlace(
             name="Sister Midnight",
