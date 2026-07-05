@@ -6592,6 +6592,8 @@ def strip_duplicate_raw_place_cid(place: RawPlace, *, cid: str) -> RawPlace:
         )
     if not updates:
         return place
+    updates["google_id"] = None
+    updates["maps_place_token"] = None
     return place.model_copy(update=updates)
 
 
@@ -6673,7 +6675,7 @@ def preserve_existing_raw_saved_list(
             return clear_duplicate_raw_place_cids(
                 slug=slug,
                 payload=refreshed_payload,
-                existing_payload=None,
+                existing_payload=existing_payload,
             )
     elif (
         existing_payload.source_signature
@@ -6683,7 +6685,7 @@ def preserve_existing_raw_saved_list(
         return clear_duplicate_raw_place_cids(
             slug=slug,
             payload=refreshed_payload,
-            existing_payload=None,
+            existing_payload=existing_payload,
         )
 
     source_type = refreshed_payload.configured_source_type or existing_payload.configured_source_type

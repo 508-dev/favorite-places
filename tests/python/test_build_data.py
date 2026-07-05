@@ -1533,6 +1533,8 @@ class BuildDataTests(unittest.TestCase):
                         "Jer%C3%B3nimos+Monastery%2C+Pra%C3%A7a+do+Imp%C3%A9rio"
                     ),
                     cid=duplicate_cid,
+                    google_id="/g/11jeronimos",
+                    maps_place_token="0xd1:0x1",
                 ),
                 RawPlace(
                     name="Belém Tower",
@@ -1541,6 +1543,8 @@ class BuildDataTests(unittest.TestCase):
                     lng=-9.2159773,
                     maps_url="https://www.google.com/maps/search/?api=1&query=Bel%C3%A9m+Tower",
                     cid=None,
+                    google_id="/g/11belem",
+                    maps_place_token="0xd2:0x2",
                 ),
             ],
         )
@@ -1565,6 +1569,8 @@ class BuildDataTests(unittest.TestCase):
                     lng=-9.2159773,
                     maps_url="https://www.google.com/maps/search/?api=1&query=Bel%C3%A9m+Tower",
                     cid=duplicate_cid,
+                    google_id=None,
+                    maps_place_token=None,
                 ),
             ],
         )
@@ -1577,10 +1583,73 @@ class BuildDataTests(unittest.TestCase):
 
         self.assertEqual(merged.places[0].cid, duplicate_cid)
         self.assertIsNone(merged.places[1].cid)
+        self.assertIsNone(merged.places[1].google_id)
+        self.assertIsNone(merged.places[1].maps_place_token)
         self.assertNotEqual(
             build_data.stable_place_id(merged.places[0], source_type=merged.configured_source_type),
             build_data.stable_place_id(merged.places[1], source_type=merged.configured_source_type),
         )
+
+    def test_preserve_existing_raw_saved_list_uses_prior_anchor_for_changed_source_duplicate_cid(
+        self,
+    ) -> None:
+        duplicate_cid = "123456789"
+        previous_source = SourceConfig(slug="taipei-taiwan", url="https://maps.app.goo.gl/old")
+        current_source = SourceConfig(slug="taipei-taiwan", url="https://maps.app.goo.gl/new")
+        existing_payload = RawSavedList(
+            configured_source_type="google_list_url",
+            source_signature=build_data.raw_source_signature(previous_source),
+            places=[
+                RawPlace(
+                    name="Correct Cafe",
+                    address="1 Main St, Taipei",
+                    lat=25.0,
+                    lng=121.5,
+                    maps_url="https://maps.google.com/?cid=123456789",
+                    cid=duplicate_cid,
+                ),
+                RawPlace(
+                    name="Wrong Cafe",
+                    address="99 Other St, Taipei",
+                    lat=25.2,
+                    lng=121.7,
+                    maps_url="https://www.google.com/maps/search/?api=1&query=Wrong+Cafe",
+                    cid=None,
+                ),
+            ],
+        )
+        refreshed_payload = RawSavedList(
+            configured_source_type="google_list_url",
+            source_signature=build_data.raw_source_signature(current_source),
+            places=[
+                RawPlace(
+                    name="Wrong Cafe",
+                    address="99 Other St, Taipei",
+                    lat=25.2,
+                    lng=121.7,
+                    maps_url="https://maps.google.com/?cid=123456789",
+                    cid=duplicate_cid,
+                ),
+                RawPlace(
+                    name="Correct Cafe",
+                    address="1 Main St, Taipei",
+                    lat=25.0,
+                    lng=121.5,
+                    maps_url="https://maps.google.com/?cid=123456789",
+                    cid=duplicate_cid,
+                ),
+            ],
+        )
+
+        merged = build_data.preserve_existing_raw_saved_list(
+            source=current_source,
+            slug="taipei-taiwan",
+            existing_payload=existing_payload,
+            refreshed_payload=refreshed_payload,
+        )
+
+        self.assertIsNone(merged.places[0].cid)
+        self.assertEqual(merged.places[1].cid, duplicate_cid)
 
     def test_build_place_page_candidate_urls_prefers_search_for_cid_inputs(self) -> None:
         place = RawPlace(

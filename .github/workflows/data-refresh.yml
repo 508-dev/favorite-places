@@ -140,16 +140,23 @@ jobs:
       - name: Resolve refresh settings
         id: settings
         shell: bash
+        env:
+          PROFILE_INPUT: ${{ inputs.profile }}
+          REFRESH_LIST_INPUT: ${{ inputs.refresh_list }}
+          REFRESH_FORCE_INPUT: ${{ inputs.refresh_force }}
+          SKIP_PHOTOS_INPUT: ${{ inputs.skip_photos }}
+          REFRESH_WORKERS_INPUT: ${{ inputs.refresh_workers }}
+          SOFT_TIMEOUT_MINUTES_INPUT: ${{ inputs.soft_timeout_minutes }}
         run: |
           set -euo pipefail
 
           if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
-            profile="${{ inputs.profile }}"
-            refresh_list="${{ inputs.refresh_list }}"
-            refresh_force="${{ inputs.refresh_force }}"
-            skip_photos="${{ inputs.skip_photos }}"
-            refresh_workers="${{ inputs.refresh_workers }}"
-            soft_timeout_minutes="${{ inputs.soft_timeout_minutes }}"
+            profile="${PROFILE_INPUT}"
+            refresh_list="${REFRESH_LIST_INPUT}"
+            refresh_force="${REFRESH_FORCE_INPUT}"
+            skip_photos="${SKIP_PHOTOS_INPUT}"
+            refresh_workers="${REFRESH_WORKERS_INPUT}"
+            soft_timeout_minutes="${SOFT_TIMEOUT_MINUTES_INPUT}"
           else
             case "${{ github.event.schedule }}" in
               "43 5 1 * *")
@@ -166,6 +173,9 @@ jobs:
             soft_timeout_minutes="150"
           fi
 
+          # Keep these aligned with this job's `timeout-minutes` and the
+          # refresh step's `timeout --kill-after` value. GitHub Actions does
+          # not expose `timeout-minutes` inside a run step.
           job_timeout_minutes=180
           kill_after_minutes=5
           post_timeout_buffer_minutes=10
@@ -275,19 +285,26 @@ jobs:
 
           is_soft_timeout_status() {
             local status="$1"
-            [[ "${status}" == "124" || "${status}" == "137" ]]
+            local elapsed_seconds="$2"
+            local soft_timeout_seconds=$((SOFT_TIMEOUT_MINUTES * 60))
+            [[ "${status}" == "124" ]] || {
+              [[ "${status}" == "137" ]] && (( elapsed_seconds >= soft_timeout_seconds ))
+            }
           }
 
           echo "timed_out=false" >> "${GITHUB_OUTPUT}"
           set +e
+          refresh_started_at="$(date +%s)"
           timeout --signal=INT --kill-after=5m "${SOFT_TIMEOUT_MINUTES}m" \
             uv run python3 scripts/refresh_profiles.py "${args[@]}" | tee "${REFRESH_LOG_PATH}"
           pipeline_status=("${PIPESTATUS[@]}")
+          refresh_finished_at="$(date +%s)"
           set -e
 
           refresh_status="${pipeline_status[0]}"
           tee_status="${pipeline_status[1]}"
-          if is_soft_timeout_status "${refresh_status}"; then
+          refresh_elapsed_seconds=$((refresh_finished_at - refresh_started_at))
+          if is_soft_timeout_status "${refresh_status}" "${refresh_elapsed_seconds}"; then
             echo "::warning::Refresh stopped after ${SOFT_TIMEOUT_MINUTES} minutes so partial progress can be committed."
             {
               echo ""
@@ -339,6 +356,8 @@ jobs:
             fi
           }
 
+          stage_cache=true
+
           recover_sqlite_database() {
             local db_path="$1"
             local journal_path="${db_path}-journal"
@@ -349,6 +368,11 @@ jobs:
             python3 -c 'import sqlite3, sys; db_path = sys.argv[1]; connection = sqlite3.connect(db_path); result = connection.execute("PRAGMA integrity_check").fetchone(); connection.close(); raise SystemExit(0 if result and result[0] == "ok" else f"SQLite integrity check failed for {db_path}: {result}")' "${db_path}"
 
             if [[ -e "${journal_path}" ]]; then
+              if [[ "${REFRESH_TIMED_OUT}" == "true" ]]; then
+                echo "::warning::SQLite journal remains after refresh timeout: ${journal_path}. Skipping cache staging for this partial refresh."
+                stage_cache=false
+                return
+              fi
               echo "::error::SQLite journal remains after recovery attempt: ${journal_path}. Refusing to stage a potentially inconsistent cache."
               exit 1
             fi
@@ -364,13 +388,19 @@ jobs:
             find "${site_dir}/data/cache" \( -name "*-journal" -o -name "*.sqlite-journal" \) -print -quit 2>/dev/null || true
           )"
           if [[ -n "${remaining_journal}" ]]; then
-            echo "::error::SQLite journal remains after refresh interruption: ${remaining_journal}. Refusing to stage a potentially inconsistent cache."
-            exit 1
+            if [[ "${REFRESH_TIMED_OUT}" == "true" ]]; then
+              echo "::warning::SQLite journal remains after refresh timeout: ${remaining_journal}. Skipping cache staging for this partial refresh."
+              stage_cache=false
+            else
+              echo "::error::SQLite journal remains after refresh interruption: ${remaining_journal}. Refusing to stage a potentially inconsistent cache."
+              exit 1
+            fi
           fi
 
-          git add -A -- \
-            "${site_dir}/data/raw" \
-            "${site_dir}/data/cache"
+          git add -A -- "${site_dir}/data/raw"
+          if [[ "${stage_cache}" == "true" ]]; then
+            git add -A -- "${site_dir}/data/cache"
+          fi
 
           stage_optional_path "${site_dir}/public/place-photos"
           stage_optional_path "${site_dir}/public/author-photos"
