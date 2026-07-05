@@ -168,6 +168,22 @@ GitHub Actions schedules use UTC.
 
 The repo includes `.github/workflows/data-refresh.yml` for refresh automation on a self-hosted Linux runner.
 
+The workflow intentionally keeps the upstream runner selection generic. It defaults to:
+
+```json
+["self-hosted", "Linux"]
+```
+
+Site repos that need a specific private runner pool should set the GitHub Actions repository variable `DATA_REFRESH_RUNNER_LABELS` to a JSON array, for example:
+
+```json
+["self-hosted", "Linux", "residential"]
+```
+
+Use repository variables for installation-specific runner labels instead of committing private labels to the upstream template.
+
+The Actions job has a 180-minute hard timeout and runs the refresh command with a shorter soft timeout. The default soft timeout is 150 minutes, and manual dispatch values are capped so the 5-minute kill-after window plus summary, commit, and PR steps still fit under the job timeout. When the soft timeout expires, the workflow interrupts the refresh command, writes a partial summary, and continues to the commit and PR steps so completed raw snapshots, enrichment cache rows, and downloaded photos are not lost.
+
 Recommended boundary:
 
 - Do not run Google Maps list scraping or enrichment refreshes on GitHub-hosted runners.
@@ -190,6 +206,7 @@ Minimum `GH_AUTOMATION_TOKEN` permissions:
 Runner provisioning:
 
 - `unzip` must be present on `PATH` for `oven-sh/setup-bun`.
+- GNU `timeout` must be present on `PATH` for the soft-timeout partial commit path.
 - `cloakbrowser` downloads Chromium, but the host still needs Chromium system libraries.
 - Prefer provisioning the full Playwright Chromium dependency set:
 

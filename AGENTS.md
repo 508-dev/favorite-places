@@ -34,7 +34,9 @@
 
 The `data-refresh` workflow is intentionally tied to a self-hosted Linux runner. Treat the runner image or host provisioning as the contract for OS-level tools and browser libraries; do not install them ad hoc inside the workflow.
 
+- Keep upstream runner labels generic. The workflow defaults to `["self-hosted","Linux"]`; site repos can pin private pools with the GitHub Actions repository variable `DATA_REFRESH_RUNNER_LABELS`, for example `["self-hosted","Linux","residential"]`.
 - `unzip` must be present on `PATH` because `oven-sh/setup-bun` downloads a `.zip` release archive.
+- GNU `timeout` must be present on `PATH`; the workflow stops the refresh command after its soft timeout, defaults to 150 minutes, caps manual values below the 180-minute job timeout, then commits any completed partial data changes.
 - `cloakbrowser` downloads its own Chromium binary, but the host still needs Playwright/Chromium system libraries installed.
 - Provision the runner with the equivalent of Playwright's Chromium Linux dependencies, for example the packages behind `playwright install-deps chromium`, instead of trying to `apt install` during the workflow run.
 - The workflow includes a preflight check for `unzip` and a small set of required shared libraries (`libnspr4`, `libnss3`, GTK, GBM, X11, and related browser deps) so runner drift fails fast with a clear error.

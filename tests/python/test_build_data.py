@@ -11049,7 +11049,7 @@ class BuildDataTests(unittest.TestCase):
         executor = executor_holder["executor"]
         assert isinstance(executor, FakeExecutor)
         self.assertTrue(executor.terminated)
-        self.assertIn((True, True), executor.shutdown_calls)
+        self.assertEqual([], executor.shutdown_calls)
 
     def test_refresh_retries_transient_scrape_failure(self) -> None:
         source = SourceConfig(
@@ -13396,7 +13396,7 @@ class BuildDataTests(unittest.TestCase):
         executor = executor_holder["executor"]
         assert isinstance(executor, FakeExecutor)
         self.assertTrue(executor.terminated)
-        self.assertIn((True, True), executor.shutdown_calls)
+        self.assertEqual([], executor.shutdown_calls)
 
     def test_enrich_place_job_logs_when_worker_starts(self) -> None:
         entry = EnrichmentCacheEntry(

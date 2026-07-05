@@ -2081,6 +2081,7 @@ def refresh_raw_sources(
     failures: list[str] = []
 
     executor = ThreadPoolExecutor(max_workers=max_workers)
+    interrupted = False
     try:
         future_map = {
             executor.submit(
@@ -2111,11 +2112,13 @@ def refresh_raw_sources(
             )
             write_json(raw_path, payload)
     except KeyboardInterrupt:
+        interrupted = True
         print("Interrupt received; terminating refresh workers.", flush=True)
         terminate_executor(executor)
         raise
     finally:
-        executor.shutdown(wait=True, cancel_futures=True)
+        if not interrupted:
+            executor.shutdown(wait=True, cancel_futures=True)
 
     if failures:
         failure_text = "\n".join(failures)
@@ -4269,6 +4272,7 @@ def enrich_raw_sources(
 
     print(f"Running {len(enrich_jobs)} enrichment jobs with {max_workers} workers")
     executor = ThreadPoolExecutor(max_workers=max_workers)
+    interrupted = False
     try:
         future_map = {
             executor.submit(
@@ -4291,11 +4295,13 @@ def enrich_raw_sources(
             cache_payloads[slug][place_id] = future.result()
             save_places_cache(slug, cache_payloads[slug])
     except KeyboardInterrupt:
+        interrupted = True
         print("Interrupt received; terminating enrichment workers.", flush=True)
         terminate_executor(executor)
         raise
     finally:
-        executor.shutdown(wait=True, cancel_futures=True)
+        if not interrupted:
+            executor.shutdown(wait=True, cancel_futures=True)
 
 
 def enrichment_source_refresh_lists(place_selectors: Sequence[str] | None) -> list[str]:
