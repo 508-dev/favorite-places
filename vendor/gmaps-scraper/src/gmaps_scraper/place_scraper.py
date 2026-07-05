@@ -9,6 +9,7 @@ import time
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from hashlib import sha256
+from importlib import resources
 from pathlib import Path
 from typing import Any, Literal, cast
 from urllib.parse import parse_qs, unquote, urlparse
@@ -475,762 +476,9 @@ _PLACE_PANEL_HELPERS_JS = r"""
     };
   };
 """
-_PLACE_JS_EXTRACTOR = r"""
-() => {
-""" + _PLACE_PANEL_HELPERS_JS + r"""
-
-  const panelInfo = placePanelRoot();
-  const panel = panelInfo.root;
-  const titleElement = panelInfo.titleElement;
-
-  const firstText = (selectors, root = panel) => {
-    for (const selector of selectors) {
-      const element = root.querySelector(selector);
-      const text = element?.innerText?.trim();
-      if (text) {
-        return text;
-      }
-    }
-    return null;
-  };
-
-  const firstAttr = (selectors, attr, root = panel) => {
-    for (const selector of selectors) {
-      const element = root.querySelector(selector);
-      const value = element?.getAttribute(attr)?.trim();
-      if (value) {
-        return value;
-      }
-    }
-    return null;
-  };
-
-  const isReviewScoped = (element) => {
-    if (!element) {
-      return false;
-    }
-    if (element.closest("[data-review-id]")) {
-      return true;
-    }
-    const label = element.getAttribute?.("aria-label") || "";
-    return /(^|\W)reviews?(\W|$)/i.test(label);
-  };
-
-  const firstImageUrl = (selectors, root = panel) => {
-    for (const selector of selectors) {
-      for (const element of root.querySelectorAll(selector)) {
-        if (isReviewScoped(element)) {
-          continue;
-        }
-        const value = element?.currentSrc
-          || element?.getAttribute("src")?.trim()
-          || element?.getAttribute("data-src")?.trim();
-        if (value) {
-          return value;
-        }
-      }
-    }
-    return null;
-  };
-
-  const firstBackgroundImageUrl = (selectors, root = panel) => {
-    for (const selector of selectors) {
-      for (const element of root.querySelectorAll(selector)) {
-        if (isReviewScoped(element)) {
-          continue;
-        }
-        const style = getComputedStyle(element).backgroundImage || "";
-        const match = style.match(/url\((['"]?)(.*?)\1\)/);
-        if (match?.[2]) {
-          return match[2].trim();
-        }
-      }
-    }
-    return null;
-  };
-
-  const itemValue = (itemId) => firstText([
-    `[data-item-id="${itemId}"] .Io6YTe`,
-    `[data-item-id="${itemId}"]`,
-  ]);
-
-  const rowValue = (row) => {
-    // `.DkEaL` can be a localized row label when the value is in `.Io6YTe`.
-    // Prefer the value node and only use `.DkEaL` for older rows where it is
-    // the address text itself.
-    const value = (
-      row?.querySelector(".Io6YTe")?.innerText?.trim()
-      || row?.querySelector(".DkEaL")?.innerText?.trim()
-    );
-    return value || null;
-  };
-
-  const isAddressIcon = (icon) => {
-    const label = icon?.getAttribute?.("aria-label") || "";
-    const glyph = icon?.innerText?.trim() || icon?.textContent?.trim() || "";
-    return label === "Address" || glyph === "";
-  };
-
-  const addressValue = () => {
-    // Prefer Google Maps' structured address row. The icon fallback exists for
-    // localized pages where the aria-label text changes but the address glyph
-    // and row shape remain stable.
-    const legacy = itemValue("address");
-    if (legacy) {
-      return legacy;
-    }
-    for (const icon of panel.querySelectorAll(".google-symbols, [role='img']")) {
-      if (!isAddressIcon(icon)) {
-        continue;
-      }
-      const row = icon.closest(".LCF4w, .MngOvd, .RcCsl, [data-section-id]");
-      const value = rowValue(row);
-      if (value && value !== "Address") {
-        return value;
-      }
-    }
-    return null;
-  };
-  const addressRowElement = () => {
-    const legacy = panel.querySelector(`[data-item-id="address"]`);
-    if (legacy) {
-      return legacy;
-    }
-    for (const icon of panel.querySelectorAll(".google-symbols, [role='img']")) {
-      if (!isAddressIcon(icon)) {
-        continue;
-      }
-      const row = icon.closest(".LCF4w, .MngOvd, .RcCsl, [data-section-id]");
-      if (row) {
-        return row;
-      }
-    }
-    return null;
-  };
-  const elementTop = (element) => {
-    const rect = element?.getBoundingClientRect?.();
-    return rect && rect.height > 0 ? rect.top : null;
-  };
-  const elementBottom = (element) => {
-    const rect = element?.getBoundingClientRect?.();
-    return rect && rect.height > 0 ? rect.bottom : null;
-  };
-  const descriptionBoundaryTop = () => {
-    const rows = Array.from(panel.querySelectorAll("[data-item-id]"))
-      .map(elementTop)
-      .filter((value) => value !== null);
-    if (rows.length > 0) {
-      return Math.min(...rows);
-    }
-    const addressRow = addressRowElement();
-    const addressTop = elementTop(addressRow);
-    return addressTop === null ? Infinity : addressTop;
-  };
-  const descriptionValue = () => {
-    const direct = firstText([".WeS02d", ".PYvSYb"]);
-    if (direct) {
-      return direct;
-    }
-    const titleBottom = Math.max(
-      ...[
-        elementBottom(titleElement),
-        ...Array.from(panel.querySelectorAll("div.F7nice")).map(elementBottom),
-      ].filter((value) => value !== null),
-      0,
-    );
-    const boundaryTop = descriptionBoundaryTop();
-    const candidates = [];
-    for (const element of panel.querySelectorAll("div, span")) {
-      const text = cleanLine(element.innerText || element.textContent || "");
-      if (!text || text.includes("·")) {
-        continue;
-      }
-      if (
-        element.closest(
-          "button, a, [role='button'], [role='tab'], [role='tablist'], "
-            + "[data-item-id], [data-review-id], div.F7nice",
-        )
-      ) {
-        continue;
-      }
-      if (
-        Array.from(element.children).some(
-          (child) => cleanLine(child.innerText || child.textContent || "") === text,
-        )
-      ) {
-        continue;
-      }
-      const top = elementTop(element);
-      if (top === null || top <= titleBottom || top >= boundaryTop) {
-        continue;
-      }
-      candidates.push({top, text});
-    }
-    candidates.sort((left, right) => left.top - right.top);
-    return candidates[0]?.text || null;
-  };
-
-  const normalizeCount = (value) => {
-    if (!value) {
-      return 0;
-    }
-    const text = value.trim().toUpperCase();
-    let multiplier = 1;
-    if (text.includes("K")) {
-      multiplier = 1000;
-    } else if (text.includes("M")) {
-      multiplier = 1000000;
-    } else if (text.includes("萬") || text.includes("万")) {
-      multiplier = 10000;
-    }
-    const numeric = parseFloat(text.replace(/[,\sKM萬万]/g, ""));
-    return Number.isFinite(numeric) ? numeric * multiplier : 0;
-  };
-
-  const reviewKeywords = ["review", "reviews", "評論", "クチコミ"];
-  const reviewCountPattern = new RegExp(
-    "([0-9][0-9,.\\s]*[KM萬万]?)[ ]*"
-      + "(?:reviews?|評論|クチコミ|件のクチコミ|件の Google クチコミ|則評論|篇評論)",
-    "i",
-  );
-  const reviewCountPatternReverse = new RegExp(
-    "(?:reviews?|評論|クチコミ)\\s*[(]([0-9][0-9,.\\s]*[KM萬万]?)[)]",
-    "i",
-  );
-
-  let reviewCount = null;
-  let reviewSource = null;
-  let bestCount = 0;
-
-  const considerCount = (candidate, source) => {
-    if (!candidate) {
-      return;
-    }
-    const count = normalizeCount(candidate);
-    if (count <= 0) {
-      return;
-    }
-    if (count > bestCount) {
-      bestCount = count;
-      reviewCount = candidate.trim();
-      reviewSource = source;
-    }
-  };
-
-  for (const span of panel.querySelectorAll("div.F7nice span")) {
-    const text = span.innerText?.trim() || "";
-    const match = text.match(/^\(?([0-9][0-9,.\s]*[KM萬万]?)\)?$/i);
-    if (!match) {
-      continue;
-    }
-    if (/^[0-9]+([.,][0-9]+)?$/.test(match[1]) && normalizeCount(match[1]) < 10) {
-      continue;
-    }
-    considerCount(match[1], "f7nice");
-  }
-
-  const reviewSummaryBoundaryTop = () => {
-    const addressRow = addressRowElement();
-    if (addressRow) {
-      const rect = addressRow.getBoundingClientRect();
-      if (rect.height > 0) {
-        return rect.top;
-      }
-    }
-    const panelRect = panel.getBoundingClientRect();
-    return panelRect.top + 520;
-  };
-  const isOverviewReviewCountElement = (element) => {
-    if (element.closest("div.F7nice")) {
-      return true;
-    }
-    const rect = element.getBoundingClientRect();
-    if (rect.height <= 0) {
-      return false;
-    }
-    return rect.top < reviewSummaryBoundaryTop();
-  };
-
-  for (const element of panel.querySelectorAll("[aria-label]")) {
-    if (!isOverviewReviewCountElement(element)) {
-      continue;
-    }
-    const label = element.getAttribute("aria-label") || "";
-    if (!reviewKeywords.some((keyword) => label.toLowerCase().includes(keyword.toLowerCase()))) {
-      continue;
-    }
-    const match = label.match(reviewCountPattern) || label.match(reviewCountPatternReverse);
-    if (match) {
-      considerCount(match[1], "aria-label");
-    }
-  }
-
-  if (!reviewCount) {
-    for (const tab of panel.querySelectorAll("div[role='tablist'] button")) {
-      const text = tab.innerText?.trim() || "";
-      if (!reviewKeywords.some((keyword) => text.toLowerCase().includes(keyword.toLowerCase()))) {
-        continue;
-      }
-      const match = text.match(/([0-9][0-9,.\s]*[KM萬万]?)/i);
-      if (match) {
-        considerCount(match[1], "tab");
-      }
-    }
-  }
-
-  const mainPhotoUrl = firstImageUrl([
-    "div.RZ66Rb button[jsaction*='heroHeaderImage'] img",
-    "button[jsaction*='heroHeaderImage'] img",
-    "div.ZKCDEc [data-photo-index='0'] img",
-    "[data-photo-index='0'] img",
-    "[data-photo-index] img",
-  ])
-    || firstBackgroundImageUrl([
-      "div.RZ66Rb button[jsaction*='heroHeaderImage']",
-      "button[jsaction*='heroHeaderImage']",
-      "div.ZKCDEc [data-photo-index='0']",
-      "[data-photo-index='0']",
-      "[data-photo-index]",
-    ]);
-  const photoUrl = mainPhotoUrl
-    || firstAttr(["meta[property='og:image']", "meta[itemprop='image']"], "content", document);
-
-  const shallowPath = (element) => {
-    const parts = [];
-    let current = element;
-    for (let i = 0; i < 4 && current && current.nodeType === Node.ELEMENT_NODE; i += 1) {
-      let part = current.tagName.toLowerCase();
-      const id = current.getAttribute("data-item-id");
-      const role = current.getAttribute("role");
-      if (id) {
-        part += `[data-item-id="${id}"]`;
-      } else if (role) {
-        part += `[role="${role}"]`;
-      } else if (current.classList?.length) {
-        part += "." + Array.from(current.classList).slice(0, 2).join(".");
-      }
-      parts.unshift(part);
-      current = current.parentElement;
-    }
-    return parts.join(" > ");
-  };
-  const nearbyText = (element) => {
-    const texts = [];
-    const parent = element.parentElement;
-    if (!parent) {
-      return texts;
-    }
-    for (const child of parent.children) {
-      const text = cleanLine(child.innerText || child.textContent || "");
-      if (text && !texts.includes(text)) {
-        texts.push(text);
-      }
-      if (texts.length >= 4) {
-        break;
-      }
-    }
-    return texts;
-  };
-  const collectDomCandidates = () => {
-    const selectors = [
-      "[data-item-id]",
-      "button[aria-label]",
-      "a[aria-label]",
-      "[role='button'][aria-label]",
-      ".Io6YTe",
-      ".DkEaL",
-      ".F7nice",
-      "div[role='tablist'] button",
-    ];
-    const candidates = [];
-    const seen = new Set();
-    for (const selector of selectors) {
-      for (const element of panel.querySelectorAll(selector)) {
-        const text = cleanLine(element.innerText || element.textContent || "");
-        const ariaLabel = cleanLine(element.getAttribute("aria-label") || "");
-        const dataItemId = cleanLine(element.getAttribute("data-item-id") || "");
-        if (!text && !ariaLabel && !dataItemId) {
-          continue;
-        }
-        if (text.length > 240 || ariaLabel.length > 240) {
-          continue;
-        }
-        const key = `${selector}\n${text}\n${ariaLabel}\n${dataItemId}`;
-        if (seen.has(key)) {
-          continue;
-        }
-        seen.add(key);
-        candidates.push({
-          text,
-          tag: element.tagName.toLowerCase(),
-          role: cleanLine(element.getAttribute("role") || ""),
-          aria_label: ariaLabel,
-          data_item_id: dataItemId,
-          selector_hint: shallowPath(element),
-          nearby_text: nearbyText(element),
-        });
-        if (candidates.length >= 120) {
-          return candidates;
-        }
-      }
-    }
-    return candidates;
-  };
-  const collectReviewTopics = () => {
-    const selectors = [
-      "button[jsaction*='review']",
-      "button[aria-label*='review' i]",
-      "button[role='radio']",
-      "button[aria-pressed]",
-      "div[role='button'][aria-label]",
-    ];
-    const topics = [];
-    const seen = new Set();
-    for (const selector of selectors) {
-      for (const element of panel.querySelectorAll(selector)) {
-        const text = cleanLine(element.innerText || element.textContent || "");
-        const ariaLabel = cleanLine(element.getAttribute("aria-label") || "");
-        const candidate = /[0-9]/.test(text)
-          ? text
-          : (/[0-9]/.test(ariaLabel) ? ariaLabel : text || ariaLabel);
-        if (!candidate || candidate.length > 120 || !/[0-9]/.test(candidate)) {
-          continue;
-        }
-        const key = `${candidate}\n${ariaLabel}`;
-        if (seen.has(key)) {
-          continue;
-        }
-        seen.add(key);
-        topics.push({
-          text: candidate,
-          aria_label: ariaLabel,
-          source: selector,
-        });
-      }
-    }
-    return topics;
-  };
-  const priceSymbols = "(?:[$€£¥₩₹₫฿₱₦₺₴₽]|SGD|USD|EUR|GBP|JPY|TWD|NT\\$|HK\\$|CA\\$|A\\$)";
-  const pricePattern = new RegExp(
-    "(?:^|\\s|·)((?:\\${1,4})|" + priceSymbols
-      + "\\s*[0-9][0-9,.\u00a0\\s]*(?:\\+|[-–]\\s*" + priceSymbols
-      + "?\\s*[0-9][0-9,.\u00a0\\s]*)?)",
-    "i",
-  );
-  const exactNumericPricePattern = new RegExp(
-    "^" + priceSymbols + "\\s*[0-9][0-9,.\u00a0\\s]*$",
-    "i",
-  );
-  const extractPrice = (value) => {
-    const text = cleanLine(value);
-    const match = text.match(pricePattern);
-    if (!match?.[1]) {
-      return null;
-    }
-    return cleanLine(match[1].replace(/\u00a0/g, " "));
-  };
-  const looksLikePriceRangeText = (value) => {
-    const text = cleanLine(value);
-    if (!text) {
-      return false;
-    }
-    if (/^\${1,4}$/.test(text)) {
-      return true;
-    }
-    return text.includes("·") && pricePattern.test(text);
-  };
-  const headingAliases = (value) => Array.isArray(value) ? value : [value];
-  const normalizedHeading = (value) => cleanLine(value).toLowerCase();
-  const sectionRootByHeading = (headingText) => {
-    const aliases = headingAliases(headingText)
-      .map((value) => normalizedHeading(value))
-      .filter(Boolean);
-    if (aliases.length === 0) {
-      return null;
-    }
-    for (const heading of panel.querySelectorAll("h2, h3, [role='heading']")) {
-      const text = normalizedHeading(heading.innerText || heading.textContent || "");
-      if (!aliases.includes(text)) {
-        continue;
-      }
-      return (
-        heading.closest(".m6QErb, section, [role='region'], [data-section-id]")
-        || heading.parentElement
-        || null
-      );
-    }
-    return null;
-  };
-  const collectLeafPrices = (root) => {
-    if (!root) {
-      return [];
-    }
-    const prices = [];
-    const seen = new Set();
-    for (const element of root.querySelectorAll("*")) {
-      const text = cleanLine(element.innerText || element.textContent || "");
-      if (!text || text.length > 48) {
-        continue;
-      }
-      if (
-        Array.from(element.children).some(
-          (child) => cleanLine(child.innerText || child.textContent || "") === text,
-        )
-      ) {
-        continue;
-      }
-      const price = extractPrice(text);
-      if (!price || price !== text || !exactNumericPricePattern.test(price)) {
-        continue;
-      }
-      if (seen.has(price)) {
-        continue;
-      }
-      seen.add(price);
-      prices.push(price);
-    }
-    return prices;
-  };
-  const providerLabelFromUrl = (href) => {
-    try {
-      const host = new URL(href).hostname.replace(/^www\./, "");
-      const base = host.split(".")[0] || host;
-      return base
-        .replace(/[-_]+/g, " ")
-        .replace(/\b\w/g, (char) => char.toUpperCase());
-    } catch {
-      return "Find a Table";
-    }
-  };
-  const reservationLabel = (element, href) => {
-    const actionPrefixPattern = new RegExp(
-      "^(?:find a table|reserve|make a reservation|book a table)"
-        + "(?:\\s+(?:with|on|at|via))?\\s*",
-      "i",
-    );
-    const raw = cleanLine(
-      element.innerText
-      || element.textContent
-      || element.getAttribute("aria-label")
-      || element.getAttribute("title")
-      || "",
-    );
-    const cleaned = raw
-      .replace(actionPrefixPattern, "")
-      .replace(/\s+(?:opens in new tab|website)$/i, "")
-      .trim();
-    return cleaned || providerLabelFromUrl(href);
-  };
-  const collectReservationLinks = () => {
-    const links = [];
-    const seen = new Set();
-    const reservationPattern = new RegExp(
-      String.raw`\b(find a table|reserve|reservation|book a table)\b`,
-      "i",
-    );
-    for (const element of panel.querySelectorAll("a[href]")) {
-      const href = element.href || element.getAttribute("href") || "";
-      if (!/^https?:\/\//i.test(href) || seen.has(href)) {
-        continue;
-      }
-      const evidence = [
-        element.innerText,
-        element.textContent,
-        element.getAttribute("aria-label"),
-        element.getAttribute("title"),
-        element.getAttribute("data-item-id"),
-      ].filter(Boolean).join(" ");
-      if (!reservationPattern.test(evidence)) {
-        continue;
-      }
-      seen.add(href);
-      links.push({
-        label: reservationLabel(element, href),
-        url: href,
-      });
-      if (links.length >= 8) {
-        break;
-      }
-    }
-    return links;
-  };
-  const roomOverlayPrice = () => {
-    const selectors = [
-      ".rlmNhf button[aria-label]",
-      "button[aria-label*='per night' i]",
-      "button[aria-label*='prices from' i]",
-    ];
-    for (const selector of selectors) {
-      for (const element of document.querySelectorAll(selector)) {
-        const price = extractPrice(element.getAttribute("aria-label") || "");
-        if (price && exactNumericPricePattern.test(price)) {
-          return price;
-        }
-      }
-    }
-    return null;
-  };
-  const detailsBoundaryTop = () => {
-    const selectors = [
-      `[data-item-id="address"]`,
-      `[data-item-id="authority"]`,
-      `[data-item-id="oloc"]`,
-      `[data-item-id="locatedin"]`,
-      `button[data-item-id^="phone:"]`,
-    ];
-    let boundary = Number.POSITIVE_INFINITY;
-    for (const selector of selectors) {
-      for (const element of panel.querySelectorAll(selector)) {
-        const rect = element.getBoundingClientRect();
-        if (rect.height <= 0) {
-          continue;
-        }
-        boundary = Math.min(boundary, rect.top);
-      }
-    }
-    const addressRow = addressRowElement();
-    if (addressRow) {
-      const rect = addressRow.getBoundingClientRect();
-      if (rect.height > 0) {
-        boundary = Math.min(boundary, rect.top);
-      }
-    }
-    return Number.isFinite(boundary) ? boundary : Number.POSITIVE_INFINITY;
-  };
-  const structuralOfferSignals = () => {
-    const titleTop = (
-      titleElement?.getBoundingClientRect()?.top
-      || panel.getBoundingClientRect().top
-    );
-    const boundaryTop = detailsBoundaryTop();
-    const prices = [];
-    const seenPrices = new Set();
-    for (const element of panel.querySelectorAll("*")) {
-      const text = cleanLine(element.innerText || element.textContent || "");
-      if (!text || text.length > 48) {
-        continue;
-      }
-      const rect = element.getBoundingClientRect();
-      if (rect.height <= 0 || rect.top <= titleTop || rect.top >= boundaryTop) {
-        continue;
-      }
-      if (
-        Array.from(element.children).some(
-          (child) => cleanLine(child.innerText || child.textContent || "") === text,
-        )
-      ) {
-        continue;
-      }
-      const price = extractPrice(text);
-      if (!price || price !== text || !exactNumericPricePattern.test(price)) {
-        continue;
-      }
-      if (seenPrices.has(price)) {
-        continue;
-      }
-      seenPrices.add(price);
-      prices.push(price);
-    }
-    const kind = (
-      prices.length > 0
-      ? (
-        roomOverlayPrice()
-        || panel.querySelector(`[data-item-id="place-info-links:"]`)
-          ? "room"
-          : "admission"
-      )
-      : null
-    );
-    return {kind, prices};
-  };
-  const priceRangeValue = () => {
-    const roots = [
-      panel.querySelector(".dmRWX"),
-      panel.querySelector(".F7nice")?.parentElement,
-      panel.querySelector(".F7nice"),
-      panel,
-    ].filter(Boolean);
-    for (const root of roots) {
-      const text = cleanLine(root.innerText || root.textContent || "");
-      if (!looksLikePriceRangeText(text)) {
-        continue;
-      }
-      const match = text.match(pricePattern);
-      if (match?.[1]) {
-        return cleanLine(match[1].replace(/\u00a0/g, " "));
-      }
-    }
-    return null;
-  };
-  const structuralOffers = structuralOfferSignals();
-
-  return {
-    name: firstText(titleSelectors),
-    secondary_name: firstText(["h2.bwoZTb span", "h2.bwoZTb"]),
-    rating: firstText([
-      "div.F7nice > span > span[aria-hidden='true']:first-child",
-      "span.ceNzKf[role='img']",
-      "span[role='img'][aria-label*='star']",
-    ]),
-    review_count: reviewCount,
-    review_count_source: reviewSource,
-    category: firstText([
-      "button[jsaction*='category']",
-      ".skqShb .fontBodyMedium button",
-      "button.DkEaL",
-    ]),
-    price_range: priceRangeValue(),
-    address: addressValue(),
-    located_in: itemValue("locatedin"),
-    status: firstText(["div.OqCZI .ZDu9vd", "div.OqCZI .o0Svhf"]),
-    website: firstAttr(["a[data-item-id='authority']"], "href", document) || itemValue("authority"),
-    reservation_links: collectReservationLinks(),
-    phone: firstText([
-      "button[data-item-id^='phone:'] .Io6YTe",
-      "button[data-item-id^='phone:']",
-    ]),
-    plus_code: itemValue("oloc"),
-    description: descriptionValue(),
-    review_topics: collectReviewTopics(),
-    admission_prices: collectLeafPrices(sectionRootByHeading([
-      "Admission",
-      "Ticket prices",
-      "Entry fee",
-      "Entrance fee",
-      "入場",
-      "入場料",
-      "入園料",
-      "票價",
-      "票价",
-      "門票",
-      "门票",
-    ])),
-    room_prices: collectLeafPrices(sectionRootByHeading([
-      "Compare prices",
-      "Compare room prices",
-      "Room prices",
-      "價格比較",
-      "价格比较",
-      "比較價格",
-      "比較房價",
-      "料金を比較",
-      "価格を比較",
-      "宿泊料金を比較",
-    ])),
-    structural_offer_kind: structuralOffers.kind,
-    structural_offer_prices: structuralOffers.prices,
-    room_price_overlay: roomOverlayPrice(),
-    dom_candidates: collectDomCandidates(),
-    main_photo_url: mainPhotoUrl,
-    photo_url: photoUrl,
-    panel_text: panel?.innerText || "",
-    body_text: document.body?.innerText || "",
-    limited_view: (document.body?.innerText || "")
-      .toLowerCase()
-      .includes("limited view of google maps"),
-  };
-}
-"""
+_PLACE_JS_EXTRACTOR = resources.files("gmaps_scraper.data").joinpath(
+    "place_extractor.js"
+).read_text(encoding="utf-8")
 _PLACE_REVIEW_SIGNAL_JS = r"""
 () => {
 """ + _PLACE_PANEL_HELPERS_JS + r"""
@@ -3534,6 +2782,11 @@ def _extract_preview_place_enrichment(payload_text: str) -> dict[str, object]:
     if description is not None:
         enrichment["description"] = description
 
+    rating_summary = _extract_preview_rating_summary(root)
+    if rating_summary is not None:
+        enrichment["rating"] = rating_summary[0]
+        enrichment["review_count"] = rating_summary[1]
+
     coordinates = _extract_preview_coordinates(root)
     if coordinates is not None:
         enrichment["lat"] = coordinates[0]
@@ -4685,6 +3938,77 @@ def _snapshot_contains_ui_action_name_candidate(snapshot: Mapping[str, object]) 
         ]
     )
     return any(_looks_like_ui_action_label(line) for line in lines)
+
+
+def _extract_preview_rating_summary(root: list[object]) -> tuple[float, int] | None:
+    candidates: set[tuple[float, int]] = set()
+    for node in _iter_lists(root):
+        if not _looks_like_compact_rating_summary_node(node):
+            continue
+        numeric_items = [
+            (index, value)
+            for index, value in enumerate(node)
+            if isinstance(value, (int, float)) and not isinstance(value, bool)
+        ]
+        for rating_index, rating_value in numeric_items:
+            rating = _preview_rating_value(rating_value)
+            if rating is None:
+                continue
+            for count_index, count_value in numeric_items:
+                if rating_index == count_index or abs(rating_index - count_index) > 2:
+                    continue
+                count = _preview_review_count_value(count_value)
+                if count is None:
+                    continue
+                if _rating_count_pair_is_ambiguous(node, count):
+                    continue
+                candidates.add((rating, count))
+    if len(candidates) == 1:
+        return next(iter(candidates))
+    return None
+
+
+def _looks_like_compact_rating_summary_node(node: list[object]) -> bool:
+    if not 2 <= len(node) <= 8:
+        return False
+    return not any(
+        isinstance(value, str) and _clean_numeric_price_text(value) is not None
+        for value in node
+    )
+
+
+def _preview_rating_value(value: int | float) -> float | None:
+    if isinstance(value, int):
+        return None
+    rating = float(value)
+    if not 1.0 <= rating <= 5.0:
+        return None
+    if rating.is_integer():
+        return None
+    return round(rating, 1)
+
+
+def _preview_review_count_value(value: int | float) -> int | None:
+    if isinstance(value, float):
+        if not value.is_integer():
+            return None
+        value = int(value)
+    if value < 10 or value > 50_000_000:
+        return None
+    return value
+
+
+def _rating_count_pair_is_ambiguous(node: list[object], count: int) -> bool:
+    count_text = str(count)
+    return any(
+        isinstance(value, str)
+        and count_text in value
+        and (
+            _clean_numeric_price_text(value) is not None
+            or re.search(r"\b(?:year|since|founded|established|opened)\b", value, re.IGNORECASE)
+        )
+        for value in node
+    )
 
 
 def _extract_preview_coordinates(root: list[object]) -> tuple[float, float] | None:
