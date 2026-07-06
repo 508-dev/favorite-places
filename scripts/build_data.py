@@ -6582,11 +6582,24 @@ def score_duplicate_raw_place_cid_candidate(
     return score + best_prior_score
 
 
-def strip_duplicate_raw_place_cid(place: RawPlace, *, cid: str) -> RawPlace:
+def strip_duplicate_raw_place_cid(
+    place: RawPlace,
+    *,
+    cid: str,
+    shared_maps_place_tokens: set[str] | None = None,
+) -> RawPlace:
     updates: dict[str, Any] = {}
     if as_string(place.cid) == cid:
         updates["cid"] = None
-    if extract_maps_cid(place.maps_url) == cid:
+    maps_place_token = extract_maps_place_token(place.maps_url)
+    if (
+        extract_maps_cid(place.maps_url) == cid
+        or (
+            maps_place_token is not None
+            and shared_maps_place_tokens is not None
+            and maps_place_token in shared_maps_place_tokens
+        )
+    ):
         updates["maps_url"] = build_public_google_maps_url(
             name=place.name,
             address=place.address,
@@ -6629,6 +6642,17 @@ def clear_duplicate_raw_place_cids(
     updated_places = list(payload.places)
     for cid, indexes in duplicate_indexes_by_cid.items():
         prior_places = prior_places_by_cid.get(cid, [])
+        maps_place_token_counts = Counter(
+            token
+            for token in (
+                extract_maps_place_token(updated_places[index].maps_url)
+                for index in indexes
+            )
+            if token is not None
+        )
+        shared_maps_place_tokens = {
+            token for token, count in maps_place_token_counts.items() if count > 1
+        }
         keep_index = max(
             indexes,
             key=lambda index: (
@@ -6645,7 +6669,11 @@ def clear_duplicate_raw_place_cids(
             if index == keep_index:
                 continue
             original_place = updated_places[index]
-            updated_place = strip_duplicate_raw_place_cid(original_place, cid=cid)
+            updated_place = strip_duplicate_raw_place_cid(
+                original_place,
+                cid=cid,
+                shared_maps_place_tokens=shared_maps_place_tokens,
+            )
             if updated_place != original_place:
                 updated_places[index] = updated_place
                 cleared_names.append(updated_place.name or f"place #{index + 1}")

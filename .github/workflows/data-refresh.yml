@@ -366,14 +366,15 @@ jobs:
               return
             fi
 
+            if [[ "${REFRESH_TIMED_OUT}" == "true" ]]; then
+              echo "::warning::SQLite journal remains after refresh timeout: ${journal_path}. Skipping cache staging for this partial refresh."
+              stage_cache=false
+              return
+            fi
+
             python3 -c 'import sqlite3, sys; db_path = sys.argv[1]; connection = sqlite3.connect(db_path); result = connection.execute("PRAGMA integrity_check").fetchone(); connection.close(); raise SystemExit(0 if result and result[0] == "ok" else f"SQLite integrity check failed for {db_path}: {result}")' "${db_path}"
 
             if [[ -e "${journal_path}" ]]; then
-              if [[ "${REFRESH_TIMED_OUT}" == "true" ]]; then
-                echo "::warning::SQLite journal remains after refresh timeout: ${journal_path}. Skipping cache staging for this partial refresh."
-                stage_cache=false
-                return
-              fi
               echo "::error::SQLite journal remains after recovery attempt: ${journal_path}. Refusing to stage a potentially inconsistent cache."
               exit 1
             fi

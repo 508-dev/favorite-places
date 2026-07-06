@@ -1714,6 +1714,51 @@ class BuildDataTests(unittest.TestCase):
         self.assertEqual(merged.places[1].cid, duplicate_cid)
         self.assertEqual(merged.places[1].added_by, ListAuthor(name="Alice"))
 
+    def test_preserve_existing_raw_saved_list_clears_shared_maps_place_token_for_duplicate_cid(
+        self,
+    ) -> None:
+        duplicate_cid = "777123"
+        duplicate_token = "0xabc123:0xdef456"
+        maps_url = f"https://www.google.com/maps/place/data=!4m2!3m1!1s{duplicate_token}"
+        refreshed_payload = RawSavedList(
+            configured_source_type="google_list_url",
+            places=[
+                RawPlace(
+                    name="Correct Cafe",
+                    address="1 Main St, Taipei",
+                    lat=25.0,
+                    lng=121.5,
+                    maps_url=maps_url,
+                    cid=duplicate_cid,
+                ),
+                RawPlace(
+                    name="Wrong Cafe",
+                    address="99 Other St, Taipei",
+                    lat=25.2,
+                    lng=121.7,
+                    maps_url=maps_url,
+                    cid=duplicate_cid,
+                ),
+            ],
+        )
+
+        merged = build_data.preserve_existing_raw_saved_list(
+            slug="taipei-taiwan",
+            existing_payload=None,
+            refreshed_payload=refreshed_payload,
+        )
+
+        self.assertEqual(merged.places[0].cid, duplicate_cid)
+        self.assertEqual(build_data.extract_maps_place_token(merged.places[0].maps_url), duplicate_token)
+        self.assertIsNone(merged.places[1].cid)
+        self.assertIsNone(build_data.extract_maps_place_token(merged.places[1].maps_url))
+        self.assertIsNone(merged.places[1].google_id)
+        self.assertIsNone(merged.places[1].maps_place_token)
+        self.assertNotEqual(
+            build_data.stable_place_id(merged.places[0], source_type=merged.configured_source_type),
+            build_data.stable_place_id(merged.places[1], source_type=merged.configured_source_type),
+        )
+
     def test_build_place_page_candidate_urls_prefers_search_for_cid_inputs(self) -> None:
         place = RawPlace(
             name="Sister Midnight",
