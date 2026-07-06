@@ -2148,6 +2148,51 @@ class BuildDataTests(unittest.TestCase):
             build_data.stable_place_id(merged.places[1], source_type=merged.configured_source_type),
         )
 
+    def test_preserve_existing_raw_saved_list_strips_keeper_url_token_from_duplicate_google_id_loser(
+        self,
+    ) -> None:
+        keeper_token = "0xabc123:0x111111"
+        independent_token = "0xabc123:0x222222"
+        keeper_maps_url = f"https://www.google.com/maps/place/data=!4m2!3m1!1s{keeper_token}"
+        refreshed_payload = RawSavedList(
+            configured_source_type="google_list_url",
+            places=[
+                RawPlace(
+                    name="Correct Cafe",
+                    address="1 Main St, Taipei",
+                    lat=25.0,
+                    lng=121.5,
+                    maps_url=keeper_maps_url,
+                    google_id="/g/correct-cafe",
+                ),
+                RawPlace(
+                    name="Wrong Cafe",
+                    address="99 Other St, Taipei",
+                    lat=25.2,
+                    lng=121.7,
+                    maps_url=keeper_maps_url,
+                    google_id="g/correct-cafe",
+                    maps_place_token=independent_token,
+                ),
+            ],
+        )
+
+        merged = build_data.preserve_existing_raw_saved_list(
+            slug="taipei-taiwan",
+            existing_payload=None,
+            refreshed_payload=refreshed_payload,
+        )
+
+        self.assertEqual(merged.places[0].google_id, "/g/correct-cafe")
+        self.assertEqual(build_data.extract_maps_place_token(merged.places[0].maps_url), keeper_token)
+        self.assertIsNone(merged.places[1].google_id)
+        self.assertIsNone(build_data.extract_maps_place_token(merged.places[1].maps_url))
+        self.assertEqual(merged.places[1].maps_place_token, independent_token)
+        self.assertEqual(
+            build_data.stable_place_id(merged.places[1], source_type=merged.configured_source_type),
+            f"gms:{independent_token}",
+        )
+
     def test_build_place_page_candidate_urls_prefers_search_for_cid_inputs(self) -> None:
         place = RawPlace(
             name="Sister Midnight",

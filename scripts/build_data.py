@@ -6883,7 +6883,11 @@ def clear_duplicate_raw_place_google_identities(
             updated_place = strip_duplicate_raw_place_google_identity(
                 original_place,
                 google_id=identity if identity_name == "google_id" else None,
-                maps_place_token=identity if identity_name == "maps_place_token" else None,
+                maps_place_token=(
+                    identity
+                    if identity_name == "maps_place_token"
+                    else raw_place_maps_place_token_identity(updated_places[keep_index])
+                ),
             )
             if updated_place != original_place:
                 updated_places[index] = updated_place
