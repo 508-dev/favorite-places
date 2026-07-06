@@ -181,6 +181,7 @@ jobs:
           kill_after_minutes=5
           post_timeout_buffer_minutes=10
           max_soft_timeout_minutes=$((job_timeout_minutes - pre_refresh_setup_buffer_minutes - kill_after_minutes - post_timeout_buffer_minutes))
+          settings_started_at_epoch="$(date +%s)"
 
           if ! [[ "${soft_timeout_minutes}" =~ ^[0-9]+$ ]] || (( soft_timeout_minutes < 1 )); then
             echo "::error::soft_timeout_minutes must be a positive integer."
@@ -202,6 +203,7 @@ jobs:
             echo "skip_photos=${skip_photos}"
             echo "refresh_workers=${refresh_workers}"
             echo "soft_timeout_minutes=${soft_timeout_minutes}"
+            echo "settings_started_at_epoch=${settings_started_at_epoch}"
             echo "refresh_date=${refresh_date}"
           } >> "${GITHUB_OUTPUT}"
 
@@ -264,6 +266,7 @@ jobs:
           REFRESH_FORCE: ${{ steps.settings.outputs.refresh_force }}
           REFRESH_LOG_PATH: ${{ runner.temp }}/data-refresh.log
           REFRESH_SUMMARY_PATH: ${{ runner.temp }}/data-refresh-summary.md
+          SETTINGS_STARTED_AT_EPOCH: ${{ steps.settings.outputs.settings_started_at_epoch }}
           SKIP_PHOTOS: ${{ steps.settings.outputs.skip_photos }}
           REFRESH_WORKERS: ${{ steps.settings.outputs.refresh_workers }}
           SOFT_TIMEOUT_MINUTES: ${{ steps.settings.outputs.soft_timeout_minutes }}
@@ -284,10 +287,26 @@ jobs:
             args+=("--refresh-list" "${REFRESH_LIST}")
           fi
 
+          job_timeout_minutes=180
+          kill_after_minutes=5
+          post_timeout_buffer_minutes=10
+          setup_elapsed_seconds=$(($(date +%s) - SETTINGS_STARTED_AT_EPOCH))
+          setup_elapsed_minutes=$(((setup_elapsed_seconds + 59) / 60))
+          max_effective_soft_timeout_minutes=$((job_timeout_minutes - setup_elapsed_minutes - kill_after_minutes - post_timeout_buffer_minutes))
+          if (( max_effective_soft_timeout_minutes < 1 )); then
+            echo "::error::Setup consumed too much of the ${job_timeout_minutes}-minute job timeout to leave room for refresh cleanup."
+            exit 1
+          fi
+          effective_soft_timeout_minutes="${SOFT_TIMEOUT_MINUTES}"
+          if (( effective_soft_timeout_minutes > max_effective_soft_timeout_minutes )); then
+            echo "::warning::Reducing refresh soft timeout from ${SOFT_TIMEOUT_MINUTES} to ${max_effective_soft_timeout_minutes} minutes because setup took ${setup_elapsed_minutes} minutes."
+            effective_soft_timeout_minutes="${max_effective_soft_timeout_minutes}"
+          fi
+
           is_soft_timeout_status() {
             local status="$1"
             local elapsed_seconds="$2"
-            local soft_timeout_seconds=$((SOFT_TIMEOUT_MINUTES * 60))
+            local soft_timeout_seconds=$((effective_soft_timeout_minutes * 60))
             [[ "${status}" == "124" ]] || {
               [[ "${status}" == "137" ]] && (( elapsed_seconds >= soft_timeout_seconds ))
             }
@@ -296,7 +315,7 @@ jobs:
           echo "timed_out=false" >> "${GITHUB_OUTPUT}"
           set +e
           refresh_started_at="$(date +%s)"
-          timeout --signal=INT --kill-after=5m "${SOFT_TIMEOUT_MINUTES}m" \
+          timeout --signal=INT --kill-after=5m "${effective_soft_timeout_minutes}m" \
             uv run python3 scripts/refresh_profiles.py "${args[@]}" | tee "${REFRESH_LOG_PATH}"
           pipeline_status=("${PIPESTATUS[@]}")
           refresh_finished_at="$(date +%s)"
@@ -306,10 +325,10 @@ jobs:
           tee_status="${pipeline_status[1]}"
           refresh_elapsed_seconds=$((refresh_finished_at - refresh_started_at))
           if is_soft_timeout_status "${refresh_status}" "${refresh_elapsed_seconds}"; then
-            echo "::warning::Refresh stopped after ${SOFT_TIMEOUT_MINUTES} minutes so partial progress can be committed."
+            echo "::warning::Refresh stopped after ${effective_soft_timeout_minutes} minutes so partial progress can be committed."
             {
               echo ""
-              echo "Refresh stopped after ${SOFT_TIMEOUT_MINUTES} minutes so partial progress can be committed."
+              echo "Refresh stopped after ${effective_soft_timeout_minutes} minutes so partial progress can be committed."
             } >> "${REFRESH_LOG_PATH}"
             echo "timed_out=true" >> "${GITHUB_OUTPUT}"
           elif (( tee_status != 0 )); then
