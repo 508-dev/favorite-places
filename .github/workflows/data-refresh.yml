@@ -36,6 +36,11 @@ on:
         required: false
         default: "4"
         type: string
+      soft_timeout_minutes:
+        description: Stop the refresh command after this many minutes so partial changes can still be committed
+        required: false
+        default: "150"
+        type: string
   schedule:
     - cron: "17 3 * * *"
     - cron: "43 5 1 * *"
@@ -50,9 +55,10 @@ concurrency:
 
 jobs:
   refresh:
-    runs-on:
-      - self-hosted
-      - Linux
+    # Upstream default stays generic. Site repos can set the GitHub Actions
+    # repository variable DATA_REFRESH_RUNNER_LABELS to a JSON array such as
+    # ["self-hosted","Linux","residential"] to pin private runner pools.
+    runs-on: ${{ fromJSON(vars.DATA_REFRESH_RUNNER_LABELS || '["self-hosted","Linux"]') }}
     timeout-minutes: 180
     env:
       REFRESH_BRANCH_PREFIX: automation/data-refresh
@@ -60,6 +66,11 @@ jobs:
       GMAPS_SCRAPER_PROXY: ${{ secrets.GMAPS_SCRAPER_PROXY }}
 
     steps:
+      - name: Record job budget start
+        id: budget
+        shell: bash
+        run: echo "started_at_epoch=$(date +%s)" >> "${GITHUB_OUTPUT}"
+
       - name: Check out repository
         uses: actions/checkout@v5
         with:
@@ -74,6 +85,11 @@ jobs:
 
           if ! command -v unzip >/dev/null 2>&1; then
             echo "::error::Missing required runner tool: unzip. Provision it on the self-hosted runner; do not install it inside this workflow."
+            exit 1
+          fi
+
+          if ! command -v timeout >/dev/null 2>&1; then
+            echo "::error::Missing required runner tool: timeout. Provision GNU coreutils on the self-hosted runner; do not install it inside this workflow."
             exit 1
           fi
 
@@ -129,15 +145,23 @@ jobs:
       - name: Resolve refresh settings
         id: settings
         shell: bash
+        env:
+          PROFILE_INPUT: ${{ inputs.profile }}
+          REFRESH_LIST_INPUT: ${{ inputs.refresh_list }}
+          REFRESH_FORCE_INPUT: ${{ inputs.refresh_force }}
+          SKIP_PHOTOS_INPUT: ${{ inputs.skip_photos }}
+          REFRESH_WORKERS_INPUT: ${{ inputs.refresh_workers }}
+          SOFT_TIMEOUT_MINUTES_INPUT: ${{ inputs.soft_timeout_minutes }}
         run: |
           set -euo pipefail
 
           if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
-            profile="${{ inputs.profile }}"
-            refresh_list="${{ inputs.refresh_list }}"
-            refresh_force="${{ inputs.refresh_force }}"
-            skip_photos="${{ inputs.skip_photos }}"
-            refresh_workers="${{ inputs.refresh_workers }}"
+            profile="${PROFILE_INPUT}"
+            refresh_list="${REFRESH_LIST_INPUT}"
+            refresh_force="${REFRESH_FORCE_INPUT}"
+            skip_photos="${SKIP_PHOTOS_INPUT}"
+            refresh_workers="${REFRESH_WORKERS_INPUT}"
+            soft_timeout_minutes="${SOFT_TIMEOUT_MINUTES_INPUT}"
           else
             case "${{ github.event.schedule }}" in
               "43 5 1 * *")
@@ -151,18 +175,40 @@ jobs:
             refresh_force="false"
             skip_photos="false"
             refresh_workers="4"
+            soft_timeout_minutes="150"
+          fi
+
+          # Keep these aligned with this job's `timeout-minutes` and the
+          # refresh step's `timeout --kill-after` value. GitHub Actions does
+          # not expose `timeout-minutes` inside a run step.
+          job_timeout_minutes=180
+          pre_refresh_setup_buffer_minutes=15
+          kill_after_minutes=5
+          post_timeout_buffer_minutes=10
+          max_soft_timeout_minutes=$((job_timeout_minutes - pre_refresh_setup_buffer_minutes - kill_after_minutes - post_timeout_buffer_minutes))
+
+          if ! [[ "${soft_timeout_minutes}" =~ ^[0-9]+$ ]] || (( soft_timeout_minutes < 1 )); then
+            echo "::error::soft_timeout_minutes must be a positive integer."
+            exit 1
+          fi
+          if (( soft_timeout_minutes > max_soft_timeout_minutes )); then
+            echo "::error::soft_timeout_minutes must be <= ${max_soft_timeout_minutes} so the refresh can stop, summarize, commit, and open a PR before the ${job_timeout_minutes}-minute job timeout."
+            exit 1
           fi
 
           refresh_date="$(date -u +%Y-%m-%d)"
           refresh_branch="${REFRESH_BRANCH_PREFIX}-${profile}"
 
-          echo "profile=${profile}" >> "${GITHUB_OUTPUT}"
-          echo "refresh_branch=${refresh_branch}" >> "${GITHUB_OUTPUT}"
-          echo "refresh_list=${refresh_list}" >> "${GITHUB_OUTPUT}"
-          echo "refresh_force=${refresh_force}" >> "${GITHUB_OUTPUT}"
-          echo "skip_photos=${skip_photos}" >> "${GITHUB_OUTPUT}"
-          echo "refresh_workers=${refresh_workers}" >> "${GITHUB_OUTPUT}"
-          echo "refresh_date=${refresh_date}" >> "${GITHUB_OUTPUT}"
+          {
+            echo "profile=${profile}"
+            echo "refresh_branch=${refresh_branch}"
+            echo "refresh_list=${refresh_list}"
+            echo "refresh_force=${refresh_force}"
+            echo "skip_photos=${skip_photos}"
+            echo "refresh_workers=${refresh_workers}"
+            echo "soft_timeout_minutes=${soft_timeout_minutes}"
+            echo "refresh_date=${refresh_date}"
+          } >> "${GITHUB_OUTPUT}"
 
       - name: Set up Bun
         uses: oven-sh/setup-bun@v2
@@ -215,15 +261,18 @@ jobs:
           git switch -C "${REFRESH_BRANCH}" origin/main
 
       - name: Run self-hosted refresh
+        id: refresh
         shell: bash
         env:
           PROFILE: ${{ steps.settings.outputs.profile }}
           REFRESH_LIST: ${{ steps.settings.outputs.refresh_list }}
           REFRESH_FORCE: ${{ steps.settings.outputs.refresh_force }}
+          JOB_BUDGET_STARTED_AT_EPOCH: ${{ steps.budget.outputs.started_at_epoch }}
           REFRESH_LOG_PATH: ${{ runner.temp }}/data-refresh.log
           REFRESH_SUMMARY_PATH: ${{ runner.temp }}/data-refresh-summary.md
           SKIP_PHOTOS: ${{ steps.settings.outputs.skip_photos }}
           REFRESH_WORKERS: ${{ steps.settings.outputs.refresh_workers }}
+          SOFT_TIMEOUT_MINUTES: ${{ steps.settings.outputs.soft_timeout_minutes }}
         run: |
           set -euo pipefail
 
@@ -241,7 +290,58 @@ jobs:
             args+=("--refresh-list" "${REFRESH_LIST}")
           fi
 
-          uv run python3 scripts/refresh_profiles.py "${args[@]}" | tee "${REFRESH_LOG_PATH}"
+          job_timeout_minutes=180
+          kill_after_minutes=5
+          post_timeout_buffer_minutes=10
+          setup_elapsed_seconds=$(($(date +%s) - JOB_BUDGET_STARTED_AT_EPOCH))
+          setup_elapsed_minutes=$(((setup_elapsed_seconds + 59) / 60))
+          max_effective_soft_timeout_minutes=$((job_timeout_minutes - setup_elapsed_minutes - kill_after_minutes - post_timeout_buffer_minutes))
+          if (( max_effective_soft_timeout_minutes < 1 )); then
+            echo "::error::Setup consumed too much of the ${job_timeout_minutes}-minute job timeout to leave room for refresh cleanup."
+            exit 1
+          fi
+          effective_soft_timeout_minutes="${SOFT_TIMEOUT_MINUTES}"
+          if (( effective_soft_timeout_minutes > max_effective_soft_timeout_minutes )); then
+            echo "::warning::Reducing refresh soft timeout from ${SOFT_TIMEOUT_MINUTES} to ${max_effective_soft_timeout_minutes} minutes because setup took ${setup_elapsed_minutes} minutes."
+            effective_soft_timeout_minutes="${max_effective_soft_timeout_minutes}"
+          fi
+
+          is_soft_timeout_status() {
+            local status="$1"
+            local elapsed_seconds="$2"
+            local soft_timeout_seconds=$((effective_soft_timeout_minutes * 60))
+            local kill_after_seconds=$((kill_after_minutes * 60))
+            [[ "${status}" == "124" ]] || {
+              [[ "${status}" == "137" ]] && (( elapsed_seconds >= soft_timeout_seconds + kill_after_seconds ))
+            }
+          }
+
+          echo "timed_out=false" >> "${GITHUB_OUTPUT}"
+          set +e
+          refresh_started_at="$(date +%s)"
+          timeout --signal=INT --kill-after=5m "${effective_soft_timeout_minutes}m" \
+            uv run python3 scripts/refresh_profiles.py "${args[@]}" | tee "${REFRESH_LOG_PATH}"
+          pipeline_status=("${PIPESTATUS[@]}")
+          refresh_finished_at="$(date +%s)"
+          set -e
+
+          refresh_status="${pipeline_status[0]}"
+          tee_status="${pipeline_status[1]}"
+          refresh_elapsed_seconds=$((refresh_finished_at - refresh_started_at))
+          if is_soft_timeout_status "${refresh_status}" "${refresh_elapsed_seconds}"; then
+            echo "::warning::Refresh stopped after ${effective_soft_timeout_minutes} minutes so partial progress can be committed."
+            {
+              echo ""
+              echo "Refresh stopped after ${effective_soft_timeout_minutes} minutes so partial progress can be committed."
+            } >> "${REFRESH_LOG_PATH}"
+            echo "timed_out=true" >> "${GITHUB_OUTPUT}"
+          elif (( tee_status != 0 )); then
+            echo "::error::tee failed while writing ${REFRESH_LOG_PATH}."
+            exit "${tee_status}"
+          elif (( refresh_status != 0 )); then
+            exit "${refresh_status}"
+          fi
+
           uv run python3 scripts/refresh_summary.py --log "${REFRESH_LOG_PATH}" --output "${REFRESH_SUMMARY_PATH}"
 
       - name: Create commit if data changed
@@ -250,6 +350,7 @@ jobs:
         env:
           PROFILE: ${{ steps.settings.outputs.profile }}
           REFRESH_BRANCH: ${{ steps.settings.outputs.refresh_branch }}
+          REFRESH_TIMED_OUT: ${{ steps.refresh.outputs.timed_out }}
         run: |
           set -euo pipefail
 
@@ -270,9 +371,65 @@ jobs:
             fi
           }
 
-          git add -A -- \
-            "${site_dir}/data/raw" \
-            "${site_dir}/data/cache"
+          cleanup_runtime_artifacts() {
+            local path="$1"
+            if [[ -d "${path}" ]]; then
+              find "${path}" \
+                \( -name "*.tmp" -o -name ".*.tmp" -o -name "*.tmp-journal" -o -name ".*.tmp-journal" \) \
+                -delete
+            fi
+          }
+
+          stage_cache=true
+
+          recover_sqlite_database() {
+            local db_path="$1"
+            local journal_path="${db_path}-journal"
+            if [[ ! -e "${journal_path}" ]]; then
+              return
+            fi
+
+            if [[ "${REFRESH_TIMED_OUT}" == "true" ]]; then
+              echo "::warning::SQLite journal remains after refresh timeout: ${journal_path}. Skipping cache staging for this partial refresh."
+              stage_cache=false
+              git restore --worktree -- "${db_path}" 2>/dev/null || true
+              rm -f "${journal_path}"
+              return
+            fi
+
+            python3 -c 'import sqlite3, sys; db_path = sys.argv[1]; connection = sqlite3.connect(db_path); result = connection.execute("PRAGMA integrity_check").fetchone(); connection.close(); raise SystemExit(0 if result and result[0] == "ok" else f"SQLite integrity check failed for {db_path}: {result}")' "${db_path}"
+
+            if [[ -e "${journal_path}" ]]; then
+              echo "::error::SQLite journal remains after recovery attempt: ${journal_path}. Refusing to stage a potentially inconsistent cache."
+              exit 1
+            fi
+          }
+
+          recover_sqlite_database "${site_dir}/data/cache/places.sqlite"
+          cleanup_runtime_artifacts "${site_dir}/data/raw"
+          cleanup_runtime_artifacts "${site_dir}/data/cache"
+          cleanup_runtime_artifacts "${site_dir}/public/place-photos"
+          cleanup_runtime_artifacts "${site_dir}/public/author-photos"
+
+          remaining_journal="$(
+            find "${site_dir}/data/cache" \( -name "*-journal" -o -name "*.sqlite-journal" \) -print -quit 2>/dev/null || true
+          )"
+          if [[ -n "${remaining_journal}" ]]; then
+            if [[ "${REFRESH_TIMED_OUT}" == "true" ]]; then
+              echo "::warning::SQLite journal remains after refresh timeout: ${remaining_journal}. Skipping cache staging for this partial refresh."
+              stage_cache=false
+              git restore --worktree -- "${site_dir}/data/cache" 2>/dev/null || true
+              find "${site_dir}/data/cache" \( -name "*-journal" -o -name "*.sqlite-journal" \) -delete 2>/dev/null || true
+            else
+              echo "::error::SQLite journal remains after refresh interruption: ${remaining_journal}. Refusing to stage a potentially inconsistent cache."
+              exit 1
+            fi
+          fi
+
+          git add -A -- "${site_dir}/data/raw"
+          if [[ "${stage_cache}" == "true" ]]; then
+            git add -A -- "${site_dir}/data/cache"
+          fi
 
           stage_optional_path "${site_dir}/public/place-photos"
           stage_optional_path "${site_dir}/public/author-photos"
@@ -282,7 +439,11 @@ jobs:
             exit 0
           fi
 
-          git commit -m "Refresh place data (${PROFILE})"
+          commit_subject="Refresh place data (${PROFILE})"
+          if [[ "${REFRESH_TIMED_OUT}" == "true" ]]; then
+            commit_subject="${commit_subject} [partial]"
+          fi
+          git commit -m "${commit_subject}"
           git push --force-with-lease origin "${REFRESH_BRANCH}"
 
           echo "changed=true" >> "${GITHUB_OUTPUT}"
@@ -299,6 +460,8 @@ jobs:
           REFRESH_SUMMARY_PATH: ${{ runner.temp }}/data-refresh-summary.md
           SKIP_PHOTOS: ${{ steps.settings.outputs.skip_photos }}
           REFRESH_WORKERS: ${{ steps.settings.outputs.refresh_workers }}
+          SOFT_TIMEOUT_MINUTES: ${{ steps.settings.outputs.soft_timeout_minutes }}
+          REFRESH_TIMED_OUT: ${{ steps.refresh.outputs.timed_out }}
         with:
           github-token: ${{ secrets.GH_AUTOMATION_TOKEN != '' && secrets.GH_AUTOMATION_TOKEN || github.token }}
           script: |
@@ -315,6 +478,7 @@ jobs:
               `- Profile: \`${process.env.PROFILE}\``,
               `- Trigger: \`${context.eventName}\``,
               `- Refresh workers: \`${process.env.REFRESH_WORKERS}\``,
+              `- Soft timeout: \`${process.env.SOFT_TIMEOUT_MINUTES} minutes\``,
             ];
 
             if (process.env.REFRESH_LIST) {
@@ -325,6 +489,9 @@ jobs:
             }
             if (process.env.SKIP_PHOTOS === "true") {
               bodyLines.push("- Photo refresh skipped");
+            }
+            if (process.env.REFRESH_TIMED_OUT === "true") {
+              bodyLines.push("- Partial refresh: stopped at the soft timeout so completed changes could be committed");
             }
             if (manualRun) {
               bodyLines.push(`- Manual run: https://github.com/${owner}/${repo}/actions/runs/${context.runId}`);
