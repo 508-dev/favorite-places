@@ -308,7 +308,12 @@ jobs:
 
           is_soft_timeout_status() {
             local status="$1"
-            [[ "${status}" == "124" ]]
+            local elapsed_seconds="$2"
+            local soft_timeout_seconds=$((effective_soft_timeout_minutes * 60))
+            local kill_after_seconds=$((kill_after_minutes * 60))
+            [[ "${status}" == "124" ]] || {
+              [[ "${status}" == "137" ]] && (( elapsed_seconds >= soft_timeout_seconds + kill_after_seconds ))
+            }
           }
 
           echo "timed_out=false" >> "${GITHUB_OUTPUT}"
@@ -323,7 +328,7 @@ jobs:
           refresh_status="${pipeline_status[0]}"
           tee_status="${pipeline_status[1]}"
           refresh_elapsed_seconds=$((refresh_finished_at - refresh_started_at))
-          if is_soft_timeout_status "${refresh_status}"; then
+          if is_soft_timeout_status "${refresh_status}" "${refresh_elapsed_seconds}"; then
             echo "::warning::Refresh stopped after ${effective_soft_timeout_minutes} minutes so partial progress can be committed."
             {
               echo ""
@@ -387,6 +392,8 @@ jobs:
             if [[ "${REFRESH_TIMED_OUT}" == "true" ]]; then
               echo "::warning::SQLite journal remains after refresh timeout: ${journal_path}. Skipping cache staging for this partial refresh."
               stage_cache=false
+              git restore --worktree -- "${db_path}" 2>/dev/null || true
+              rm -f "${journal_path}"
               return
             fi
 
@@ -411,6 +418,8 @@ jobs:
             if [[ "${REFRESH_TIMED_OUT}" == "true" ]]; then
               echo "::warning::SQLite journal remains after refresh timeout: ${remaining_journal}. Skipping cache staging for this partial refresh."
               stage_cache=false
+              git restore --worktree -- "${site_dir}/data/cache" 2>/dev/null || true
+              find "${site_dir}/data/cache" \( -name "*-journal" -o -name "*.sqlite-journal" \) -delete 2>/dev/null || true
             else
               echo "::error::SQLite journal remains after refresh interruption: ${remaining_journal}. Refusing to stage a potentially inconsistent cache."
               exit 1

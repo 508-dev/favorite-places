@@ -6440,8 +6440,6 @@ def preserve_existing_raw_place(
     *,
     existing_place: RawPlace,
     refreshed_place: RawPlace,
-    blocked_google_ids: set[str] | None = None,
-    blocked_maps_place_tokens: set[str] | None = None,
 ) -> tuple[RawPlace, list[str]]:
     preserved_fields: list[str] = []
     updates: dict[str, Any] = {}
@@ -6456,28 +6454,13 @@ def preserve_existing_raw_place(
     ):
         updates["address"] = existing_place.address
         preserved_fields.append("address")
-    existing_google_id = raw_place_google_id_identity(existing_place)
-    if (
-        names_compatible
-        and not refreshed_place.google_id
-        and existing_place.google_id
-        and (blocked_google_ids is None or existing_google_id not in blocked_google_ids)
-    ):
+    if names_compatible and not refreshed_place.google_id and existing_place.google_id:
         updates["google_id"] = existing_place.google_id
         preserved_fields.append("google_id")
     if names_compatible and not refreshed_place.cid and existing_place.cid:
         updates["cid"] = existing_place.cid
         preserved_fields.append("cid")
-    existing_maps_place_token = raw_place_maps_place_token_identity(existing_place)
-    if (
-        names_compatible
-        and not refreshed_place.maps_place_token
-        and existing_place.maps_place_token
-        and (
-            blocked_maps_place_tokens is None
-            or existing_maps_place_token not in blocked_maps_place_tokens
-        )
-    ):
+    if names_compatible and not refreshed_place.maps_place_token and existing_place.maps_place_token:
         updates["maps_place_token"] = existing_place.maps_place_token
         preserved_fields.append("maps_place_token")
     if names_compatible and not refreshed_place.is_favorite and existing_place.is_favorite:
@@ -6614,6 +6597,8 @@ def strip_duplicate_raw_place_cid(
     shared_google_ids: set[str] | None = None,
     shared_maps_place_tokens: set[str] | None = None,
     shared_maps_url_place_tokens: set[str] | None = None,
+    protected_google_ids: set[str] | None = None,
+    protected_maps_place_tokens: set[str] | None = None,
 ) -> RawPlace:
     updates: dict[str, Any] = {}
     if as_string(place.cid) == cid:
@@ -6638,13 +6623,18 @@ def strip_duplicate_raw_place_cid(
     if not updates:
         return place
     google_id = raw_place_google_id_identity(place)
-    if google_id and shared_google_ids is not None and google_id in shared_google_ids:
+    if google_id and (
+        (shared_google_ids is not None and google_id in shared_google_ids)
+        or (protected_google_ids is not None and google_id in protected_google_ids)
+    ):
         updates["google_id"] = None
     if (
         as_string(place.maps_place_token)
         and maps_place_token
-        and shared_maps_place_tokens is not None
-        and maps_place_token in shared_maps_place_tokens
+        and (
+            (shared_maps_place_tokens is not None and maps_place_token in shared_maps_place_tokens)
+            or (protected_maps_place_tokens is not None and maps_place_token in protected_maps_place_tokens)
+        )
     ):
         updates["maps_place_token"] = None
     return place.model_copy(update=updates)
@@ -6711,6 +6701,21 @@ def clear_duplicate_raw_place_cids(
                 -index,
             ),
         )
+        kept_place = updated_places[keep_index]
+        protected_google_ids = {
+            google_id
+            for prior_place in prior_places
+            if raw_place_names_are_compatible(as_string(prior_place.name), as_string(kept_place.name))
+            for google_id in [raw_place_google_id_identity(prior_place)]
+            if google_id is not None
+        }
+        protected_maps_place_tokens = {
+            token
+            for prior_place in prior_places
+            if raw_place_names_are_compatible(as_string(prior_place.name), as_string(kept_place.name))
+            for token in [raw_place_maps_place_token_identity(prior_place)]
+            if token is not None
+        }
         cleared_names: list[str] = []
         for index in indexes:
             if index == keep_index:
@@ -6722,6 +6727,8 @@ def clear_duplicate_raw_place_cids(
                 shared_google_ids=shared_google_ids,
                 shared_maps_place_tokens=shared_maps_place_tokens,
                 shared_maps_url_place_tokens=shared_maps_url_place_tokens,
+                protected_google_ids=protected_google_ids,
+                protected_maps_place_tokens=protected_maps_place_tokens,
             )
             if updated_place != original_place:
                 updated_places[index] = updated_place
@@ -6738,6 +6745,153 @@ def clear_duplicate_raw_place_cids(
     return payload.model_copy(update={"places": updated_places})
 
 
+def score_duplicate_raw_place_google_identity_candidate(
+    place: RawPlace,
+    *,
+    prior_places: Sequence[RawPlace],
+) -> int:
+    score = 50 if raw_place_cid_identity(place) else 0
+    best_prior_score = 0
+    for prior_place in prior_places:
+        prior_score = 0
+        if raw_place_names_are_compatible(as_string(prior_place.name), as_string(place.name)):
+            prior_score += 80
+
+        prior_address = normalize_text(prior_place.address)
+        place_address = normalize_text(place.address)
+        if prior_address and place_address:
+            if prior_address == place_address:
+                prior_score += 50
+            else:
+                prior_score += token_overlap_score(prior_address, place_address)
+
+        if (
+            prior_place.lat is not None
+            and prior_place.lng is not None
+            and place.lat is not None
+            and place.lng is not None
+        ):
+            distance_m = haversine_meters(
+                prior_place.lat,
+                prior_place.lng,
+                place.lat,
+                place.lng,
+            )
+            if distance_m <= 100:
+                prior_score += 60
+            elif distance_m <= 400:
+                prior_score += 40
+            elif distance_m <= 1200:
+                prior_score += 10
+
+        best_prior_score = max(best_prior_score, prior_score)
+
+    return score + best_prior_score
+
+
+def strip_duplicate_raw_place_google_identity(
+    place: RawPlace,
+    *,
+    google_id: str | None = None,
+    maps_place_token: str | None = None,
+) -> RawPlace:
+    updates: dict[str, Any] = {}
+    if google_id is not None and raw_place_google_id_identity(place) == google_id:
+        updates["google_id"] = None
+    if maps_place_token is not None:
+        if as_string(place.maps_place_token) == maps_place_token:
+            updates["maps_place_token"] = None
+        if extract_maps_place_token(place.maps_url) == maps_place_token:
+            updates["maps_url"] = build_public_google_maps_url(
+                name=place.name,
+                address=place.address,
+                lat=place.lat,
+                lng=place.lng,
+                raw_maps_url=None,
+            )
+    if not updates:
+        return place
+    return place.model_copy(update=updates)
+
+
+def clear_duplicate_raw_place_google_identities(
+    *,
+    slug: str,
+    payload: RawSavedList,
+    existing_payload: RawSavedList | None,
+) -> RawSavedList:
+    updated_places = list(payload.places)
+    duplicate_groups: list[tuple[str, str, list[int]]] = []
+    for identity_name, identity_getter in (
+        ("google_id", raw_place_google_id_identity),
+        ("maps_place_token", raw_place_maps_place_token_identity),
+    ):
+        indexes_by_identity: dict[str, list[int]] = {}
+        for index, place in enumerate(updated_places):
+            identity = identity_getter(place)
+            if identity:
+                indexes_by_identity.setdefault(identity, []).append(index)
+        duplicate_groups.extend(
+            (identity_name, identity, indexes)
+            for identity, indexes in indexes_by_identity.items()
+            if len(indexes) > 1
+        )
+
+    if not duplicate_groups:
+        return payload
+
+    prior_places_by_google_id: dict[str, list[RawPlace]] = {}
+    prior_places_by_maps_place_token: dict[str, list[RawPlace]] = {}
+    if existing_payload is not None:
+        for prior_place in existing_payload.places:
+            google_id = raw_place_google_id_identity(prior_place)
+            if google_id:
+                prior_places_by_google_id.setdefault(google_id, []).append(prior_place)
+            maps_place_token = raw_place_maps_place_token_identity(prior_place)
+            if maps_place_token:
+                prior_places_by_maps_place_token.setdefault(maps_place_token, []).append(prior_place)
+
+    for identity_name, identity, indexes in duplicate_groups:
+        prior_places = (
+            prior_places_by_google_id.get(identity, [])
+            if identity_name == "google_id"
+            else prior_places_by_maps_place_token.get(identity, [])
+        )
+        keep_index = max(
+            indexes,
+            key=lambda index: (
+                score_duplicate_raw_place_google_identity_candidate(
+                    updated_places[index],
+                    prior_places=prior_places,
+                ),
+                -index,
+            ),
+        )
+        cleared_names: list[str] = []
+        for index in indexes:
+            if index == keep_index:
+                continue
+            original_place = updated_places[index]
+            updated_place = strip_duplicate_raw_place_google_identity(
+                original_place,
+                google_id=identity if identity_name == "google_id" else None,
+                maps_place_token=identity if identity_name == "maps_place_token" else None,
+            )
+            if updated_place != original_place:
+                updated_places[index] = updated_place
+                cleared_names.append(updated_place.name or f"place #{index + 1}")
+
+        if cleared_names:
+            kept_name = updated_places[keep_index].name or f"place #{keep_index + 1}"
+            print(
+                f"WARNING: Clearing duplicate raw {identity_name} {identity} in {slug}: "
+                f"kept [{kept_name}], cleared [{', '.join(cleared_names)}].",
+                flush=True,
+            )
+
+    return payload.model_copy(update={"places": updated_places})
+
+
 def preserve_existing_raw_saved_list(
     *,
     source: SourceConfig | None = None,
@@ -6746,16 +6900,26 @@ def preserve_existing_raw_saved_list(
     refreshed_payload: RawSavedList,
 ) -> RawSavedList:
     if existing_payload is None:
-        return clear_duplicate_raw_place_cids(
+        deduped_payload = clear_duplicate_raw_place_cids(
             slug=slug,
             payload=refreshed_payload,
             existing_payload=None,
         )
+        return clear_duplicate_raw_place_google_identities(
+            slug=slug,
+            payload=deduped_payload,
+            existing_payload=None,
+        )
     if source is not None:
         if not raw_source_signature_matches(source, existing_payload.source_signature):
-            return clear_duplicate_raw_place_cids(
+            deduped_payload = clear_duplicate_raw_place_cids(
                 slug=slug,
                 payload=refreshed_payload,
+                existing_payload=existing_payload,
+            )
+            return clear_duplicate_raw_place_google_identities(
+                slug=slug,
+                payload=deduped_payload,
                 existing_payload=existing_payload,
             )
     elif (
@@ -6763,9 +6927,14 @@ def preserve_existing_raw_saved_list(
         and refreshed_payload.source_signature
         and existing_payload.source_signature != refreshed_payload.source_signature
     ):
-        return clear_duplicate_raw_place_cids(
+        deduped_payload = clear_duplicate_raw_place_cids(
             slug=slug,
             payload=refreshed_payload,
+            existing_payload=existing_payload,
+        )
+        return clear_duplicate_raw_place_google_identities(
+            slug=slug,
+            payload=deduped_payload,
             existing_payload=existing_payload,
         )
 
@@ -6776,16 +6945,6 @@ def preserve_existing_raw_saved_list(
         existing_payload=existing_payload,
     )
     existing_index = build_raw_place_preservation_index(existing_payload, source_type=source_type)
-    google_ids_in_refreshed = {
-        google_id
-        for google_id in (raw_place_google_id_identity(place) for place in refreshed_payload.places)
-        if google_id is not None
-    }
-    maps_place_tokens_in_refreshed = {
-        token
-        for token in (raw_place_maps_place_token_identity(place) for place in refreshed_payload.places)
-        if token is not None
-    }
     updated_places: list[RawPlace] = []
 
     for refreshed_place in refreshed_payload.places:
@@ -6802,8 +6961,6 @@ def preserve_existing_raw_saved_list(
         merged_place, preserved_fields = preserve_existing_raw_place(
             existing_place=existing_place,
             refreshed_place=refreshed_place,
-            blocked_google_ids=google_ids_in_refreshed,
-            blocked_maps_place_tokens=maps_place_tokens_in_refreshed,
         )
         if preserved_fields:
             place_id = stable_place_id(merged_place, source_type=source_type)
@@ -6814,9 +6971,14 @@ def preserve_existing_raw_saved_list(
             )
         updated_places.append(merged_place)
 
-    return clear_duplicate_raw_place_cids(
+    deduped_payload = clear_duplicate_raw_place_cids(
         slug=slug,
         payload=refreshed_payload.model_copy(update={"places": updated_places}),
+        existing_payload=existing_payload,
+    )
+    return clear_duplicate_raw_place_google_identities(
+        slug=slug,
+        payload=deduped_payload,
         existing_payload=existing_payload,
     )
 

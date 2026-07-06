@@ -1922,6 +1922,124 @@ class BuildDataTests(unittest.TestCase):
             build_data.stable_place_id(merged.places[1], source_type=merged.configured_source_type),
         )
 
+    def test_preserve_existing_raw_saved_list_restores_keeper_identity_from_wrong_row(
+        self,
+    ) -> None:
+        duplicate_cid = "999456"
+        existing_payload = RawSavedList(
+            configured_source_type="google_list_url",
+            places=[
+                RawPlace(
+                    name="Correct Cafe",
+                    address="1 Main St, Taipei",
+                    lat=25.0,
+                    lng=121.5,
+                    maps_url=f"https://maps.google.com/?cid={duplicate_cid}",
+                    cid=duplicate_cid,
+                    google_id="/g/correct-cafe",
+                ),
+                RawPlace(
+                    name="Wrong Cafe",
+                    address="99 Other St, Taipei",
+                    lat=25.2,
+                    lng=121.7,
+                    maps_url="https://www.google.com/maps/search/?api=1&query=Wrong+Cafe",
+                ),
+            ],
+        )
+        refreshed_payload = RawSavedList(
+            configured_source_type="google_list_url",
+            places=[
+                RawPlace(
+                    name="Correct Cafe",
+                    address="1 Main St, Taipei",
+                    lat=25.0,
+                    lng=121.5,
+                    maps_url=f"https://maps.google.com/?cid={duplicate_cid}",
+                    cid=duplicate_cid,
+                ),
+                RawPlace(
+                    name="Wrong Cafe",
+                    address="99 Other St, Taipei",
+                    lat=25.2,
+                    lng=121.7,
+                    maps_url=f"https://maps.google.com/?cid={duplicate_cid}",
+                    cid=duplicate_cid,
+                    google_id="/g/correct-cafe",
+                ),
+            ],
+        )
+
+        merged = build_data.preserve_existing_raw_saved_list(
+            slug="taipei-taiwan",
+            existing_payload=existing_payload,
+            refreshed_payload=refreshed_payload,
+        )
+
+        self.assertEqual(merged.places[0].cid, duplicate_cid)
+        self.assertEqual(merged.places[0].google_id, "/g/correct-cafe")
+        self.assertIsNone(merged.places[1].cid)
+        self.assertIsNone(merged.places[1].google_id)
+
+    def test_preserve_existing_raw_saved_list_clears_duplicate_identity_after_preservation(
+        self,
+    ) -> None:
+        duplicate_cid = "999789"
+        existing_payload = RawSavedList(
+            configured_source_type="google_list_url",
+            places=[
+                RawPlace(
+                    name="Correct Cafe",
+                    address="1 Main St, Taipei",
+                    lat=25.0,
+                    lng=121.5,
+                    maps_url=f"https://maps.google.com/?cid={duplicate_cid}",
+                    cid=duplicate_cid,
+                    google_id="/g/correct-cafe",
+                ),
+                RawPlace(
+                    name="Wrong Cafe",
+                    address="99 Other St, Taipei",
+                    lat=25.2,
+                    lng=121.7,
+                    maps_url="https://www.google.com/maps/search/?api=1&query=Wrong+Cafe",
+                    google_id="/g/correct-cafe",
+                ),
+            ],
+        )
+        refreshed_payload = RawSavedList(
+            configured_source_type="google_list_url",
+            places=[
+                RawPlace(
+                    name="Correct Cafe",
+                    address="1 Main St, Taipei",
+                    lat=25.0,
+                    lng=121.5,
+                    maps_url=f"https://maps.google.com/?cid={duplicate_cid}",
+                    cid=duplicate_cid,
+                ),
+                RawPlace(
+                    name="Wrong Cafe",
+                    address="99 Other St, Taipei",
+                    lat=25.2,
+                    lng=121.7,
+                    maps_url=f"https://maps.google.com/?cid={duplicate_cid}",
+                    cid=duplicate_cid,
+                ),
+            ],
+        )
+
+        merged = build_data.preserve_existing_raw_saved_list(
+            slug="taipei-taiwan",
+            existing_payload=existing_payload,
+            refreshed_payload=refreshed_payload,
+        )
+
+        self.assertEqual(merged.places[0].cid, duplicate_cid)
+        self.assertEqual(merged.places[0].google_id, "/g/correct-cafe")
+        self.assertIsNone(merged.places[1].cid)
+        self.assertIsNone(merged.places[1].google_id)
+
     def test_build_place_page_candidate_urls_prefers_search_for_cid_inputs(self) -> None:
         place = RawPlace(
             name="Sister Midnight",
