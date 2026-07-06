@@ -1990,6 +1990,7 @@ def refresh_raw_sources(
     force_refresh: bool,
     refresh_lists: list[str],
     refresh_workers: int,
+    force_url_refresh: bool = False,
     refresh_retries: int = DEFAULT_REFRESH_RETRIES,
     refresh_retry_backoff_seconds: float = DEFAULT_REFRESH_RETRY_BACKOFF_SECONDS,
     refresh_startup_jitter_seconds: float = DEFAULT_REFRESH_STARTUP_JITTER_SECONDS,
@@ -2011,7 +2012,7 @@ def refresh_raw_sources(
             payload = refresh_google_export_csv(
                 source,
                 existing_payload=existing_payload,
-                force_refresh=bool(selected_sources),
+                force_refresh=force_refresh or bool(selected_sources),
             )
             if payload is not None:
                 write_json(raw_path, payload)
@@ -2021,16 +2022,17 @@ def refresh_raw_sources(
         if not source_url:
             raise RuntimeError(f"Configured source {source.slug} is missing a URL.")
 
+        url_force_refresh = force_refresh or force_url_refresh
         refresh_reason = (
             None
-            if force_refresh or bool(selected_sources)
+            if url_force_refresh or bool(selected_sources)
             else raw_source_refresh_reason(source, existing_payload)
         )
-        if not force_refresh and not bool(selected_sources) and refresh_reason is None:
+        if not url_force_refresh and not bool(selected_sources) and refresh_reason is None:
             print(f"Skipping {source.slug} (raw snapshot fresh)")
             continue
 
-        if force_refresh:
+        if url_force_refresh:
             print(f"Refreshing {source.slug} from {source_url} (forced)")
         elif selected_sources:
             print(f"Refreshing {source.slug} from {source_url} (selected)")

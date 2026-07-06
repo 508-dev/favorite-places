@@ -151,7 +151,7 @@ bun run refresh:backfill
 bun run refresh:sweep
 ```
 
-- `refresh:balanced`: refreshes URL-backed raw sources so saved-list changes are pulled in promptly, keeps CSV sources on content-signature skips, then runs normal incremental enrichment. Missing places and raw-place changes go first; stale cache entries are refreshed afterward according to their TTLs.
+- `refresh:balanced`: refreshes URL-backed raw sources so saved-list changes are pulled in promptly, keeps CSV sources on content-signature skips unless explicitly selected or force-refreshed, then runs normal incremental enrichment. Missing places and raw-place changes go first; stale cache entries are refreshed afterward according to their TTLs.
 - `refresh:backfill`: refreshes due raw sources, then fills only missing enrichment and missing photos.
 - `refresh:sweep`: refreshes due raw sources, then force-refreshes every enrichment entry as a periodic consistency sweep.
 

@@ -114,15 +114,15 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Selected source filter(s): {', '.join(args.refresh_list)}")
     if args.refresh_force:
         print("Raw source refreshes are forced for this run.")
-    raw_force_refresh = args.refresh_force or profile.force_raw_refresh
     if profile.force_raw_refresh and not args.refresh_force:
         print("Profile forces raw source refreshes so list changes are discovered promptly.")
 
     build_data.refresh_raw_sources(
         headed=args.headed,
-        force_refresh=raw_force_refresh,
+        force_refresh=args.refresh_force,
         refresh_lists=args.refresh_list,
         refresh_workers=args.refresh_workers,
+        force_url_refresh=profile.force_raw_refresh,
         refresh_retries=args.refresh_retries,
         refresh_retry_backoff_seconds=args.refresh_retry_backoff_seconds,
         refresh_startup_jitter_seconds=args.refresh_startup_jitter_seconds,

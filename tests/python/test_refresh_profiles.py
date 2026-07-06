@@ -27,9 +27,10 @@ class SelfHostedRefreshTests(unittest.TestCase):
         self.assertEqual(result, 0)
         refresh_raw_sources.assert_called_once_with(
             headed=False,
-            force_refresh=True,
+            force_refresh=False,
             refresh_lists=[],
             refresh_workers=build_data.DEFAULT_REFRESH_WORKERS,
+            force_url_refresh=True,
             refresh_retries=build_data.DEFAULT_REFRESH_RETRIES,
             refresh_retry_backoff_seconds=build_data.DEFAULT_REFRESH_RETRY_BACKOFF_SECONDS,
             refresh_startup_jitter_seconds=build_data.DEFAULT_REFRESH_STARTUP_JITTER_SECONDS,
@@ -85,6 +86,7 @@ class SelfHostedRefreshTests(unittest.TestCase):
             force_refresh=True,
             refresh_lists=["tokyo-japan"],
             refresh_workers=build_data.DEFAULT_REFRESH_WORKERS,
+            force_url_refresh=False,
             refresh_retries=build_data.DEFAULT_REFRESH_RETRIES,
             refresh_retry_backoff_seconds=build_data.DEFAULT_REFRESH_RETRY_BACKOFF_SECONDS,
             refresh_startup_jitter_seconds=build_data.DEFAULT_REFRESH_STARTUP_JITTER_SECONDS,
