@@ -6613,17 +6613,19 @@ def strip_duplicate_raw_place_cid(
     cid: str,
     shared_google_ids: set[str] | None = None,
     shared_maps_place_tokens: set[str] | None = None,
+    shared_maps_url_place_tokens: set[str] | None = None,
 ) -> RawPlace:
     updates: dict[str, Any] = {}
     if as_string(place.cid) == cid:
         updates["cid"] = None
+    maps_url_place_token = extract_maps_place_token(place.maps_url)
     maps_place_token = raw_place_maps_place_token_identity(place)
     if (
         extract_maps_cid(place.maps_url) == cid
         or (
-            maps_place_token is not None
-            and shared_maps_place_tokens is not None
-            and maps_place_token in shared_maps_place_tokens
+            maps_url_place_token is not None
+            and shared_maps_url_place_tokens is not None
+            and maps_url_place_token in shared_maps_url_place_tokens
         )
     ):
         updates["maps_url"] = build_public_google_maps_url(
@@ -6690,6 +6692,14 @@ def clear_duplicate_raw_place_cids(
         shared_maps_place_tokens = {
             token for token, count in maps_place_token_counts.items() if count > 1
         }
+        maps_url_place_token_counts = Counter(
+            token
+            for token in (extract_maps_place_token(updated_places[index].maps_url) for index in indexes)
+            if token is not None
+        )
+        shared_maps_url_place_tokens = {
+            token for token, count in maps_url_place_token_counts.items() if count > 1
+        }
         keep_index = max(
             indexes,
             key=lambda index: (
@@ -6711,6 +6721,7 @@ def clear_duplicate_raw_place_cids(
                 cid=cid,
                 shared_google_ids=shared_google_ids,
                 shared_maps_place_tokens=shared_maps_place_tokens,
+                shared_maps_url_place_tokens=shared_maps_url_place_tokens,
             )
             if updated_place != original_place:
                 updated_places[index] = updated_place

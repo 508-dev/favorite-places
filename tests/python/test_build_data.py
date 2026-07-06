@@ -1805,6 +1805,52 @@ class BuildDataTests(unittest.TestCase):
             "gid:g-independent-cafe",
         )
 
+    def test_preserve_existing_raw_saved_list_strips_shared_url_token_but_keeps_independent_field_token(
+        self,
+    ) -> None:
+        duplicate_cid = "888456"
+        duplicate_url_token = "0xabc123:0xdef456"
+        maps_url = f"https://www.google.com/maps/place/data=!4m2!3m1!1s{duplicate_url_token}"
+        refreshed_payload = RawSavedList(
+            configured_source_type="google_list_url",
+            places=[
+                RawPlace(
+                    name="Correct Cafe",
+                    address="1 Main St, Taipei",
+                    lat=25.0,
+                    lng=121.5,
+                    maps_url=maps_url,
+                    cid=duplicate_cid,
+                    maps_place_token="0xabc123:0x111111",
+                ),
+                RawPlace(
+                    name="Independent Cafe",
+                    address="99 Other St, Taipei",
+                    lat=25.2,
+                    lng=121.7,
+                    maps_url=maps_url,
+                    cid=duplicate_cid,
+                    maps_place_token="0xabc123:0x222222",
+                ),
+            ],
+        )
+
+        merged = build_data.preserve_existing_raw_saved_list(
+            slug="taipei-taiwan",
+            existing_payload=None,
+            refreshed_payload=refreshed_payload,
+        )
+
+        self.assertEqual(merged.places[0].cid, duplicate_cid)
+        self.assertEqual(build_data.extract_maps_place_token(merged.places[0].maps_url), duplicate_url_token)
+        self.assertIsNone(merged.places[1].cid)
+        self.assertIsNone(build_data.extract_maps_place_token(merged.places[1].maps_url))
+        self.assertEqual(merged.places[1].maps_place_token, "0xabc123:0x222222")
+        self.assertEqual(
+            build_data.stable_place_id(merged.places[1], source_type=merged.configured_source_type),
+            "gms:0xabc123:0x222222",
+        )
+
     def test_preserve_existing_raw_saved_list_does_not_restore_stripped_duplicate_identity(
         self,
     ) -> None:

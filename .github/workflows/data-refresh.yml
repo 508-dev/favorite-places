@@ -66,6 +66,11 @@ jobs:
       GMAPS_SCRAPER_PROXY: ${{ secrets.GMAPS_SCRAPER_PROXY }}
 
     steps:
+      - name: Record job budget start
+        id: budget
+        shell: bash
+        run: echo "started_at_epoch=$(date +%s)" >> "${GITHUB_OUTPUT}"
+
       - name: Check out repository
         uses: actions/checkout@v5
         with:
@@ -181,7 +186,6 @@ jobs:
           kill_after_minutes=5
           post_timeout_buffer_minutes=10
           max_soft_timeout_minutes=$((job_timeout_minutes - pre_refresh_setup_buffer_minutes - kill_after_minutes - post_timeout_buffer_minutes))
-          settings_started_at_epoch="$(date +%s)"
 
           if ! [[ "${soft_timeout_minutes}" =~ ^[0-9]+$ ]] || (( soft_timeout_minutes < 1 )); then
             echo "::error::soft_timeout_minutes must be a positive integer."
@@ -203,7 +207,6 @@ jobs:
             echo "skip_photos=${skip_photos}"
             echo "refresh_workers=${refresh_workers}"
             echo "soft_timeout_minutes=${soft_timeout_minutes}"
-            echo "settings_started_at_epoch=${settings_started_at_epoch}"
             echo "refresh_date=${refresh_date}"
           } >> "${GITHUB_OUTPUT}"
 
@@ -264,9 +267,9 @@ jobs:
           PROFILE: ${{ steps.settings.outputs.profile }}
           REFRESH_LIST: ${{ steps.settings.outputs.refresh_list }}
           REFRESH_FORCE: ${{ steps.settings.outputs.refresh_force }}
+          JOB_BUDGET_STARTED_AT_EPOCH: ${{ steps.budget.outputs.started_at_epoch }}
           REFRESH_LOG_PATH: ${{ runner.temp }}/data-refresh.log
           REFRESH_SUMMARY_PATH: ${{ runner.temp }}/data-refresh-summary.md
-          SETTINGS_STARTED_AT_EPOCH: ${{ steps.settings.outputs.settings_started_at_epoch }}
           SKIP_PHOTOS: ${{ steps.settings.outputs.skip_photos }}
           REFRESH_WORKERS: ${{ steps.settings.outputs.refresh_workers }}
           SOFT_TIMEOUT_MINUTES: ${{ steps.settings.outputs.soft_timeout_minutes }}
@@ -290,7 +293,7 @@ jobs:
           job_timeout_minutes=180
           kill_after_minutes=5
           post_timeout_buffer_minutes=10
-          setup_elapsed_seconds=$(($(date +%s) - SETTINGS_STARTED_AT_EPOCH))
+          setup_elapsed_seconds=$(($(date +%s) - JOB_BUDGET_STARTED_AT_EPOCH))
           setup_elapsed_minutes=$(((setup_elapsed_seconds + 59) / 60))
           max_effective_soft_timeout_minutes=$((job_timeout_minutes - setup_elapsed_minutes - kill_after_minutes - post_timeout_buffer_minutes))
           if (( max_effective_soft_timeout_minutes < 1 )); then
@@ -305,11 +308,7 @@ jobs:
 
           is_soft_timeout_status() {
             local status="$1"
-            local elapsed_seconds="$2"
-            local soft_timeout_seconds=$((effective_soft_timeout_minutes * 60))
-            [[ "${status}" == "124" ]] || {
-              [[ "${status}" == "137" ]] && (( elapsed_seconds >= soft_timeout_seconds ))
-            }
+            [[ "${status}" == "124" ]]
           }
 
           echo "timed_out=false" >> "${GITHUB_OUTPUT}"
@@ -324,7 +323,7 @@ jobs:
           refresh_status="${pipeline_status[0]}"
           tee_status="${pipeline_status[1]}"
           refresh_elapsed_seconds=$((refresh_finished_at - refresh_started_at))
-          if is_soft_timeout_status "${refresh_status}" "${refresh_elapsed_seconds}"; then
+          if is_soft_timeout_status "${refresh_status}"; then
             echo "::warning::Refresh stopped after ${effective_soft_timeout_minutes} minutes so partial progress can be committed."
             {
               echo ""
