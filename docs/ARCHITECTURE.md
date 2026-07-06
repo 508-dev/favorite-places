@@ -182,7 +182,7 @@ Site repos that need a specific private runner pool should set the GitHub Action
 
 Use repository variables for installation-specific runner labels instead of committing private labels to the upstream template.
 
-The Actions job has a 180-minute hard timeout and runs the refresh command with a shorter soft timeout. The default soft timeout is 150 minutes, and manual dispatch values are capped so the 5-minute kill-after window plus summary, commit, and PR steps still fit under the job timeout. When the soft timeout expires, the workflow interrupts the refresh command, writes a partial summary, and continues to the commit and PR steps so completed raw snapshots, enrichment cache rows, and downloaded photos are not lost.
+The Actions job has a 180-minute hard timeout and runs the refresh command with a shorter soft timeout. The default soft timeout is 150 minutes, and manual dispatch values are capped at 150 minutes so setup, the 5-minute kill-after window, and summary, commit, and PR steps still fit under the job timeout. When the soft timeout expires, the workflow interrupts the refresh command, writes a partial summary, and continues to the commit and PR steps so completed raw snapshots, enrichment cache rows, and downloaded photos are not lost.
 
 Recommended boundary:
 

@@ -2584,7 +2584,11 @@ def refresh_google_export_csv(
     print(f"{action} {source.slug} from {csv_path}")
     payload = import_saved_list_csv(source)
     stamp_raw_saved_list(payload, source, source_signature=source_signature)
-    return payload
+    return clear_duplicate_raw_place_cids(
+        slug=source.slug,
+        payload=payload,
+        existing_payload=existing_payload,
+    )
 
 
 def metadata_datetime_or_none(value: str | None) -> datetime | None:
@@ -6689,6 +6693,11 @@ def preserve_existing_raw_saved_list(
         )
 
     source_type = refreshed_payload.configured_source_type or existing_payload.configured_source_type
+    refreshed_payload = clear_duplicate_raw_place_cids(
+        slug=slug,
+        payload=refreshed_payload,
+        existing_payload=existing_payload,
+    )
     existing_index = build_raw_place_preservation_index(existing_payload, source_type=source_type)
     updated_places: list[RawPlace] = []
 

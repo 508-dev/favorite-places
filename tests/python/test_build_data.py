@@ -1583,8 +1583,8 @@ class BuildDataTests(unittest.TestCase):
 
         self.assertEqual(merged.places[0].cid, duplicate_cid)
         self.assertIsNone(merged.places[1].cid)
-        self.assertIsNone(merged.places[1].google_id)
-        self.assertIsNone(merged.places[1].maps_place_token)
+        self.assertEqual(merged.places[1].google_id, "/g/11belem")
+        self.assertEqual(merged.places[1].maps_place_token, "0xd2:0x2")
         self.assertNotEqual(
             build_data.stable_place_id(merged.places[0], source_type=merged.configured_source_type),
             build_data.stable_place_id(merged.places[1], source_type=merged.configured_source_type),
@@ -1650,6 +1650,69 @@ class BuildDataTests(unittest.TestCase):
 
         self.assertIsNone(merged.places[0].cid)
         self.assertEqual(merged.places[1].cid, duplicate_cid)
+
+    def test_preserve_existing_raw_saved_list_clears_duplicate_cid_before_preserving_fields(
+        self,
+    ) -> None:
+        duplicate_cid = "555123"
+        existing_payload = RawSavedList(
+            configured_source_type="google_list_url",
+            places=[
+                RawPlace(
+                    name="Correct Cafe",
+                    address="1 Main St, Taipei",
+                    added_by=ListAuthor(name="Alice"),
+                    lat=25.0,
+                    lng=121.5,
+                    maps_url="https://maps.google.com/?cid=555123",
+                    cid=duplicate_cid,
+                ),
+                RawPlace(
+                    name="Wrong Cafe",
+                    address=None,
+                    added_by=None,
+                    lat=25.2,
+                    lng=121.7,
+                    maps_url="https://www.google.com/maps/search/?api=1&query=Wrong+Cafe",
+                    cid=None,
+                ),
+            ],
+        )
+        refreshed_payload = RawSavedList(
+            configured_source_type="google_list_url",
+            places=[
+                RawPlace(
+                    name="",
+                    address=None,
+                    added_by=None,
+                    lat=25.2,
+                    lng=121.7,
+                    maps_url="https://maps.google.com/?cid=555123",
+                    cid=duplicate_cid,
+                ),
+                RawPlace(
+                    name="Correct Cafe",
+                    address="1 Main St, Taipei",
+                    added_by=None,
+                    lat=25.0,
+                    lng=121.5,
+                    maps_url="https://maps.google.com/?cid=555123",
+                    cid=duplicate_cid,
+                ),
+            ],
+        )
+
+        merged = build_data.preserve_existing_raw_saved_list(
+            slug="taipei-taiwan",
+            existing_payload=existing_payload,
+            refreshed_payload=refreshed_payload,
+        )
+
+        self.assertIsNone(merged.places[0].cid)
+        self.assertIsNone(merged.places[0].address)
+        self.assertIsNone(merged.places[0].added_by)
+        self.assertEqual(merged.places[1].cid, duplicate_cid)
+        self.assertEqual(merged.places[1].added_by, ListAuthor(name="Alice"))
 
     def test_build_place_page_candidate_urls_prefers_search_for_cid_inputs(self) -> None:
         place = RawPlace(
@@ -10154,6 +10217,42 @@ class BuildDataTests(unittest.TestCase):
         self.assertEqual(second_place.name, "Fallback Name")
         self.assertTrue(
             build_data.stable_place_id(second_place, source_type="google_export_csv").startswith("url:")
+        )
+
+    def test_refresh_google_export_csv_clears_duplicate_cids(self) -> None:
+        duplicate_cid = "444555666"
+        with TemporaryDirectory() as tmpdir:
+            csv_path = Path(tmpdir) / "alishan.csv"
+            csv_path.write_text(
+                "\n".join(
+                    [
+                        "Title,Note,URL",
+                        f"Tea House,,https://maps.google.com/?cid={duplicate_cid}",
+                        f"Mountain Cafe,,https://maps.google.com/?cid={duplicate_cid}",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            source = SourceConfig(
+                slug="alishan-taiwan",
+                type="google_export_csv",
+                path=str(csv_path),
+                title="Alishan, Taiwan",
+            )
+
+            saved_list = build_data.refresh_google_export_csv(
+                source,
+                existing_payload=None,
+                force_refresh=True,
+            )
+
+        self.assertIsNotNone(saved_list)
+        assert saved_list is not None
+        self.assertEqual(build_data.extract_maps_cid(saved_list.places[0].maps_url), duplicate_cid)
+        self.assertIsNone(build_data.extract_maps_cid(saved_list.places[1].maps_url))
+        self.assertNotEqual(
+            build_data.stable_place_id(saved_list.places[0], source_type="google_export_csv"),
+            build_data.stable_place_id(saved_list.places[1], source_type="google_export_csv"),
         )
 
     def test_normalize_guide_prefers_enrichment_name_for_csv_sources_and_tracks_provenance(self) -> None:

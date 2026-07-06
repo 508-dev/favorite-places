@@ -177,9 +177,10 @@ jobs:
           # refresh step's `timeout --kill-after` value. GitHub Actions does
           # not expose `timeout-minutes` inside a run step.
           job_timeout_minutes=180
+          pre_refresh_setup_buffer_minutes=15
           kill_after_minutes=5
           post_timeout_buffer_minutes=10
-          max_soft_timeout_minutes=$((job_timeout_minutes - kill_after_minutes - post_timeout_buffer_minutes))
+          max_soft_timeout_minutes=$((job_timeout_minutes - pre_refresh_setup_buffer_minutes - kill_after_minutes - post_timeout_buffer_minutes))
 
           if ! [[ "${soft_timeout_minutes}" =~ ^[0-9]+$ ]] || (( soft_timeout_minutes < 1 )); then
             echo "::error::soft_timeout_minutes must be a positive integer."
