@@ -6527,7 +6527,10 @@ def raw_place_cid_identity(place: RawPlace) -> str | None:
 
 
 def raw_place_google_id_identity(place: RawPlace) -> str | None:
-    return as_string(place.google_id)
+    google_id = as_string(place.google_id)
+    if not google_id:
+        return None
+    return google_id.strip("/").replace("/", "-")
 
 
 def raw_place_maps_place_token_identity(place: RawPlace) -> str | None:

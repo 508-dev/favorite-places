@@ -2110,6 +2110,44 @@ class BuildDataTests(unittest.TestCase):
         self.assertIsNone(merged.places[1].cid)
         self.assertIsNone(merged.places[1].google_id)
 
+    def test_preserve_existing_raw_saved_list_clears_normalized_duplicate_google_id(
+        self,
+    ) -> None:
+        refreshed_payload = RawSavedList(
+            configured_source_type="google_list_url",
+            places=[
+                RawPlace(
+                    name="Correct Cafe",
+                    address="1 Main St, Taipei",
+                    lat=25.0,
+                    lng=121.5,
+                    maps_url="https://www.google.com/maps/search/?api=1&query=Correct+Cafe",
+                    google_id="/g/correct-cafe",
+                ),
+                RawPlace(
+                    name="Wrong Cafe",
+                    address="99 Other St, Taipei",
+                    lat=25.2,
+                    lng=121.7,
+                    maps_url="https://www.google.com/maps/search/?api=1&query=Wrong+Cafe",
+                    google_id="g/correct-cafe",
+                ),
+            ],
+        )
+
+        merged = build_data.preserve_existing_raw_saved_list(
+            slug="taipei-taiwan",
+            existing_payload=None,
+            refreshed_payload=refreshed_payload,
+        )
+
+        self.assertEqual(merged.places[0].google_id, "/g/correct-cafe")
+        self.assertIsNone(merged.places[1].google_id)
+        self.assertNotEqual(
+            build_data.stable_place_id(merged.places[0], source_type=merged.configured_source_type),
+            build_data.stable_place_id(merged.places[1], source_type=merged.configured_source_type),
+        )
+
     def test_build_place_page_candidate_urls_prefers_search_for_cid_inputs(self) -> None:
         place = RawPlace(
             name="Sister Midnight",
