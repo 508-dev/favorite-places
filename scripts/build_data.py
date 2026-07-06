@@ -6612,6 +6612,11 @@ def strip_duplicate_raw_place_cid(
             and shared_maps_url_place_tokens is not None
             and maps_url_place_token in shared_maps_url_place_tokens
         )
+        or (
+            maps_url_place_token is not None
+            and protected_maps_place_tokens is not None
+            and maps_url_place_token in protected_maps_place_tokens
+        )
     ):
         updates["maps_url"] = build_public_google_maps_url(
             name=place.name,
