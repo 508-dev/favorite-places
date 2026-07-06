@@ -11022,7 +11022,7 @@ class BuildDataTests(unittest.TestCase):
 
         scrape.assert_called_once_with(source, headed=False)
 
-    def test_refresh_raw_sources_force_keeps_unchanged_csv_signature_skip(self) -> None:
+    def test_refresh_raw_sources_url_force_keeps_unchanged_csv_signature_skip(self) -> None:
         with TemporaryDirectory() as tmpdir:
             tmpdir_path = Path(tmpdir)
             raw_dir = tmpdir_path / "raw"
@@ -11054,13 +11054,61 @@ class BuildDataTests(unittest.TestCase):
             ):
                 build_data.refresh_raw_sources(
                     headed=False,
-                    force_refresh=True,
+                    force_refresh=False,
+                    force_url_refresh=True,
                     refresh_lists=[],
                     refresh_workers=1,
                     refresh_startup_jitter_seconds=0,
                 )
 
         import_csv.assert_not_called()
+
+    def test_refresh_raw_sources_explicit_force_reimports_csv_even_when_signature_unchanged(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            tmpdir_path = Path(tmpdir)
+            raw_dir = tmpdir_path / "raw"
+            raw_dir.mkdir()
+            csv_path = tmpdir_path / "alishan.csv"
+            csv_path.write_text("Title,URL\nTea House,https://maps.google.com/?cid=111\n", encoding="utf-8")
+            source = SourceConfig(
+                slug="alishan-taiwan",
+                type="google_export_csv",
+                path=str(csv_path),
+                title="Alishan, Taiwan",
+            )
+            raw_path = raw_dir / "alishan-taiwan.json"
+            build_data.write_json(
+                raw_path,
+                RawSavedList(
+                    title="Old Alishan",
+                    fetched_at=datetime.now(UTC).isoformat(),
+                    refresh_after=(datetime.now(UTC) + timedelta(days=1)).isoformat(),
+                    source_signature=build_data.raw_source_signature(source),
+                    places=[],
+                ),
+            )
+
+            with (
+                patch.object(build_data, "RAW_DIR", raw_dir),
+                patch.object(build_data, "load_sources", return_value=[source]),
+                patch.object(
+                    build_data,
+                    "import_saved_list_csv",
+                    return_value=RawSavedList(title="Forced Alishan", places=[]),
+                ) as import_csv,
+            ):
+                build_data.refresh_raw_sources(
+                    headed=False,
+                    force_refresh=True,
+                    refresh_lists=[],
+                    refresh_workers=1,
+                    refresh_startup_jitter_seconds=0,
+                )
+
+            payload = RawSavedList.model_validate_json(raw_path.read_text(encoding="utf-8"))
+
+        import_csv.assert_called_once_with(source)
+        self.assertEqual(payload.title, "Forced Alishan")
 
     def test_refresh_raw_sources_selected_csv_reimports_even_when_signature_unchanged(self) -> None:
         with TemporaryDirectory() as tmpdir:
