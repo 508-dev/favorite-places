@@ -151,7 +151,9 @@ SCRAPER_SESSION_MAX_AGE = timedelta(days=14)
 ERROR_CACHE_TTL = timedelta(days=1)
 UNMATCHED_CACHE_TTL = timedelta(days=3)
 LOW_CONFIDENCE_CACHE_TTL = timedelta(days=3)
-RATINGS_CACHE_TTL = timedelta(days=7)
+RATINGS_CACHE_TTL = timedelta(days=15)
+HIGH_REVIEW_COUNT_CACHE_TTL = timedelta(days=30)
+HIGH_REVIEW_COUNT_THRESHOLD = 1_000
 NON_OPERATIONAL_CACHE_TTL = timedelta(days=3)
 OPERATIONAL_CACHE_TTL = timedelta(days=14)
 PHOTOLESS_REAL_PLACE_CACHE_TTL = timedelta(days=1)
@@ -2009,7 +2011,7 @@ def refresh_raw_sources(
             payload = refresh_google_export_csv(
                 source,
                 existing_payload=existing_payload,
-                force_refresh=force_refresh or bool(selected_sources),
+                force_refresh=bool(selected_sources),
             )
             if payload is not None:
                 write_json(raw_path, payload)
@@ -7117,9 +7119,17 @@ def cache_refresh_reason(
     if cache_entry.input_signature != expected_signature:
         return "raw-place-changed"
 
+    fetched_at_dt: datetime | None = None
+
+    def parsed_fetched_at() -> datetime:
+        nonlocal fetched_at_dt
+        if fetched_at_dt is None:
+            fetched_at_dt = parse_metadata_datetime(cache_entry.fetched_at)
+        return fetched_at_dt
+
     if cache_entry_needs_photo_url_retry(cache_entry):
         try:
-            fetched_at_dt = parse_metadata_datetime(cache_entry.fetched_at)
+            fetched_at_dt = parsed_fetched_at()
         except ValueError:
             return "invalid-fetched-at"
         if datetime.now(UTC) - fetched_at_dt >= PHOTOLESS_REAL_PLACE_CACHE_TTL:
@@ -7130,12 +7140,17 @@ def cache_refresh_reason(
             refresh_after_dt = parse_metadata_datetime(cache_entry.refresh_after)
         except ValueError:
             return "invalid-refresh-after"
-        if datetime.now(UTC) >= refresh_after_dt:
+        try:
+            fetched_at_dt = parsed_fetched_at()
+        except ValueError:
+            return "invalid-fetched-at"
+        policy_refresh_after_dt = fetched_at_dt + cache_refresh_ttl(cache_entry)
+        if datetime.now(UTC) >= max(refresh_after_dt, policy_refresh_after_dt):
             return "refresh-window-expired"
         return None
 
     try:
-        fetched_at_dt = parse_metadata_datetime(cache_entry.fetched_at)
+        fetched_at_dt = parsed_fetched_at()
     except ValueError:
         return "invalid-fetched-at"
     if datetime.now(UTC) - fetched_at_dt > OPERATIONAL_CACHE_TTL:
@@ -7268,6 +7283,11 @@ def cache_refresh_ttl(cache_entry: EnrichmentCacheEntry) -> timedelta:
         return PHOTOLESS_REAL_PLACE_CACHE_TTL
     if place.business_status and place.business_status != "OPERATIONAL":
         return NON_OPERATIONAL_CACHE_TTL
+    if (
+        place.user_rating_count is not None
+        and place.user_rating_count >= HIGH_REVIEW_COUNT_THRESHOLD
+    ):
+        return HIGH_REVIEW_COUNT_CACHE_TTL
     if place.rating is not None or place.user_rating_count is not None:
         return RATINGS_CACHE_TTL
     return OPERATIONAL_CACHE_TTL

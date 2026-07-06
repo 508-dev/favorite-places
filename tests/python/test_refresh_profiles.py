@@ -27,7 +27,7 @@ class SelfHostedRefreshTests(unittest.TestCase):
         self.assertEqual(result, 0)
         refresh_raw_sources.assert_called_once_with(
             headed=False,
-            force_refresh=False,
+            force_refresh=True,
             refresh_lists=[],
             refresh_workers=build_data.DEFAULT_REFRESH_WORKERS,
             refresh_retries=build_data.DEFAULT_REFRESH_RETRIES,

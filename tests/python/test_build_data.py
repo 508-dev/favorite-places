@@ -11022,6 +11022,93 @@ class BuildDataTests(unittest.TestCase):
 
         scrape.assert_called_once_with(source, headed=False)
 
+    def test_refresh_raw_sources_force_keeps_unchanged_csv_signature_skip(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            tmpdir_path = Path(tmpdir)
+            raw_dir = tmpdir_path / "raw"
+            raw_dir.mkdir()
+            csv_path = tmpdir_path / "alishan.csv"
+            csv_path.write_text("Title,URL\nTea House,https://maps.google.com/?cid=111\n", encoding="utf-8")
+            source = SourceConfig(
+                slug="alishan-taiwan",
+                type="google_export_csv",
+                path=str(csv_path),
+                title="Alishan, Taiwan",
+            )
+            raw_path = raw_dir / "alishan-taiwan.json"
+            build_data.write_json(
+                raw_path,
+                RawSavedList(
+                    title="Alishan, Taiwan",
+                    fetched_at=datetime.now(UTC).isoformat(),
+                    refresh_after=(datetime.now(UTC) + timedelta(days=1)).isoformat(),
+                    source_signature=build_data.raw_source_signature(source),
+                    places=[],
+                ),
+            )
+
+            with (
+                patch.object(build_data, "RAW_DIR", raw_dir),
+                patch.object(build_data, "load_sources", return_value=[source]),
+                patch.object(build_data, "import_saved_list_csv") as import_csv,
+            ):
+                build_data.refresh_raw_sources(
+                    headed=False,
+                    force_refresh=True,
+                    refresh_lists=[],
+                    refresh_workers=1,
+                    refresh_startup_jitter_seconds=0,
+                )
+
+        import_csv.assert_not_called()
+
+    def test_refresh_raw_sources_selected_csv_reimports_even_when_signature_unchanged(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            tmpdir_path = Path(tmpdir)
+            raw_dir = tmpdir_path / "raw"
+            raw_dir.mkdir()
+            csv_path = tmpdir_path / "alishan.csv"
+            csv_path.write_text("Title,URL\nTea House,https://maps.google.com/?cid=111\n", encoding="utf-8")
+            source = SourceConfig(
+                slug="alishan-taiwan",
+                type="google_export_csv",
+                path=str(csv_path),
+                title="Alishan, Taiwan",
+            )
+            raw_path = raw_dir / "alishan-taiwan.json"
+            build_data.write_json(
+                raw_path,
+                RawSavedList(
+                    title="Old Alishan",
+                    fetched_at=datetime.now(UTC).isoformat(),
+                    refresh_after=(datetime.now(UTC) + timedelta(days=1)).isoformat(),
+                    source_signature=build_data.raw_source_signature(source),
+                    places=[],
+                ),
+            )
+
+            with (
+                patch.object(build_data, "RAW_DIR", raw_dir),
+                patch.object(build_data, "load_sources", return_value=[source]),
+                patch.object(
+                    build_data,
+                    "import_saved_list_csv",
+                    return_value=RawSavedList(title="Fresh Alishan", places=[]),
+                ) as import_csv,
+            ):
+                build_data.refresh_raw_sources(
+                    headed=False,
+                    force_refresh=False,
+                    refresh_lists=["alishan-taiwan"],
+                    refresh_workers=1,
+                    refresh_startup_jitter_seconds=0,
+                )
+
+            payload = RawSavedList.model_validate_json(raw_path.read_text(encoding="utf-8"))
+
+        import_csv.assert_called_once_with(source)
+        self.assertEqual(payload.title, "Fresh Alishan")
+
     def test_scraper_session_identity_key_changes_with_proxy(self) -> None:
         self.assertEqual(build_data.scraper_session_identity_key(None), "direct")
         self.assertNotEqual(
@@ -13018,6 +13105,92 @@ class BuildDataTests(unittest.TestCase):
         self.assertEqual(
             build_data.cache_refresh_ttl(cache_entry),
             build_data.PHOTOLESS_REAL_PLACE_CACHE_TTL,
+        )
+
+    def test_cache_refresh_ttl_uses_fifteen_days_for_rating_places(self) -> None:
+        cache_entry = EnrichmentCacheEntry(
+            fetched_at=datetime.now(UTC).isoformat(),
+            source="google_maps_page",
+            query="Neighborhood Cafe",
+            matched=True,
+            score=build_data.STRONG_MATCH_SCORE,
+            place=EnrichmentPlace(
+                display_name="Neighborhood Cafe",
+                rating=4.6,
+                user_rating_count=124,
+            ),
+        )
+
+        self.assertEqual(build_data.cache_refresh_ttl(cache_entry), timedelta(days=15))
+
+    def test_cache_refresh_ttl_uses_longer_ttl_for_high_review_count_places(self) -> None:
+        cache_entry = EnrichmentCacheEntry(
+            fetched_at=datetime.now(UTC).isoformat(),
+            source="google_maps_page",
+            query="Popular Cafe",
+            matched=True,
+            score=build_data.STRONG_MATCH_SCORE,
+            place=EnrichmentPlace(
+                display_name="Popular Cafe",
+                rating=4.6,
+                user_rating_count=build_data.HIGH_REVIEW_COUNT_THRESHOLD,
+            ),
+        )
+
+        self.assertEqual(
+            build_data.cache_refresh_ttl(cache_entry),
+            build_data.HIGH_REVIEW_COUNT_CACHE_TTL,
+        )
+
+    def test_cache_refresh_reason_applies_current_ttl_when_stored_refresh_after_is_older(self) -> None:
+        place = RawPlace(
+            name="Neighborhood Cafe",
+            maps_url="https://maps.google.com/?cid=111",
+            cid="111",
+        )
+        now = datetime.now(UTC)
+        cache_entry = EnrichmentCacheEntry(
+            fetched_at=(now - timedelta(days=8)).isoformat(),
+            refresh_after=(now - timedelta(days=1)).isoformat(),
+            source="google_maps_page",
+            query="Neighborhood Cafe",
+            input_signature=build_data.enrichment_input_signature(place),
+            matched=True,
+            score=build_data.STRONG_MATCH_SCORE,
+            place=EnrichmentPlace(
+                display_name="Neighborhood Cafe",
+                rating=4.6,
+                user_rating_count=124,
+            ),
+        )
+
+        self.assertIsNone(build_data.cache_refresh_reason(place, cache_entry))
+
+    def test_cache_refresh_reason_expires_after_current_ttl_window(self) -> None:
+        place = RawPlace(
+            name="Neighborhood Cafe",
+            maps_url="https://maps.google.com/?cid=111",
+            cid="111",
+        )
+        now = datetime.now(UTC)
+        cache_entry = EnrichmentCacheEntry(
+            fetched_at=(now - timedelta(days=16)).isoformat(),
+            refresh_after=(now - timedelta(days=9)).isoformat(),
+            source="google_maps_page",
+            query="Neighborhood Cafe",
+            input_signature=build_data.enrichment_input_signature(place),
+            matched=True,
+            score=build_data.STRONG_MATCH_SCORE,
+            place=EnrichmentPlace(
+                display_name="Neighborhood Cafe",
+                rating=4.6,
+                user_rating_count=124,
+            ),
+        )
+
+        self.assertEqual(
+            build_data.cache_refresh_reason(place, cache_entry),
+            "refresh-window-expired",
         )
 
     def test_build_places_sqlite_signature_changes_when_version_or_schema_changes(self) -> None:
