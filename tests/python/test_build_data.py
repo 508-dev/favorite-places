@@ -13020,6 +13020,92 @@ class BuildDataTests(unittest.TestCase):
             build_data.PHOTOLESS_REAL_PLACE_CACHE_TTL,
         )
 
+    def test_cache_refresh_ttl_uses_fifteen_days_for_rating_places(self) -> None:
+        cache_entry = EnrichmentCacheEntry(
+            fetched_at=datetime.now(UTC).isoformat(),
+            source="google_maps_page",
+            query="Neighborhood Cafe",
+            matched=True,
+            score=build_data.STRONG_MATCH_SCORE,
+            place=EnrichmentPlace(
+                display_name="Neighborhood Cafe",
+                rating=4.6,
+                user_rating_count=124,
+            ),
+        )
+
+        self.assertEqual(build_data.cache_refresh_ttl(cache_entry), timedelta(days=15))
+
+    def test_cache_refresh_ttl_uses_longer_ttl_for_high_review_count_places(self) -> None:
+        cache_entry = EnrichmentCacheEntry(
+            fetched_at=datetime.now(UTC).isoformat(),
+            source="google_maps_page",
+            query="Popular Cafe",
+            matched=True,
+            score=build_data.STRONG_MATCH_SCORE,
+            place=EnrichmentPlace(
+                display_name="Popular Cafe",
+                rating=4.6,
+                user_rating_count=build_data.HIGH_REVIEW_COUNT_THRESHOLD,
+            ),
+        )
+
+        self.assertEqual(
+            build_data.cache_refresh_ttl(cache_entry),
+            build_data.HIGH_REVIEW_COUNT_CACHE_TTL,
+        )
+
+    def test_cache_refresh_reason_applies_current_ttl_when_stored_refresh_after_is_older(self) -> None:
+        place = RawPlace(
+            name="Neighborhood Cafe",
+            maps_url="https://maps.google.com/?cid=111",
+            cid="111",
+        )
+        now = datetime.now(UTC)
+        cache_entry = EnrichmentCacheEntry(
+            fetched_at=(now - timedelta(days=8)).isoformat(),
+            refresh_after=(now - timedelta(days=1)).isoformat(),
+            source="google_maps_page",
+            query="Neighborhood Cafe",
+            input_signature=build_data.enrichment_input_signature(place),
+            matched=True,
+            score=build_data.STRONG_MATCH_SCORE,
+            place=EnrichmentPlace(
+                display_name="Neighborhood Cafe",
+                rating=4.6,
+                user_rating_count=124,
+            ),
+        )
+
+        self.assertIsNone(build_data.cache_refresh_reason(place, cache_entry))
+
+    def test_cache_refresh_reason_expires_after_current_ttl_window(self) -> None:
+        place = RawPlace(
+            name="Neighborhood Cafe",
+            maps_url="https://maps.google.com/?cid=111",
+            cid="111",
+        )
+        now = datetime.now(UTC)
+        cache_entry = EnrichmentCacheEntry(
+            fetched_at=(now - timedelta(days=16)).isoformat(),
+            refresh_after=(now - timedelta(days=9)).isoformat(),
+            source="google_maps_page",
+            query="Neighborhood Cafe",
+            input_signature=build_data.enrichment_input_signature(place),
+            matched=True,
+            score=build_data.STRONG_MATCH_SCORE,
+            place=EnrichmentPlace(
+                display_name="Neighborhood Cafe",
+                rating=4.6,
+                user_rating_count=124,
+            ),
+        )
+
+        self.assertEqual(
+            build_data.cache_refresh_reason(place, cache_entry),
+            "refresh-window-expired",
+        )
+
     def test_build_places_sqlite_signature_changes_when_version_or_schema_changes(self) -> None:
         raw = RawSavedList(
             configured_source_type="google_list_url",
