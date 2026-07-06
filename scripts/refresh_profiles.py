@@ -25,7 +25,8 @@ class RefreshProfile:
 REFRESH_PROFILES: dict[str, RefreshProfile] = {
     "balanced": RefreshProfile(
         description=(
-            "Refresh raw sources to pull in fresh list changes, then run incremental enrichment. "
+            "Refresh URL-backed raw sources to pull in fresh list changes, then run incremental enrichment. "
+            "CSV sources still use content signatures to skip unchanged imports. "
             "Missing and changed places go first; stale entries are refreshed by TTL afterward."
         ),
         force_raw_refresh=True,

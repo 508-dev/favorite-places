@@ -2011,7 +2011,7 @@ def refresh_raw_sources(
             payload = refresh_google_export_csv(
                 source,
                 existing_payload=existing_payload,
-                force_refresh=force_refresh or bool(selected_sources),
+                force_refresh=bool(selected_sources),
             )
             if payload is not None:
                 write_json(raw_path, payload)
@@ -7119,9 +7119,17 @@ def cache_refresh_reason(
     if cache_entry.input_signature != expected_signature:
         return "raw-place-changed"
 
+    fetched_at_dt: datetime | None = None
+
+    def parsed_fetched_at() -> datetime:
+        nonlocal fetched_at_dt
+        if fetched_at_dt is None:
+            fetched_at_dt = parse_metadata_datetime(cache_entry.fetched_at)
+        return fetched_at_dt
+
     if cache_entry_needs_photo_url_retry(cache_entry):
         try:
-            fetched_at_dt = parse_metadata_datetime(cache_entry.fetched_at)
+            fetched_at_dt = parsed_fetched_at()
         except ValueError:
             return "invalid-fetched-at"
         if datetime.now(UTC) - fetched_at_dt >= PHOTOLESS_REAL_PLACE_CACHE_TTL:
@@ -7133,7 +7141,7 @@ def cache_refresh_reason(
         except ValueError:
             return "invalid-refresh-after"
         try:
-            fetched_at_dt = parse_metadata_datetime(cache_entry.fetched_at)
+            fetched_at_dt = parsed_fetched_at()
         except ValueError:
             return "invalid-fetched-at"
         policy_refresh_after_dt = fetched_at_dt + cache_refresh_ttl(cache_entry)
@@ -7142,7 +7150,7 @@ def cache_refresh_reason(
         return None
 
     try:
-        fetched_at_dt = parse_metadata_datetime(cache_entry.fetched_at)
+        fetched_at_dt = parsed_fetched_at()
     except ValueError:
         return "invalid-fetched-at"
     if datetime.now(UTC) - fetched_at_dt > OPERATIONAL_CACHE_TTL:
