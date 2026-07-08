@@ -15,6 +15,10 @@ _REDIRECT_URL = (
     "https://www.google.com/maps/@30.5370705,125.4120472,6z/"
     "data=!4m3!11m2!2sTESTLISTABC123456789!3e3?entry=ttu"
 )
+_NORTHWIND_CELL_ID = "7451636382641713350"
+_NORTHWIND_CID = "9055794338847426964"
+_HARBOR_CELL_ID = "1234567890123456789"
+_HARBOR_CID = "5678901234567890123"
 _LIST_NODE = [
     ["TESTLISTABC123456789", 1, None, 1, 1],
     4,
@@ -38,7 +42,7 @@ _LIST_NODE = [
                 None,
                 "Example District",
                 [None, None, 35.6501307, 139.6868459],
-                ["7451636382641713350", "aux"],
+                [_NORTHWIND_CELL_ID, _NORTHWIND_CID],
                 "/g/11northwind",
             ],
             "Northwind Cafe",
@@ -47,7 +51,7 @@ _LIST_NODE = [
             None,
             None,
             [[[[3, None, "104356373423434804635", "❤️", [1776133481, 81561000]]]]],
-            [[1], ["7451636382641713350", "aux"]],
+            [[1], [_NORTHWIND_CELL_ID, _NORTHWIND_CID]],
             [1776063335, 302383000],
             [1776132745, 850748000],
             None,
@@ -66,7 +70,7 @@ _LIST_NODE = [
                 None,
                 "Market Square",
                 [None, None, 35.6915776, 139.7836109],
-                ["1234567890123456789"],
+                [_HARBOR_CELL_ID, _HARBOR_CID],
                 "/g/11harborbakery",
             ],
             "Harbor Bakery",
@@ -75,7 +79,7 @@ _LIST_NODE = [
             None,
             None,
             [],
-            [[1], ["1234567890123456789", "aux-2"]],
+            [[1], [_HARBOR_CELL_ID, _HARBOR_CID]],
             [1776063335, 302383000],
             [1776132745, 850748000],
             None,
@@ -180,7 +184,7 @@ class ParserTests(unittest.TestCase):
                 },
             ],
         )
-        self.assertEqual(parsed.places[0].cid, "7451636382641713350")
+        self.assertEqual(parsed.places[0].cid, _NORTHWIND_CID)
         self.assertEqual(
             parsed.places[0].maps_url,
             "https://www.google.com/maps/search/?api=1&query=Northwind+Cafe%2C+Example+District",
@@ -245,6 +249,35 @@ class ParserTests(unittest.TestCase):
             "https://www.google.com/maps/search/?api=1&query=Northwind+Cafe%2C+Example+District",
         )
 
+    def test_uses_fingerprint_not_positive_s2_cell_from_slot_6(self) -> None:
+        runtime_state = copy.deepcopy(["noise", _LIST_NODE])
+
+        parsed = parse_saved_list_artifacts(_LIST_URL, runtime_state=runtime_state)
+
+        self.assertEqual(parsed.places[0].cid, _NORTHWIND_CID)
+        self.assertNotEqual(parsed.places[0].cid, _NORTHWIND_CELL_ID)
+
+    def test_normalizes_negative_slot_6_fingerprint(self) -> None:
+        runtime_state = copy.deepcopy(["noise", _LIST_NODE])
+        place_metadata = runtime_state[1][8][0][1]
+        assert isinstance(place_metadata, list)
+        place_metadata[6] = ["3765761194353288769", "-782808945063765017"]
+
+        parsed = parse_saved_list_artifacts(_LIST_URL, runtime_state=runtime_state)
+
+        self.assertEqual(parsed.places[0].cid, "17663935128645786599")
+
+    def test_ignores_timestamp_like_fallback_values_when_cid_is_missing(self) -> None:
+        runtime_state = copy.deepcopy(["noise", _LIST_NODE])
+        place_metadata = runtime_state[1][8][0][1]
+        assert isinstance(place_metadata, list)
+        place_metadata[6] = [None]
+        place_metadata.append(1776063335)
+
+        parsed = parse_saved_list_artifacts(_LIST_URL, runtime_state=runtime_state)
+
+        self.assertEqual(parsed.places[0].cid, None)
+
     def test_builds_coordinate_query_url_only_when_no_name_or_address_exist(self) -> None:
         runtime_state = [
             "noise",
@@ -296,8 +329,8 @@ class ParserTests(unittest.TestCase):
         parsed = parse_saved_list_artifacts(_LIST_URL, runtime_state=runtime_state)
 
         self.assertEqual(len(parsed.places), 2)
-        self.assertEqual(parsed.places[0].cid, "7451636382641713350")
-        self.assertEqual(parsed.places[1].cid, "1234567890123456789")
+        self.assertEqual(parsed.places[0].cid, _NORTHWIND_CID)
+        self.assertEqual(parsed.places[1].cid, _HARBOR_CID)
 
     def test_keeps_distinct_places_that_share_a_cid(self) -> None:
         runtime_state = copy.deepcopy(["noise", _LIST_NODE])
@@ -307,14 +340,14 @@ class ParserTests(unittest.TestCase):
         assert isinstance(second_metadata, list)
 
         second_metadata[5] = [None, None, 35.7000000, 139.7800000]
-        second_metadata[6] = ["7451636382641713350", "-2234567890123456789"]
+        second_metadata[6] = ["7451636382641713350", _NORTHWIND_CID]
         second_metadata[7] = None
 
         parsed = parse_saved_list_artifacts(_LIST_URL, runtime_state=runtime_state)
 
         self.assertEqual(len(parsed.places), 2)
-        self.assertEqual(parsed.places[0].cid, "7451636382641713350")
-        self.assertEqual(parsed.places[1].cid, "7451636382641713350")
+        self.assertEqual(parsed.places[0].cid, _NORTHWIND_CID)
+        self.assertEqual(parsed.places[1].cid, _NORTHWIND_CID)
         self.assertEqual(parsed.places[1].lat, 35.7)
 
     def test_does_not_use_owner_profile_id_as_place_cid(self) -> None:
