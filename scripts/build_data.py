@@ -7496,7 +7496,11 @@ def preserve_existing_enrichment(
         or enrichment_identity_is_compatible_with_raw(raw_place, previous_place)
     )
 
-    if previous_place.limited_view is False and refreshed_place.limited_view is True:
+    if (
+        can_preserve_previous_identity
+        and previous_place.limited_view is False
+        and refreshed_place.limited_view is True
+    ):
         return (
             existing_entry,
             f"WARNING: Preserving previous enrichment for {slug}:{place_id} [{place_name}] "
@@ -7560,6 +7564,7 @@ def preserve_existing_enrichment(
 
     if price_range_regressed_from_symbolic_tier(previous_place, refreshed_place):
         refreshed_place.price_range = previous_place.price_range
+        reset_semantic_description_after_price_preservation(refreshed_place)
         append_unique_reason(preserved_fields, "price_range")
 
     if (
@@ -7663,6 +7668,15 @@ def price_range_regressed_from_symbolic_tier(
     )
 
 
+def reset_semantic_description_after_price_preservation(place: EnrichmentPlace) -> None:
+    if not place.semantic_description and not place.semantic_description_signature:
+        return
+    place.semantic_description = None
+    place.semantic_description_signature = None
+    if not semantic_enrichment_state_is_populated(semantic_enrichment_state(place)):
+        place.semantic_source = None
+
+
 def enrichment_google_identity_shift_conflicts_with_raw(
     previous_place: EnrichmentPlace,
     refreshed_place: EnrichmentPlace,
@@ -7672,23 +7686,33 @@ def enrichment_google_identity_shift_conflicts_with_raw(
 ) -> bool:
     if allow_identity_mismatch or raw_place is None:
         return False
-    previous_google_place_id = as_string(previous_place.google_place_id)
-    refreshed_google_place_id = as_string(refreshed_place.google_place_id)
-    if (
-        previous_google_place_id is None
-        or refreshed_google_place_id is None
-        or previous_google_place_id == refreshed_google_place_id
-    ):
-        return False
     if not enrichment_identity_is_compatible_with_raw(raw_place, previous_place):
         return False
     if not enrichment_identity_is_compatible_with_raw(raw_place, refreshed_place):
         return True
-    return enrichment_address_conflicts_with_raw_or_previous(
+    if not enrichment_address_conflicts_with_raw_or_previous(
         previous_place,
         refreshed_place,
         raw_place=raw_place,
-    )
+    ):
+        return False
+    previous_identity = enrichment_google_identity_for_shift_detection(previous_place)
+    refreshed_identity = enrichment_google_identity_for_shift_detection(refreshed_place)
+    if previous_identity is None or refreshed_identity is None or previous_identity == refreshed_identity:
+        return False
+    return True
+
+
+def enrichment_google_identity_for_shift_detection(place: EnrichmentPlace) -> str | None:
+    google_place_id = as_string(place.google_place_id)
+    if google_place_id is not None:
+        return f"google_place_id:{google_place_id}"
+    google_place_resource_name = as_string(place.google_place_resource_name)
+    if google_place_resource_name is not None:
+        return f"google_place_resource_name:{google_place_resource_name}"
+    if resolved_google_maps_url_is_place_page(place.google_maps_uri):
+        return f"google_maps_uri:{place.google_maps_uri}"
+    return None
 
 
 def enrichment_address_conflicts_with_raw_or_previous(
@@ -7711,7 +7735,11 @@ def address_texts_conflict(left: str | None, right: str | None) -> bool:
     right_text = normalize_text(right)
     if not left_text or not right_text or left_text == right_text:
         return False
-    return token_overlap_score(left_text, right_text) <= 5
+    left_numbers = set(re.findall(r"\d+", left_text))
+    right_numbers = set(re.findall(r"\d+", right_text))
+    if left_numbers and right_numbers and not left_numbers & right_numbers:
+        return True
+    return token_overlap_score(left_text, right_text) <= 10
 
 
 def load_places_cache(slug: str) -> dict[str, EnrichmentCacheEntry]:

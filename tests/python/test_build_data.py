@@ -4001,6 +4001,50 @@ class BuildDataTests(unittest.TestCase):
         self.assertIs(merged, existing_entry)
         self.assertIn("limited view", warning or "")
 
+    def test_preserve_existing_enrichment_does_not_keep_limited_view_for_stale_identity(self) -> None:
+        raw_place = RawPlace(
+            name="Lola Underground",
+            address="Hay St &, Cathedral Ave, Perth WA 6000, Australia",
+            maps_url="https://www.google.com/maps/search/?api=1&query=Lola+Underground",
+        )
+        existing_entry = EnrichmentCacheEntry(
+            fetched_at="2026-05-01T00:00:00+00:00",
+            source="google_maps_page",
+            query="Lola Underground, Perth",
+            matched=True,
+            place=EnrichmentPlace(
+                display_name="Pooles Temple",
+                formatted_address="Hay St &, Cathedral Ave, Perth WA 6000, Australia",
+                google_place_id="stale-pooles-place-id",
+                limited_view=False,
+            ),
+        )
+        refreshed_entry = EnrichmentCacheEntry(
+            fetched_at="2026-05-02T00:00:00+00:00",
+            source="google_maps_page",
+            query="Lola Underground, Perth",
+            matched=True,
+            place=EnrichmentPlace(
+                display_name="Lola Underground",
+                formatted_address="Hay St &, Cathedral Ave, Perth WA 6000, Australia",
+                limited_view=True,
+            ),
+        )
+
+        merged, warning = build_data.preserve_existing_enrichment(
+            slug="perth-and-fremantle-australia",
+            place_id="cid:3040698308894550531",
+            place_name="Lola Underground",
+            existing_entry=existing_entry,
+            refreshed_entry=refreshed_entry,
+            raw_place=raw_place,
+        )
+
+        self.assertIs(merged, refreshed_entry)
+        self.assertIsNone(warning)
+        assert merged.place is not None
+        self.assertEqual(merged.place.display_name, "Lola Underground")
+
     def test_preserve_existing_enrichment_keeps_symbolic_price_tier(self) -> None:
         existing_entry = EnrichmentCacheEntry(
             fetched_at="2026-06-11T00:00:00+00:00",
@@ -4015,6 +4059,9 @@ class BuildDataTests(unittest.TestCase):
                 primary_type="ice_cream_shop",
                 primary_type_display_name="Ice cream shop",
                 types=["bakery", "ice_cream_shop"],
+                semantic_description="A popular Bar Harbor scoop shop for housemade ice cream.",
+                semantic_description_signature="old-price-signature",
+                semantic_source="llm",
             ),
         )
         refreshed_entry = EnrichmentCacheEntry(
@@ -4031,6 +4078,9 @@ class BuildDataTests(unittest.TestCase):
                 primary_type="ice_cream_shop",
                 primary_type_display_name="Ice cream shop",
                 types=["bakery", "ice_cream_shop"],
+                semantic_description="An ice cream shop with ¥177,790 pricing.",
+                semantic_description_signature="bad-price-signature",
+                semantic_source="llm",
             ),
         )
 
@@ -4045,7 +4095,13 @@ class BuildDataTests(unittest.TestCase):
         self.assertIs(merged, refreshed_entry)
         assert merged.place is not None
         self.assertEqual(merged.place.price_range, "$$")
+        self.assertEqual(
+            merged.place.semantic_description,
+            "A popular Bar Harbor scoop shop for housemade ice cream.",
+        )
+        self.assertEqual(merged.place.semantic_description_signature, "old-price-signature")
         self.assertIn("price_range", warning or "")
+        self.assertIn("semantic_description", warning or "")
 
     def test_preserve_existing_enrichment_keeps_saved_list_location_on_identity_shift(self) -> None:
         raw_place = RawPlace(
@@ -4080,6 +4136,91 @@ class BuildDataTests(unittest.TestCase):
                 formatted_address="Internacional, 97295 Merida, Yucatan, Mexico",
                 google_maps_uri="https://www.google.com/maps/place/Abito/@20.933687,-89.6632749,17z/",
                 primary_type_display_name="Clothing store",
+            ),
+        )
+
+        merged, warning = build_data.preserve_existing_enrichment(
+            slug="merida-mexico",
+            place_id="gid:g-11bym_dkp6",
+            place_name="Abito",
+            existing_entry=existing_entry,
+            refreshed_entry=refreshed_entry,
+            raw_place=raw_place,
+        )
+
+        self.assertIs(merged, existing_entry)
+        self.assertIn("changed Google place identity", warning or "")
+
+    def test_preserve_existing_enrichment_catches_identity_shift_without_refreshed_place_id(self) -> None:
+        raw_place = RawPlace(
+            name="Abito",
+            address="C. 56 451-Local 32, Zona Paseo Montejo, Centro, 97000 Mérida, Yuc., Mexico",
+            maps_url="https://maps.google.com/?cid=111",
+        )
+        existing_entry = EnrichmentCacheEntry(
+            fetched_at="2026-06-11T00:00:00+00:00",
+            source="google_maps_page",
+            query="Abito, Mérida",
+            matched=True,
+            place=EnrichmentPlace(
+                google_place_id="ChIJp4jyC1pxVo8RIVqMwMkIT8Q",
+                display_name="Abito",
+                formatted_address="C. 56 451-Local 32, Zona Paseo Montejo, Centro, 97000 Mérida, Yuc., Mexico",
+                google_maps_uri="https://www.google.com/maps/place/Abito/@20.9854779,-89.6195071,17z/",
+            ),
+        )
+        refreshed_entry = EnrichmentCacheEntry(
+            fetched_at="2026-07-08T00:00:00+00:00",
+            source="google_maps_page",
+            query="Abito, Mérida",
+            matched=True,
+            place=EnrichmentPlace(
+                display_name="Abito",
+                formatted_address="Internacional, 97295 Merida, Yucatan, Mexico",
+                google_maps_uri="https://www.google.com/maps/place/Abito/@20.933687,-89.6632749,17z/",
+            ),
+        )
+
+        merged, warning = build_data.preserve_existing_enrichment(
+            slug="merida-mexico",
+            place_id="gid:g-11bym_dkp6",
+            place_name="Abito",
+            existing_entry=existing_entry,
+            refreshed_entry=refreshed_entry,
+            raw_place=raw_place,
+        )
+
+        self.assertIs(merged, existing_entry)
+        self.assertIn("changed Google place identity", warning or "")
+
+    def test_preserve_existing_enrichment_treats_locality_only_address_overlap_as_conflict(self) -> None:
+        raw_place = RawPlace(
+            name="Abito",
+            address="123 First St, Merida, Yucatan, Mexico",
+            maps_url="https://maps.google.com/?cid=111",
+        )
+        existing_entry = EnrichmentCacheEntry(
+            fetched_at="2026-06-11T00:00:00+00:00",
+            source="google_maps_page",
+            query="Abito, Mérida",
+            matched=True,
+            place=EnrichmentPlace(
+                google_place_id="saved-list-branch",
+                display_name="Abito",
+                formatted_address="123 First St, Merida, Yucatan, Mexico",
+                google_maps_uri="https://www.google.com/maps/place/Abito/@20.9854779,-89.6195071,17z/",
+            ),
+        )
+        refreshed_entry = EnrichmentCacheEntry(
+            fetched_at="2026-07-08T00:00:00+00:00",
+            source="google_maps_page",
+            query="Abito, Mérida",
+            matched=True,
+            place=EnrichmentPlace(
+                google_place_id="other-branch",
+                display_name="Abito",
+                formatted_address="456 Second Ave, Merida, Yucatan, Mexico",
+                google_maps_uri="https://www.google.com/maps/place/Abito/@20.933687,-89.6632749,17z/",
             ),
         )
 
