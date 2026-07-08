@@ -1309,6 +1309,52 @@ class BuildDataTests(unittest.TestCase):
         self.assertEqual(merged.places[0].added_by, ListAuthor(name="Second Curator", profile_id="second-id"))
         self.assertTrue(merged.places[0].is_favorite)
 
+    def test_preserve_existing_raw_saved_list_keeps_old_cid_alias_when_cid_changes(self) -> None:
+        existing_payload = RawSavedList(
+            configured_source_type="google_list_url",
+            places=[
+                RawPlace(
+                    name="AFURI Harajuku",
+                    address="1 Chome-63-1 Jingumae, Shibuya City, Tokyo",
+                    lat=35.670991,
+                    lng=139.703802,
+                    maps_url="https://maps.google.com/?cid=6924437575605096209",
+                    cid="6924437575605096209",
+                    google_id="/g/1pty5xgj1",
+                )
+            ],
+        )
+        refreshed_payload = RawSavedList(
+            configured_source_type="google_list_url",
+            places=[
+                RawPlace(
+                    name="AFURI Harajuku",
+                    address="1 Chome-63-1 Jingumae, Shibuya City, Tokyo",
+                    lat=35.670991,
+                    lng=139.703802,
+                    maps_url="https://maps.google.com/?cid=9055794338847426964",
+                    cid="9055794338847426964",
+                    google_id="/g/1pty5xgj1",
+                )
+            ],
+        )
+
+        merged = build_data.preserve_existing_raw_saved_list(
+            slug="tokyo-japan",
+            existing_payload=existing_payload,
+            refreshed_payload=refreshed_payload,
+        )
+
+        self.assertEqual(merged.places[0].cid, "9055794338847426964")
+        self.assertEqual(merged.places[0].cid_aliases, ["6924437575605096209"])
+        self.assertIn(
+            "cid:6924437575605096209",
+            build_data.raw_place_match_keys(
+                merged.places[0],
+                source_type=merged.configured_source_type,
+            ),
+        )
+
     def test_preserve_existing_raw_saved_list_does_not_apply_to_non_matching_place(self) -> None:
         existing_payload = RawSavedList(
             configured_source_type="google_list_url",

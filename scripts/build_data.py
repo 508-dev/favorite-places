@@ -6400,6 +6400,9 @@ def raw_place_match_keys(place: RawPlace, *, source_type: str | None = None) -> 
     cid = as_string(place.cid) or extract_maps_cid(place.maps_url)
     if cid:
         keys.append(f"cid:{cid}")
+    for cid_alias in place.cid_aliases:
+        if cid_alias:
+            keys.append(f"cid:{cid_alias}")
 
     google_id = as_string(place.google_id)
     if google_id:
@@ -6464,6 +6467,15 @@ def preserve_existing_raw_place(
     if names_compatible and not refreshed_place.cid and existing_place.cid:
         updates["cid"] = existing_place.cid
         preserved_fields.append("cid")
+    if (
+        names_compatible
+        and existing_place.cid
+        and refreshed_place.cid
+        and existing_place.cid != refreshed_place.cid
+        and existing_place.cid not in refreshed_place.cid_aliases
+    ):
+        updates["cid_aliases"] = [*refreshed_place.cid_aliases, existing_place.cid]
+        preserved_fields.append("cid_alias")
     if names_compatible and not refreshed_place.maps_place_token and existing_place.maps_place_token:
         updates["maps_place_token"] = existing_place.maps_place_token
         preserved_fields.append("maps_place_token")
