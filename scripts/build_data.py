@@ -7496,6 +7496,25 @@ def preserve_existing_enrichment(
         or enrichment_identity_is_compatible_with_raw(raw_place, previous_place)
     )
 
+    if previous_place.limited_view is False and refreshed_place.limited_view is True:
+        return (
+            existing_entry,
+            f"WARNING: Preserving previous enrichment for {slug}:{place_id} [{place_name}] "
+            "because refresh returned degraded result (limited view).",
+        )
+
+    if enrichment_google_identity_shift_conflicts_with_raw(
+        previous_place,
+        refreshed_place,
+        raw_place=raw_place,
+        allow_identity_mismatch=allow_identity_mismatch,
+    ):
+        return (
+            existing_entry,
+            f"WARNING: Preserving previous enrichment for {slug}:{place_id} [{place_name}] "
+            "because refresh changed Google place identity to a conflicting location.",
+        )
+
     preserved_fields: list[str] = []
 
     if refreshed_place.rating is None and previous_place.rating is not None:
@@ -7538,6 +7557,10 @@ def preserve_existing_enrichment(
     if not refreshed_place.business_status and previous_place.business_status:
         refreshed_place.business_status = previous_place.business_status
         append_unique_reason(preserved_fields, "status")
+
+    if price_range_regressed_from_symbolic_tier(previous_place, refreshed_place):
+        refreshed_place.price_range = previous_place.price_range
+        append_unique_reason(preserved_fields, "price_range")
 
     if (
         can_preserve_previous_identity
@@ -7623,6 +7646,72 @@ def google_maps_uri_is_compatible_for_preservation(
     if previous_address and refreshed_address and token_overlap_score(previous_address, refreshed_address) == 0:
         return False
     return True
+
+
+def price_range_regressed_from_symbolic_tier(
+    previous_place: EnrichmentPlace,
+    refreshed_place: EnrichmentPlace,
+) -> bool:
+    previous_price = as_string(previous_place.price_range)
+    refreshed_price = as_string(refreshed_place.price_range)
+    if previous_price is None or refreshed_price is None:
+        return False
+    return (
+        symbolic_price_tier(previous_price) is not None
+        and symbolic_price_tier(refreshed_price) is None
+        and parse_price_text(refreshed_price) is not None
+    )
+
+
+def enrichment_google_identity_shift_conflicts_with_raw(
+    previous_place: EnrichmentPlace,
+    refreshed_place: EnrichmentPlace,
+    *,
+    raw_place: RawPlace | None,
+    allow_identity_mismatch: bool,
+) -> bool:
+    if allow_identity_mismatch or raw_place is None:
+        return False
+    previous_google_place_id = as_string(previous_place.google_place_id)
+    refreshed_google_place_id = as_string(refreshed_place.google_place_id)
+    if (
+        previous_google_place_id is None
+        or refreshed_google_place_id is None
+        or previous_google_place_id == refreshed_google_place_id
+    ):
+        return False
+    if not enrichment_identity_is_compatible_with_raw(raw_place, previous_place):
+        return False
+    if not enrichment_identity_is_compatible_with_raw(raw_place, refreshed_place):
+        return True
+    return enrichment_address_conflicts_with_raw_or_previous(
+        previous_place,
+        refreshed_place,
+        raw_place=raw_place,
+    )
+
+
+def enrichment_address_conflicts_with_raw_or_previous(
+    previous_place: EnrichmentPlace,
+    refreshed_place: EnrichmentPlace,
+    *,
+    raw_place: RawPlace,
+) -> bool:
+    refreshed_address = refreshed_place.formatted_address
+    if refreshed_address is None:
+        return False
+    return address_texts_conflict(raw_place.address, refreshed_address) or address_texts_conflict(
+        previous_place.formatted_address,
+        refreshed_address,
+    )
+
+
+def address_texts_conflict(left: str | None, right: str | None) -> bool:
+    left_text = normalize_text(left)
+    right_text = normalize_text(right)
+    if not left_text or not right_text or left_text == right_text:
+        return False
+    return token_overlap_score(left_text, right_text) <= 5
 
 
 def load_places_cache(slug: str) -> dict[str, EnrichmentCacheEntry]:
