@@ -7563,8 +7563,7 @@ def preserve_existing_enrichment(
         append_unique_reason(preserved_fields, "status")
 
     if price_range_regressed_from_symbolic_tier(previous_place, refreshed_place):
-        refreshed_place.price_range = previous_place.price_range
-        reset_semantic_description_after_price_preservation(refreshed_place)
+        preserve_previous_symbolic_price_range(previous_place, refreshed_place)
         append_unique_reason(preserved_fields, "price_range")
 
     if (
@@ -7675,6 +7674,14 @@ def reset_semantic_description_after_price_preservation(place: EnrichmentPlace) 
     place.semantic_description_signature = None
     if not semantic_enrichment_state_is_populated(semantic_enrichment_state(place)):
         place.semantic_source = None
+
+
+def preserve_previous_symbolic_price_range(
+    previous_place: EnrichmentPlace,
+    refreshed_place: EnrichmentPlace,
+) -> None:
+    refreshed_place.price_range = previous_place.price_range
+    reset_semantic_description_after_price_preservation(refreshed_place)
 
 
 def enrichment_google_identity_shift_conflicts_with_raw(
