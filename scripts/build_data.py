@@ -3084,16 +3084,33 @@ def normalize_guide(
     normalized_places: list[NormalizedPlace] = []
     category_counter: Counter[str] = Counter()
     prefer_enrichment_names = raw.configured_source_type == "google_export_csv"
+    current_primary_keys = raw_saved_list_primary_match_key_set(raw)
 
     for place in raw.places:
         place_id = stable_place_id(place, source_type=raw.configured_source_type)
+        override_key = raw_place_mapping_lookup_key(
+            place_override_map,
+            place,
+            source_type=raw.configured_source_type,
+            blocked_alias_keys=current_primary_keys,
+        )
+        cache_key = raw_place_mapping_lookup_key(
+            enrichment_cache,
+            place,
+            source_type=raw.configured_source_type,
+            blocked_alias_keys=current_primary_keys,
+        )
         place_trust_signals = (
             [display_trust_signal(signal) for signal in trust_signals.get(place_id, [])]
             if trust_signals is not None
             else []
         )
-        override = place_override_for_ui_copy(slug, place_id, place_override_map.get(place_id, {}))
-        enrichment_cache_entry = enrichment_cache.get(place_id)
+        override = place_override_for_ui_copy(
+            slug,
+            place_id,
+            place_override_map.get(override_key, {}) if override_key is not None else {},
+        )
+        enrichment_cache_entry = enrichment_cache.get(cache_key) if cache_key is not None else None
         enrichment = coerce_enrichment_place(enrichment_cache_entry)
         usable_enrichment_category = usable_enrichment_primary_category(
             enrichment,
@@ -4192,7 +4209,7 @@ def enrich_raw_sources(
 ) -> None:
     api_key = google_places_api_key()
     cache_payloads: dict[str, dict[str, EnrichmentCacheEntry]] = {}
-    enrich_jobs: list[tuple[str, str, str, str, dict[str, Any], str | None, str | None]] = []
+    enrich_jobs: list[tuple[str, str, str | None, str | None, str, str, dict[str, Any], str | None, str | None]] = []
     normalized_place_selectors = normalize_place_selectors(place_selectors or [])
     matched_place_selectors: set[str] = set()
 
@@ -4207,8 +4224,16 @@ def enrich_raw_sources(
             if pruned_count:
                 save_places_cache(slug, cache_payload, allow_empty_overwrite=True)
         cache_payloads[slug] = cache_payload
+        current_primary_keys = raw_saved_list_primary_match_key_set(raw)
         for place in raw.places:
             place_id = stable_place_id(place, source_type=raw.configured_source_type)
+            cache_key = raw_place_mapping_lookup_key(
+                cache_payload,
+                place,
+                source_type=raw.configured_source_type,
+                blocked_alias_keys=current_primary_keys,
+            )
+            cache_entry = cache_payload.get(cache_key) if cache_key is not None else None
             if normalized_place_selectors:
                 selector_matches = place_selector_matches(
                     slug,
@@ -4219,11 +4244,21 @@ def enrich_raw_sources(
                 matched_place_selectors.update(selector_matches)
                 if not selector_matches:
                     continue
-            override = place_override_for_ui_copy(slug, place_id, place_override_map.get(place_id, {}))
+            override_key = raw_place_mapping_lookup_key(
+                place_override_map,
+                place,
+                source_type=raw.configured_source_type,
+                blocked_alias_keys=current_primary_keys,
+            )
+            override = place_override_for_ui_copy(
+                slug,
+                place_id,
+                place_override_map.get(override_key, {}) if override_key is not None else {},
+            )
             override_google_place_id = as_string(override.get("google_place_id"))
             refresh_reason = enrichment_refresh_reason(
                 place,
-                cache_payload.get(place_id),
+                cache_entry,
                 city_name=city_name,
                 country_name=country_name,
                 signature_google_place_id=override_google_place_id,
@@ -4237,6 +4272,8 @@ def enrich_raw_sources(
                 (
                     slug,
                     place_id,
+                    cache_key,
+                    override_key,
                     place.name,
                     refresh_reason,
                     place.model_dump(mode="json"),
@@ -4261,7 +4298,7 @@ def enrich_raw_sources(
     )
     max_workers = max(1, min(refresh_workers, len(enrich_jobs)))
     if max_workers == 1 or len(enrich_jobs) == 1:
-        for slug, place_id, place_name, refresh_reason, place_payload, city_name, country_name in enrich_jobs:
+        for slug, place_id, cache_key, override_key, place_name, refresh_reason, place_payload, city_name, country_name in enrich_jobs:
             entry = enrich_place_job(
                 slug,
                 place_id,
@@ -4272,8 +4309,11 @@ def enrich_raw_sources(
                 country_name=country_name,
                 api_key=api_key,
                 refresh_startup_jitter_seconds=effective_startup_jitter_seconds,
-                existing_entry=cache_payloads[slug].get(place_id),
+                existing_entry=cache_payloads[slug].get(cache_key) if cache_key is not None else None,
+                override_key=override_key,
             )
+            if cache_key is not None and cache_key != place_id:
+                cache_payloads[slug].pop(cache_key, None)
             cache_payloads[slug][place_id] = entry
             save_places_cache(slug, cache_payloads[slug])
         return
@@ -4294,12 +4334,15 @@ def enrich_raw_sources(
                 country_name=country_name,
                 api_key=api_key,
                 refresh_startup_jitter_seconds=effective_startup_jitter_seconds,
-                existing_entry=cache_payloads[slug].get(place_id),
-            ): (slug, place_id)
-            for slug, place_id, place_name, refresh_reason, place_payload, city_name, country_name in enrich_jobs
+                existing_entry=cache_payloads[slug].get(cache_key) if cache_key is not None else None,
+                override_key=override_key,
+            ): (slug, place_id, cache_key)
+            for slug, place_id, cache_key, override_key, place_name, refresh_reason, place_payload, city_name, country_name in enrich_jobs
         }
         for future in as_completed(future_map):
-            slug, place_id = future_map[future]
+            slug, place_id, cache_key = future_map[future]
+            if cache_key is not None and cache_key != place_id:
+                cache_payloads[slug].pop(cache_key, None)
             cache_payloads[slug][place_id] = future.result()
             save_places_cache(slug, cache_payloads[slug])
     except KeyboardInterrupt:
@@ -4377,6 +4420,7 @@ def refresh_cached_semantic_enrichment(
             if pruned_count:
                 save_places_cache(slug, cache_payload, allow_empty_overwrite=True)
         cache_payloads[slug] = cache_payload
+        current_primary_keys = raw_saved_list_primary_match_key_set(raw)
 
         for place in raw.places:
             place_id = stable_place_id(place, source_type=raw.configured_source_type)
@@ -4391,11 +4435,27 @@ def refresh_cached_semantic_enrichment(
                 if not selector_matches:
                     continue
 
-            entry = cache_payload.get(place_id)
+            cache_key = raw_place_mapping_lookup_key(
+                cache_payload,
+                place,
+                source_type=raw.configured_source_type,
+                blocked_alias_keys=current_primary_keys,
+            )
+            entry = cache_payload.get(cache_key) if cache_key is not None else None
             if not cache_entry_has_publishable_enrichment(entry) or entry is None or entry.place is None:
                 skipped_count += 1
                 continue
-            override = place_override_for_ui_copy(slug, place_id, place_override_map.get(place_id, {}))
+            override_key = raw_place_mapping_lookup_key(
+                place_override_map,
+                place,
+                source_type=raw.configured_source_type,
+                blocked_alias_keys=current_primary_keys,
+            )
+            override = place_override_for_ui_copy(
+                slug,
+                place_id,
+                place_override_map.get(override_key, {}) if override_key is not None else {},
+            )
             suppress_description = bool(as_string(override.get("note")))
             semantic_jobs.append((slug, place_id, place, entry, city_name, country_name, suppress_description))
 
@@ -4493,6 +4553,7 @@ def enrich_place_job(
     api_key: str | None,
     refresh_startup_jitter_seconds: float,
     existing_entry: EnrichmentCacheEntry | None = None,
+    override_key: str | None = None,
 ) -> EnrichmentCacheEntry:
     print(
         f"Enriching {slug}:{place_id} [{place_name}] ({refresh_reason})",
@@ -4501,7 +4562,11 @@ def enrich_place_job(
     sleep_for_refresh_startup_jitter(refresh_startup_jitter_seconds)
     place = RawPlace.model_validate(place_payload)
     place_override_map = read_json(PLACE_OVERRIDES_DIR / f"{slug}.json")
-    override = place_override_for_ui_copy(slug, place_id, place_override_map.get(place_id, {}))
+    override = place_override_for_ui_copy(
+        slug,
+        place_id,
+        place_override_map.get(override_key or place_id, {}),
+    )
     suppress_description = bool(as_string(override.get("note")))
     override_google_place_id = as_string(override.get("google_place_id"))
     allow_identity_mismatch = as_bool(override.get("allow_enrichment_identity_mismatch")) is True
@@ -6394,15 +6459,12 @@ def stamp_raw_saved_list(payload: RawSavedList, source: SourceConfig, *, source_
     payload.configured_source_path = source.path
 
 
-def raw_place_match_keys(place: RawPlace, *, source_type: str | None = None) -> list[str]:
+def raw_place_primary_match_keys(place: RawPlace, *, source_type: str | None = None) -> list[str]:
     keys: list[str] = []
 
     cid = as_string(place.cid) or extract_maps_cid(place.maps_url)
     if cid:
         keys.append(f"cid:{cid}")
-    for cid_alias in place.cid_aliases:
-        if cid_alias:
-            keys.append(f"cid:{cid_alias}")
 
     google_id = as_string(place.google_id)
     if google_id:
@@ -6431,6 +6493,69 @@ def raw_place_match_keys(place: RawPlace, *, source_type: str | None = None) -> 
     return list(dict.fromkeys(keys))
 
 
+def raw_place_cid_alias_keys(place: RawPlace) -> list[str]:
+    primary_cid = as_string(place.cid) or extract_maps_cid(place.maps_url)
+    keys = [
+        f"cid:{cid_alias}"
+        for cid_alias in place.cid_aliases
+        if cid_alias and cid_alias != primary_cid
+    ]
+    return list(dict.fromkeys(keys))
+
+
+def raw_place_match_keys(place: RawPlace, *, source_type: str | None = None) -> list[str]:
+    return list(
+        dict.fromkeys(
+            [
+                *raw_place_primary_match_keys(place, source_type=source_type),
+                *raw_place_cid_alias_keys(place),
+            ]
+        )
+    )
+
+
+def raw_saved_list_primary_match_key_set(raw: RawSavedList) -> set[str]:
+    return {
+        key
+        for place in raw.places
+        for key in raw_place_primary_match_keys(
+            place,
+            source_type=raw.configured_source_type,
+        )
+    }
+
+
+def raw_place_lookup_keys(
+    place: RawPlace,
+    *,
+    source_type: str | None = None,
+    blocked_alias_keys: set[str] | None = None,
+) -> list[str]:
+    keys = raw_place_primary_match_keys(place, source_type=source_type)
+    for key in raw_place_cid_alias_keys(place):
+        if blocked_alias_keys is not None and key in blocked_alias_keys:
+            continue
+        keys.append(key)
+    return list(dict.fromkeys(keys))
+
+
+def raw_place_mapping_lookup_key(
+    mapping: Mapping[str, Any],
+    place: RawPlace,
+    *,
+    source_type: str | None = None,
+    blocked_alias_keys: set[str] | None = None,
+) -> str | None:
+    for key in raw_place_lookup_keys(
+        place,
+        source_type=source_type,
+        blocked_alias_keys=blocked_alias_keys,
+    ):
+        if key in mapping:
+            return key
+    return None
+
+
 def build_raw_place_preservation_index(
     raw: RawSavedList,
     *,
@@ -6438,8 +6563,13 @@ def build_raw_place_preservation_index(
 ) -> dict[str, RawPlace]:
     index: dict[str, RawPlace] = {}
     for place in raw.places:
-        for key in raw_place_match_keys(place, source_type=source_type):
+        for key in raw_place_primary_match_keys(place, source_type=source_type):
             index.setdefault(key, place)
+    primary_keys = set(index)
+    for place in raw.places:
+        for key in raw_place_cid_alias_keys(place):
+            if key not in primary_keys:
+                index.setdefault(key, place)
     return index
 
 
@@ -6467,15 +6597,17 @@ def preserve_existing_raw_place(
     if names_compatible and not refreshed_place.cid and existing_place.cid:
         updates["cid"] = existing_place.cid
         preserved_fields.append("cid")
-    if (
-        names_compatible
-        and existing_place.cid
-        and refreshed_place.cid
-        and existing_place.cid != refreshed_place.cid
-        and existing_place.cid not in refreshed_place.cid_aliases
-    ):
-        updates["cid_aliases"] = [*refreshed_place.cid_aliases, existing_place.cid]
-        preserved_fields.append("cid_alias")
+    existing_cid = as_string(existing_place.cid) or extract_maps_cid(existing_place.maps_url)
+    refreshed_cid = as_string(refreshed_place.cid) or extract_maps_cid(refreshed_place.maps_url)
+    if names_compatible:
+        preserved_cid_aliases = list(refreshed_place.cid_aliases)
+        for cid_alias in [*existing_place.cid_aliases, existing_cid]:
+            if not cid_alias or cid_alias == refreshed_cid or cid_alias in preserved_cid_aliases:
+                continue
+            preserved_cid_aliases.append(cid_alias)
+        if preserved_cid_aliases != refreshed_place.cid_aliases:
+            updates["cid_aliases"] = preserved_cid_aliases
+            preserved_fields.append("cid_alias")
     if names_compatible and not refreshed_place.maps_place_token and existing_place.maps_place_token:
         updates["maps_place_token"] = existing_place.maps_place_token
         preserved_fields.append("maps_place_token")
@@ -6977,10 +7109,19 @@ def preserve_existing_raw_saved_list(
 
     for refreshed_place in refreshed_payload.places:
         existing_place = None
-        for key in raw_place_match_keys(refreshed_place, source_type=source_type):
+        for key in raw_place_primary_match_keys(refreshed_place, source_type=source_type):
             existing_place = existing_index.get(key)
             if existing_place is not None:
                 break
+        if existing_place is None:
+            refreshed_name = as_string(refreshed_place.name)
+            for key in raw_place_cid_alias_keys(refreshed_place):
+                candidate = existing_index.get(key)
+                if candidate is None:
+                    continue
+                if raw_place_names_are_compatible(as_string(candidate.name), refreshed_name):
+                    existing_place = candidate
+                    break
 
         if existing_place is None:
             updated_places.append(refreshed_place)
@@ -7654,10 +7795,20 @@ def prune_places_cache_to_raw_places(
     payload: dict[str, EnrichmentCacheEntry],
     raw: RawSavedList,
 ) -> tuple[dict[str, EnrichmentCacheEntry], int]:
+    current_primary_keys = raw_saved_list_primary_match_key_set(raw)
     current_place_ids = {
+        key
+        for place in raw.places
+        for key in raw_place_lookup_keys(
+            place,
+            source_type=raw.configured_source_type,
+            blocked_alias_keys=current_primary_keys,
+        )
+    }
+    current_place_ids.update(
         stable_place_id(place, source_type=raw.configured_source_type)
         for place in raw.places
-    }
+    )
     if not current_place_ids:
         return {}, len(payload)
     pruned_payload = {
