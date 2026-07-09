@@ -6605,6 +6605,7 @@ def preserve_existing_raw_place(
     existing_name = as_string(existing_place.name)
     refreshed_name = as_string(refreshed_place.name)
     names_compatible = raw_place_names_are_compatible(existing_name, refreshed_name)
+    strong_identity_compatible = raw_place_strong_google_identity_matches(existing_place, refreshed_place)
 
     if (
         names_compatible
@@ -6621,7 +6622,7 @@ def preserve_existing_raw_place(
         preserved_fields.append("cid")
     existing_cid = as_string(existing_place.cid) or extract_maps_cid(existing_place.maps_url)
     refreshed_cid = as_string(refreshed_place.cid) or extract_maps_cid(refreshed_place.maps_url)
-    if names_compatible:
+    if names_compatible or strong_identity_compatible:
         preserved_cid_aliases = list(refreshed_place.cid_aliases)
         for cid_alias in [*existing_place.cid_aliases, existing_cid]:
             if not cid_alias or cid_alias == refreshed_cid or cid_alias in preserved_cid_aliases:
@@ -6644,6 +6645,16 @@ def preserve_existing_raw_place(
         return refreshed_place, preserved_fields
 
     return refreshed_place.model_copy(update=updates), preserved_fields
+
+
+def raw_place_strong_google_identity_matches(left: RawPlace, right: RawPlace) -> bool:
+    left_google_id = raw_place_google_id_identity(left)
+    right_google_id = raw_place_google_id_identity(right)
+    if left_google_id is not None and left_google_id == right_google_id:
+        return True
+    left_maps_place_token = raw_place_maps_place_token_identity(left)
+    right_maps_place_token = raw_place_maps_place_token_identity(right)
+    return left_maps_place_token is not None and left_maps_place_token == right_maps_place_token
 
 
 def raw_place_names_are_compatible(existing_name: str | None, refreshed_name: str | None) -> bool:

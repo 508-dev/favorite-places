@@ -877,10 +877,16 @@ def load_trust_signals_for_places(
         if place_id is None:
             continue
         match_signature = trust_match_signature(place.name, city_name, country_name)
+        enrichment_entry = trust_enrichment_entry_for_place(
+            enrichment_cache,
+            place,
+            place_id=place_id,
+            blocked_cid_alias_keys=blocked_cid_alias_keys,
+        )
         keys = trust_place_keys(
             place,
             place_id=place_id,
-            enrichment_entry=enrichment_cache.get(place_id),
+            enrichment_entry=enrichment_entry,
             blocked_cid_alias_keys=blocked_cid_alias_keys,
         )
         lookup_keys[place_id] = keys
@@ -986,10 +992,16 @@ def refresh_trust_signals_for_raw_guides(
             place_id = stable_place_ids.get((slug, index))
             if place_id is None:
                 continue
+            enrichment_entry = trust_enrichment_entry_for_place(
+                enrichment_cache,
+                place,
+                place_id=place_id,
+                blocked_cid_alias_keys=blocked_cid_alias_keys,
+            )
             keys = trust_place_keys(
                 place,
                 place_id=place_id,
-                enrichment_entry=enrichment_cache.get(place_id),
+                enrichment_entry=enrichment_entry,
                 blocked_cid_alias_keys=blocked_cid_alias_keys,
             )
             query = trust_search_query(
@@ -2710,6 +2722,44 @@ def trust_place_keys(
     if place.maps_place_token:
         keys.append(f"gms:{place.maps_place_token}")
     keys.append(place_id)
+    return list(dict.fromkeys(keys))
+
+
+def trust_enrichment_entry_for_place(
+    enrichment_cache: Mapping[str, EnrichmentCacheEntry],
+    place: RawPlace,
+    *,
+    place_id: str,
+    blocked_cid_alias_keys: set[str] | None = None,
+) -> EnrichmentCacheEntry | None:
+    for key in trust_enrichment_cache_lookup_keys(
+        place,
+        place_id=place_id,
+        blocked_cid_alias_keys=blocked_cid_alias_keys,
+    ):
+        entry = enrichment_cache.get(key)
+        if entry is not None:
+            return entry
+    return None
+
+
+def trust_enrichment_cache_lookup_keys(
+    place: RawPlace,
+    *,
+    place_id: str,
+    blocked_cid_alias_keys: set[str] | None = None,
+) -> list[str]:
+    keys: list[str] = [place_id]
+    if place.cid:
+        keys.append(f"cid:{place.cid}")
+    for cid_alias in place.cid_aliases:
+        cid_alias_key = f"cid:{cid_alias}" if cid_alias else None
+        if cid_alias_key and (blocked_cid_alias_keys is None or cid_alias_key not in blocked_cid_alias_keys):
+            keys.append(cid_alias_key)
+    if place.google_id:
+        keys.append(f"gid:{place.google_id.strip('/').replace('/', '-')}")
+    if place.maps_place_token:
+        keys.append(f"gms:{place.maps_place_token}")
     return list(dict.fromkeys(keys))
 
 

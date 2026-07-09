@@ -1399,6 +1399,39 @@ class BuildDataTests(unittest.TestCase):
             ],
         )
 
+    def test_preserve_existing_raw_saved_list_keeps_cid_alias_for_strong_identity_rename(self) -> None:
+        existing_payload = RawSavedList(
+            configured_source_type="google_list_url",
+            places=[
+                RawPlace(
+                    name="Old Name",
+                    maps_url="https://maps.google.com/?cid=111",
+                    cid="111",
+                    google_id="/g/11sameplace",
+                )
+            ],
+        )
+        refreshed_payload = RawSavedList(
+            configured_source_type="google_list_url",
+            places=[
+                RawPlace(
+                    name="Completely New Brand",
+                    maps_url="https://maps.google.com/?cid=222",
+                    cid="222",
+                    google_id="/g/11sameplace",
+                )
+            ],
+        )
+
+        merged = build_data.preserve_existing_raw_saved_list(
+            slug="tokyo-japan",
+            existing_payload=existing_payload,
+            refreshed_payload=refreshed_payload,
+        )
+
+        self.assertEqual(merged.places[0].cid, "222")
+        self.assertEqual(merged.places[0].cid_aliases, ["111"])
+
     def test_preserve_existing_raw_saved_list_uses_old_maps_url_cid_as_alias(self) -> None:
         existing_payload = RawSavedList(
             configured_source_type="google_list_url",
@@ -1588,6 +1621,31 @@ class BuildDataTests(unittest.TestCase):
 
         self.assertIn("cid:111", keys)
         self.assertNotIn("cid:222", keys)
+
+    def test_trust_enrichment_entry_for_place_uses_cid_alias_cache_row(self) -> None:
+        entry = EnrichmentCacheEntry(
+            fetched_at="2026-04-20T00:00:00+00:00",
+            query="AFURI Harajuku",
+            matched=True,
+            place=EnrichmentPlace(
+                display_name="AFURI Harajuku",
+                google_place_id="place123",
+            ),
+        )
+
+        resolved = trust_signals.trust_enrichment_entry_for_place(
+            {"cid:6924437575605096209": entry},
+            RawPlace(
+                name="AFURI Harajuku",
+                maps_url="https://maps.google.com/?cid=9055794338847426964",
+                cid="9055794338847426964",
+                cid_aliases=["6924437575605096209"],
+            ),
+            place_id="cid:9055794338847426964",
+            blocked_cid_alias_keys={"cid:9055794338847426964"},
+        )
+
+        self.assertIs(resolved, entry)
 
     def test_place_selector_matches_cid_alias(self) -> None:
         place = RawPlace(
