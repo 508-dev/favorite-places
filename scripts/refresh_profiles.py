@@ -123,6 +123,7 @@ def main(argv: list[str] | None = None) -> int:
         refresh_lists=args.refresh_list,
         refresh_workers=args.refresh_workers,
         force_url_refresh=profile.force_raw_refresh,
+        allow_suspicious_identity_loss=bool(args.refresh_list) or args.refresh_force,
         refresh_retries=args.refresh_retries,
         refresh_retry_backoff_seconds=args.refresh_retry_backoff_seconds,
         refresh_startup_jitter_seconds=args.refresh_startup_jitter_seconds,

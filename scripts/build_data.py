@@ -1991,6 +1991,7 @@ def refresh_raw_sources(
     refresh_lists: list[str],
     refresh_workers: int,
     force_url_refresh: bool = False,
+    allow_suspicious_identity_loss: bool = False,
     refresh_retries: int = DEFAULT_REFRESH_RETRIES,
     refresh_retry_backoff_seconds: float = DEFAULT_REFRESH_RETRY_BACKOFF_SECONDS,
     refresh_startup_jitter_seconds: float = DEFAULT_REFRESH_STARTUP_JITTER_SECONDS,
@@ -1999,7 +2000,7 @@ def refresh_raw_sources(
     sources = load_sources()
     selected_sources = resolve_refresh_sources(sources, refresh_lists)
     selected_slugs = {source.slug for source in selected_sources}
-    refresh_jobs: list[tuple[SourceConfig, Path, bool, RawSavedList | None]] = []
+    refresh_jobs: list[tuple[SourceConfig, Path, bool, RawSavedList | None, bool]] = []
 
     for source in sources:
         if selected_sources and source.slug not in selected_slugs:
@@ -2042,7 +2043,9 @@ def refresh_raw_sources(
             source,
             existing_payload.source_signature,
         )
-        refresh_jobs.append((source, raw_path, backup_available, existing_payload))
+        refresh_jobs.append(
+            (source, raw_path, backup_available, existing_payload, allow_suspicious_identity_loss)
+        )
 
     if not refresh_jobs:
         return
@@ -2053,7 +2056,7 @@ def refresh_raw_sources(
     max_workers = max(1, refresh_workers)
     if headed or len(refresh_jobs) == 1 or max_workers == 1:
         failures: list[str] = []
-        for source, raw_path, backup_available, existing_payload in refresh_jobs:
+        for source, raw_path, backup_available, existing_payload, allow_suspicious_identity_loss in refresh_jobs:
             try:
                 payload = scrape_url_source_with_retries(
                     source,
@@ -2073,6 +2076,7 @@ def refresh_raw_sources(
                 slug=source.slug,
                 existing_payload=existing_payload,
                 refreshed_payload=payload,
+                allow_suspicious_identity_loss=allow_suspicious_identity_loss,
             )
             write_json(raw_path, payload)
         if failures:
@@ -2095,11 +2099,11 @@ def refresh_raw_sources(
                 refresh_retries=refresh_retries,
                 refresh_retry_backoff_seconds=refresh_retry_backoff_seconds,
                 refresh_startup_jitter_seconds=effective_startup_jitter_seconds,
-            ): (source, raw_path, backup_available, existing_payload)
-            for source, raw_path, backup_available, existing_payload in refresh_jobs
+            ): (source, raw_path, backup_available, existing_payload, allow_suspicious_identity_loss)
+            for source, raw_path, backup_available, existing_payload, allow_suspicious_identity_loss in refresh_jobs
         }
         for future in as_completed(future_map):
-            source, raw_path, backup_available, existing_payload = future_map[future]
+            source, raw_path, backup_available, existing_payload, allow_suspicious_identity_loss = future_map[future]
             try:
                 payload = future.result()
             except RECOVERABLE_REFRESH_ERRORS as exc:
@@ -2113,6 +2117,7 @@ def refresh_raw_sources(
                 slug=source.slug,
                 existing_payload=existing_payload,
                 refreshed_payload=payload,
+                allow_suspicious_identity_loss=allow_suspicious_identity_loss,
             )
             write_json(raw_path, payload)
     except KeyboardInterrupt:
@@ -6583,6 +6588,40 @@ def raw_saved_list_primary_match_key_set(raw: RawSavedList) -> set[str]:
     }
 
 
+def raw_saved_list_match_key_set(raw: RawSavedList, *, source_type: str | None = None) -> set[str]:
+    return {
+        key
+        for place in raw.places
+        for key in raw_place_match_keys(
+            place,
+            source_type=source_type or raw.configured_source_type,
+        )
+    }
+
+
+def raw_saved_list_refresh_has_suspicious_identity_loss(
+    existing_payload: RawSavedList,
+    refreshed_payload: RawSavedList,
+    *,
+    source_type: str | None = None,
+) -> bool:
+    existing_place_count = len(existing_payload.places)
+    refreshed_place_count = len(refreshed_payload.places)
+    if existing_place_count < 5:
+        return False
+    if refreshed_place_count > max(2, existing_place_count // 4):
+        return False
+
+    existing_keys = raw_saved_list_match_key_set(existing_payload, source_type=source_type)
+    refreshed_keys = raw_saved_list_match_key_set(refreshed_payload, source_type=source_type)
+    if not existing_keys:
+        return False
+    if not refreshed_keys:
+        return True
+
+    return existing_keys.isdisjoint(refreshed_keys)
+
+
 def raw_place_lookup_keys(
     place: RawPlace,
     *,
@@ -7127,6 +7166,7 @@ def preserve_existing_raw_saved_list(
     slug: str,
     existing_payload: RawSavedList | None,
     refreshed_payload: RawSavedList,
+    allow_suspicious_identity_loss: bool = False,
 ) -> RawSavedList:
     if existing_payload is None:
         deduped_payload = clear_duplicate_raw_place_cids(
@@ -7168,6 +7208,18 @@ def preserve_existing_raw_saved_list(
         )
 
     source_type = refreshed_payload.configured_source_type or existing_payload.configured_source_type
+    if not allow_suspicious_identity_loss and raw_saved_list_refresh_has_suspicious_identity_loss(
+        existing_payload,
+        refreshed_payload,
+        source_type=source_type,
+    ):
+        print(
+            f"WARNING: Keeping existing raw snapshot for {slug} because the refreshed "
+            "payload lost nearly all prior place identities.",
+            flush=True,
+        )
+        return existing_payload
+
     refreshed_payload = clear_duplicate_raw_place_cids(
         slug=slug,
         payload=refreshed_payload,
@@ -13357,6 +13409,7 @@ def main() -> int:
             force_refresh=args.refresh_force,
             refresh_lists=args.refresh_list,
             refresh_workers=args.refresh_workers,
+            allow_suspicious_identity_loss=bool(args.refresh_list) or args.refresh_force,
             refresh_retries=args.refresh_retries,
             refresh_retry_backoff_seconds=args.refresh_retry_backoff_seconds,
             refresh_startup_jitter_seconds=args.refresh_startup_jitter_seconds,
@@ -13374,6 +13427,7 @@ def main() -> int:
                 force_refresh=bool(enrichment_refresh_lists),
                 refresh_lists=enrichment_refresh_lists,
                 refresh_workers=args.refresh_workers,
+                allow_suspicious_identity_loss=False,
                 refresh_retries=args.refresh_retries,
                 refresh_retry_backoff_seconds=args.refresh_retry_backoff_seconds,
                 refresh_startup_jitter_seconds=args.refresh_startup_jitter_seconds,

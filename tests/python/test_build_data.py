@@ -672,11 +672,33 @@ class BuildDataTests(unittest.TestCase):
             force_refresh=True,
             refresh_lists=["tokyo-japan"],
             refresh_workers=build_data.DEFAULT_REFRESH_WORKERS,
+            allow_suspicious_identity_loss=False,
             refresh_retries=build_data.DEFAULT_REFRESH_RETRIES,
             refresh_retry_backoff_seconds=build_data.DEFAULT_REFRESH_RETRY_BACKOFF_SECONDS,
             refresh_startup_jitter_seconds=build_data.DEFAULT_REFRESH_STARTUP_JITTER_SECONDS,
         )
         enrich_raw_sources.assert_called_once()
+
+    def test_main_allows_identity_loss_for_explicit_raw_refresh_selection(self) -> None:
+        with (
+            patch.object(sys, "argv", ["build_data.py", "--refresh-list", "tokyo-japan"]),
+            patch.object(build_data, "refresh_raw_sources") as refresh_raw_sources,
+            patch.object(build_data, "sync_local_csv_sources"),
+            patch.object(build_data, "rebuild_generated_data"),
+        ):
+            result = build_data.main()
+
+        self.assertEqual(result, 0)
+        refresh_raw_sources.assert_called_once_with(
+            headed=False,
+            force_refresh=False,
+            refresh_lists=["tokyo-japan"],
+            refresh_workers=build_data.DEFAULT_REFRESH_WORKERS,
+            allow_suspicious_identity_loss=True,
+            refresh_retries=build_data.DEFAULT_REFRESH_RETRIES,
+            refresh_retry_backoff_seconds=build_data.DEFAULT_REFRESH_RETRY_BACKOFF_SECONDS,
+            refresh_startup_jitter_seconds=build_data.DEFAULT_REFRESH_STARTUP_JITTER_SECONDS,
+        )
 
     def test_main_can_skip_source_refresh_before_targeted_enrichment(self) -> None:
         with (
@@ -1258,6 +1280,182 @@ class BuildDataTests(unittest.TestCase):
             )
 
         self.assertIn("Google My Maps URLs are not supported", str(context.exception))
+
+    def test_preserve_existing_raw_saved_list_keeps_snapshot_after_identity_collapse(self) -> None:
+        source = SourceConfig(
+            slug="bangor-maine-usa",
+            type="google_list_url",
+            url="https://maps.app.goo.gl/bangor",
+        )
+        existing_payload = RawSavedList(
+            title="Bangor, ME, United States",
+            configured_source_type="google_list_url",
+            source_signature=build_data.raw_source_signature(source),
+            places=[
+                RawPlace(
+                    name=f"Bangor Place {index}",
+                    address=f"{index} Main St, Bangor, ME",
+                    lat=44.8 + index / 1000,
+                    lng=-68.8 - index / 1000,
+                    maps_url=f"https://maps.google.com/?cid=552543678393269780{index}",
+                    cid=f"552543678393269780{index}",
+                )
+                for index in range(6)
+            ],
+        )
+        refreshed_payload = RawSavedList(
+            title=None,
+            configured_source_type="google_list_url",
+            source_signature=build_data.raw_source_signature(source),
+            collaborators=[ListAuthor(name="Google Maps shared unrelated list")],
+            places=[
+                RawPlace(
+                    name="35.507182,139.511287",
+                    lat=35.50718194375892,
+                    lng=139.5112871536719,
+                    maps_url="https://www.google.com/maps/search/?api=1&query=35.5071819%2C139.5112872",
+                ),
+                RawPlace(
+                    name="35.844432,140.203901",
+                    lat=35.844432374521006,
+                    lng=140.20390134878724,
+                    maps_url="https://www.google.com/maps/search/?api=1&query=35.8444324%2C140.2039013",
+                ),
+            ],
+        )
+
+        with StringIO() as stdout, redirect_stdout(stdout):
+            merged = build_data.preserve_existing_raw_saved_list(
+                source=source,
+                slug="bangor-maine-usa",
+                existing_payload=existing_payload,
+                refreshed_payload=refreshed_payload,
+            )
+            output = stdout.getvalue()
+
+        self.assertEqual(merged, existing_payload)
+        self.assertIn("lost nearly all prior place identities", output)
+
+    def test_preserve_existing_raw_saved_list_keeps_snapshot_after_empty_identity_collapse(self) -> None:
+        source = SourceConfig(
+            slug="bangor-maine-usa",
+            type="google_list_url",
+            url="https://maps.app.goo.gl/bangor",
+        )
+        existing_payload = RawSavedList(
+            title="Bangor, ME, United States",
+            configured_source_type="google_list_url",
+            source_signature=build_data.raw_source_signature(source),
+            places=[
+                RawPlace(
+                    name=f"Bangor Place {index}",
+                    maps_url=f"https://maps.google.com/?cid=552543678393269780{index}",
+                    cid=f"552543678393269780{index}",
+                )
+                for index in range(6)
+            ],
+        )
+        refreshed_payload = RawSavedList(
+            title="Bangor, ME, United States",
+            configured_source_type="google_list_url",
+            source_signature=build_data.raw_source_signature(source),
+            places=[],
+        )
+
+        merged = build_data.preserve_existing_raw_saved_list(
+            source=source,
+            slug="bangor-maine-usa",
+            existing_payload=existing_payload,
+            refreshed_payload=refreshed_payload,
+        )
+
+        self.assertEqual(merged, existing_payload)
+
+    def test_preserve_existing_raw_saved_list_counts_cid_alias_overlap(self) -> None:
+        source = SourceConfig(
+            slug="taipei-taiwan",
+            type="google_list_url",
+            url="https://maps.app.goo.gl/taipei",
+        )
+        existing_payload = RawSavedList(
+            title="Taipei, Taiwan",
+            configured_source_type="google_list_url",
+            source_signature=build_data.raw_source_signature(source),
+            places=[
+                RawPlace(
+                    name="Retained Tea House" if index == 0 else f"Taipei Place {index}",
+                    maps_url=f"https://maps.google.com/?cid=123456789{index}",
+                    cid=f"123456789{index}",
+                    cid_aliases=["old-retained-cid"] if index == 0 else [],
+                )
+                for index in range(6)
+            ],
+        )
+        refreshed_payload = RawSavedList(
+            title="Taipei, Taiwan",
+            configured_source_type="google_list_url",
+            source_signature=build_data.raw_source_signature(source),
+            places=[
+                RawPlace(
+                    name="Retained Tea House",
+                    maps_url="https://maps.google.com/?cid=old-retained-cid",
+                    cid="old-retained-cid",
+                )
+            ],
+        )
+
+        merged = build_data.preserve_existing_raw_saved_list(
+            source=source,
+            slug="taipei-taiwan",
+            existing_payload=existing_payload,
+            refreshed_payload=refreshed_payload,
+        )
+
+        self.assertEqual(len(merged.places), 1)
+        self.assertEqual(merged.places[0].name, "Retained Tea House")
+
+    def test_preserve_existing_raw_saved_list_can_allow_intentional_identity_collapse(self) -> None:
+        source = SourceConfig(
+            slug="bangor-maine-usa",
+            type="google_list_url",
+            url="https://maps.app.goo.gl/bangor",
+        )
+        existing_payload = RawSavedList(
+            title="Bangor, ME, United States",
+            configured_source_type="google_list_url",
+            source_signature=build_data.raw_source_signature(source),
+            places=[
+                RawPlace(
+                    name=f"Bangor Place {index}",
+                    maps_url=f"https://maps.google.com/?cid=552543678393269780{index}",
+                    cid=f"552543678393269780{index}",
+                )
+                for index in range(6)
+            ],
+        )
+        refreshed_payload = RawSavedList(
+            title="New Small List",
+            configured_source_type="google_list_url",
+            source_signature=build_data.raw_source_signature(source),
+            places=[
+                RawPlace(
+                    name="New Place",
+                    maps_url="https://maps.google.com/?cid=999",
+                    cid="999",
+                )
+            ],
+        )
+
+        merged = build_data.preserve_existing_raw_saved_list(
+            source=source,
+            slug="bangor-maine-usa",
+            existing_payload=existing_payload,
+            refreshed_payload=refreshed_payload,
+            allow_suspicious_identity_loss=True,
+        )
+
+        self.assertEqual(merged.title, "New Small List")
+        self.assertEqual([place.name for place in merged.places], ["New Place"])
 
     def test_preserve_existing_raw_saved_list_keeps_stronger_prior_place_fields(self) -> None:
         existing_payload = RawSavedList(
@@ -15751,6 +15949,129 @@ class BuildDataTests(unittest.TestCase):
             payload = RawSavedList.model_validate_json(raw_path.read_text(encoding="utf-8"))
 
         self.assertEqual(payload.title, "Backup")
+
+    def test_refresh_raw_sources_keeps_existing_snapshot_after_profile_identity_collapse(self) -> None:
+        source = SourceConfig(
+            slug="tokyo-japan",
+            type="google_list_url",
+            url="https://maps.app.goo.gl/tokyo",
+        )
+
+        with TemporaryDirectory() as tmpdir:
+            raw_dir = Path(tmpdir)
+            raw_path = raw_dir / "tokyo-japan.json"
+            build_data.write_json(
+                raw_path,
+                RawSavedList(
+                    title="Tokyo",
+                    fetched_at=datetime.now(UTC).isoformat(),
+                    refresh_after=(datetime.now(UTC) - timedelta(days=1)).isoformat(),
+                    source_signature=build_data.raw_source_signature(source),
+                    configured_source_type="google_list_url",
+                    places=[
+                        RawPlace(
+                            name=f"Tokyo Place {index}",
+                            maps_url=f"https://maps.google.com/?cid=111222333{index}",
+                            cid=f"111222333{index}",
+                        )
+                        for index in range(6)
+                    ],
+                ),
+            )
+            refreshed_payload = RawSavedList(
+                title="Unrelated Small List",
+                source_signature=build_data.raw_source_signature(source),
+                configured_source_type="google_list_url",
+                places=[
+                    RawPlace(
+                        name="35.507182,139.511287",
+                        lat=35.50718194375892,
+                        lng=139.5112871536719,
+                        maps_url="https://www.google.com/maps/search/?api=1&query=35.5071819%2C139.5112872",
+                    )
+                ],
+            )
+
+            with (
+                patch.object(build_data, "RAW_DIR", raw_dir),
+                patch.object(build_data, "load_sources", return_value=[source]),
+                patch.object(build_data, "scrape_google_list_url", return_value=refreshed_payload),
+            ):
+                build_data.refresh_raw_sources(
+                    headed=False,
+                    force_refresh=False,
+                    force_url_refresh=True,
+                    refresh_lists=[],
+                    refresh_workers=1,
+                    refresh_retries=0,
+                    refresh_startup_jitter_seconds=0,
+                )
+
+            payload = RawSavedList.model_validate_json(raw_path.read_text(encoding="utf-8"))
+
+        self.assertEqual(payload.title, "Tokyo")
+        self.assertEqual(len(payload.places), 6)
+
+    def test_refresh_raw_sources_allows_selected_identity_collapse(self) -> None:
+        source = SourceConfig(
+            slug="tokyo-japan",
+            type="google_list_url",
+            url="https://maps.app.goo.gl/tokyo",
+        )
+
+        with TemporaryDirectory() as tmpdir:
+            raw_dir = Path(tmpdir)
+            raw_path = raw_dir / "tokyo-japan.json"
+            build_data.write_json(
+                raw_path,
+                RawSavedList(
+                    title="Tokyo",
+                    fetched_at=datetime.now(UTC).isoformat(),
+                    refresh_after=(datetime.now(UTC) - timedelta(days=1)).isoformat(),
+                    source_signature=build_data.raw_source_signature(source),
+                    configured_source_type="google_list_url",
+                    places=[
+                        RawPlace(
+                            name=f"Tokyo Place {index}",
+                            maps_url=f"https://maps.google.com/?cid=111222333{index}",
+                            cid=f"111222333{index}",
+                        )
+                        for index in range(6)
+                    ],
+                ),
+            )
+            refreshed_payload = RawSavedList(
+                title="New Small List",
+                source_signature=build_data.raw_source_signature(source),
+                configured_source_type="google_list_url",
+                places=[
+                    RawPlace(
+                        name="New Place",
+                        maps_url="https://maps.google.com/?cid=999",
+                        cid="999",
+                    )
+                ],
+            )
+
+            with (
+                patch.object(build_data, "RAW_DIR", raw_dir),
+                patch.object(build_data, "load_sources", return_value=[source]),
+                patch.object(build_data, "scrape_google_list_url", return_value=refreshed_payload),
+            ):
+                build_data.refresh_raw_sources(
+                    headed=False,
+                    force_refresh=False,
+                    refresh_lists=["tokyo-japan"],
+                    refresh_workers=1,
+                    allow_suspicious_identity_loss=True,
+                    refresh_retries=0,
+                    refresh_startup_jitter_seconds=0,
+                )
+
+            payload = RawSavedList.model_validate_json(raw_path.read_text(encoding="utf-8"))
+
+        self.assertEqual(payload.title, "New Small List")
+        self.assertEqual([place.name for place in payload.places], ["New Place"])
 
     def test_refresh_raw_sources_does_not_hide_unexpected_refresh_errors(self) -> None:
         source = SourceConfig(
