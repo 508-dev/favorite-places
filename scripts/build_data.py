@@ -3021,6 +3021,42 @@ def extract_maps_place_token(maps_url: str | None) -> str | None:
     return match.group(1).lower()
 
 
+def extract_maps_query_place_id(maps_url: str | None) -> str | None:
+    normalized_url = as_string(maps_url)
+    if normalized_url is None:
+        return None
+    parsed = urlsplit(normalized_url)
+    for key, value in parse_qsl(parsed.query, keep_blank_values=False):
+        if key == "query_place_id" and value:
+            return value
+    return None
+
+
+def normalized_google_place_resource_identity(value: str | None) -> str | None:
+    normalized = as_string(value)
+    if normalized is None:
+        return None
+    return normalized.removeprefix("places/")
+
+
+def google_maps_url_identity(maps_url: str | None) -> str | None:
+    query_place_id = extract_maps_query_place_id(maps_url)
+    if query_place_id is not None:
+        return f"google_place_id:{query_place_id}"
+    cid = extract_maps_cid(maps_url)
+    if cid is not None:
+        return f"cid:{cid}"
+    maps_place_token = extract_maps_place_token(maps_url)
+    if maps_place_token is not None:
+        return f"gms:{maps_place_token}"
+    normalized_url = as_string(maps_url)
+    if normalized_url is None or not resolved_google_maps_url_is_place_page(normalized_url):
+        return None
+    parsed = urlsplit(normalized_url)
+    path = unquote(parsed.path).rstrip("/")
+    return f"google_maps_uri:{parsed.netloc.lower()}{path}"
+
+
 def expand_location_tag_aliases(tags: set[str]) -> set[str]:
     expanded = set(tags)
     for tag in list(tags):
@@ -7447,6 +7483,9 @@ def merge_page_place_into_api_entry(
     if not api_place.about_sections:
         api_place.about_sections = page_place.about_sections
 
+    if page_place.limited_view is True:
+        api_place.limited_view = True
+
     if google_maps_uri_strength(page_place.google_maps_uri) > google_maps_uri_strength(api_place.google_maps_uri):
         api_place.google_maps_uri = page_place.google_maps_uri
 
@@ -7460,6 +7499,10 @@ def merged_enrichment_sources(*entries: EnrichmentCacheEntry) -> list[Literal["g
         if any(entry.source == source or source in entry.merged_sources for entry in entries):
             sources.append(source)
     return sources
+
+
+def cache_entry_includes_google_places_api(entry: EnrichmentCacheEntry) -> bool:
+    return entry.source == "google_places_api" or "google_places_api" in entry.merged_sources
 
 
 def preserve_existing_enrichment(
@@ -7493,78 +7536,112 @@ def preserve_existing_enrichment(
     can_preserve_previous_identity = (
         allow_identity_mismatch
         or raw_place is None
-        or enrichment_identity_is_compatible_with_raw(raw_place, previous_place)
+        or (
+            enrichment_identity_is_compatible_with_raw(raw_place, previous_place)
+            and enrichment_address_is_compatible_with_raw(raw_place, previous_place)
+        )
     )
-
-    preserved_fields: list[str] = []
-
-    if refreshed_place.rating is None and previous_place.rating is not None:
-        refreshed_place.rating = previous_place.rating
-        append_unique_reason(preserved_fields, "rating")
-    if refreshed_place.user_rating_count is None and previous_place.user_rating_count is not None:
-        refreshed_place.user_rating_count = previous_place.user_rating_count
-        append_unique_reason(preserved_fields, "user_rating_count")
-    if not refreshed_place.formatted_address and previous_place.formatted_address:
-        refreshed_place.formatted_address = previous_place.formatted_address
-        append_unique_reason(preserved_fields, "address")
-    if not refreshed_place.address_display_en and previous_place.address_display_en:
-        refreshed_place.address_display_en = previous_place.address_display_en
-        refreshed_place.address_display_en_source = previous_place.address_display_en_source
-        refreshed_place.address_display_en_confidence = previous_place.address_display_en_confidence
-
-    if not refreshed_place.primary_type_display_name and previous_place.primary_type_display_name:
-        refreshed_place.primary_type_display_name = previous_place.primary_type_display_name
-        if not refreshed_place.primary_type and previous_place.primary_type:
-            refreshed_place.primary_type = previous_place.primary_type
-        if not refreshed_place.types and previous_place.types:
-            refreshed_place.types = previous_place.types[:]
-        append_unique_reason(preserved_fields, "primary_category")
-    elif (
-        refreshed_place.primary_type_display_name == previous_place.primary_type_display_name
-        and not refreshed_place.primary_type
-        and previous_place.primary_type
-    ):
-        refreshed_place.primary_type = previous_place.primary_type
-        if not refreshed_place.types and previous_place.types:
-            refreshed_place.types = previous_place.types[:]
-
-    if not refreshed_place.primary_type_display_name_localized and previous_place.primary_type_display_name_localized:
-        refreshed_place.primary_type_display_name_localized = previous_place.primary_type_display_name_localized
-    if not refreshed_place.category_display_en and previous_place.category_display_en:
-        refreshed_place.category_display_en = previous_place.category_display_en
-        refreshed_place.category_display_en_source = previous_place.category_display_en_source
-        refreshed_place.category_display_en_confidence = previous_place.category_display_en_confidence
-
-    if not refreshed_place.business_status and previous_place.business_status:
-        refreshed_place.business_status = previous_place.business_status
-        append_unique_reason(preserved_fields, "status")
+    if not can_preserve_previous_identity and refreshed_place.limited_view is True:
+        return refreshed_entry, None
 
     if (
         can_preserve_previous_identity
-        and google_maps_uri_strength(refreshed_place.google_maps_uri)
-        < google_maps_uri_strength(previous_place.google_maps_uri)
-        and google_maps_uri_is_compatible_for_preservation(previous_place, refreshed_place)
+        and previous_place.limited_view is False
+        and refreshed_place.limited_view is True
+        and not cache_entry_includes_google_places_api(refreshed_entry)
     ):
-        refreshed_place.google_maps_uri = previous_place.google_maps_uri
-        if not refreshed_place.google_place_id and previous_place.google_place_id:
-            refreshed_place.google_place_id = previous_place.google_place_id
-        if not refreshed_place.google_place_resource_name and previous_place.google_place_resource_name:
-            refreshed_place.google_place_resource_name = previous_place.google_place_resource_name
-        append_unique_reason(preserved_fields, "maps_url")
-    elif can_preserve_previous_identity and google_maps_uri_is_compatible_for_preservation(previous_place, refreshed_place):
-        if not refreshed_place.google_place_id and previous_place.google_place_id:
-            refreshed_place.google_place_id = previous_place.google_place_id
-        if not refreshed_place.google_place_resource_name and previous_place.google_place_resource_name:
-            refreshed_place.google_place_resource_name = previous_place.google_place_resource_name
+        return (
+            cache_entry_with_refreshed_metadata(existing_entry, refreshed_entry),
+            f"WARNING: Preserving previous enrichment for {slug}:{place_id} [{place_name}] "
+            "because refresh returned degraded result (limited view).",
+        )
 
-    if not refreshed_place.main_photo_url and previous_place.main_photo_url:
-        refreshed_place.main_photo_url = previous_place.main_photo_url
-        append_unique_reason(preserved_fields, "photo_url")
-    if not refreshed_place.photo_url and previous_place.photo_url:
-        refreshed_place.photo_url = previous_place.photo_url
-        append_unique_reason(preserved_fields, "photo_url")
+    if enrichment_google_identity_shift_conflicts_with_raw(
+        previous_place,
+        refreshed_place,
+        raw_place=raw_place,
+        allow_identity_mismatch=allow_identity_mismatch,
+    ):
+        return (
+            existing_entry,
+            f"WARNING: Preserving previous enrichment for {slug}:{place_id} [{place_name}] "
+            "because refresh changed Google place identity to a conflicting location.",
+        )
+
+    preserved_fields: list[str] = []
 
     if can_preserve_previous_identity:
+        if refreshed_place.rating is None and previous_place.rating is not None:
+            refreshed_place.rating = previous_place.rating
+            append_unique_reason(preserved_fields, "rating")
+        if refreshed_place.user_rating_count is None and previous_place.user_rating_count is not None:
+            refreshed_place.user_rating_count = previous_place.user_rating_count
+            append_unique_reason(preserved_fields, "user_rating_count")
+        if not refreshed_place.formatted_address and previous_place.formatted_address:
+            refreshed_place.formatted_address = previous_place.formatted_address
+            append_unique_reason(preserved_fields, "address")
+        if not refreshed_place.address_display_en and previous_place.address_display_en:
+            refreshed_place.address_display_en = previous_place.address_display_en
+            refreshed_place.address_display_en_source = previous_place.address_display_en_source
+            refreshed_place.address_display_en_confidence = previous_place.address_display_en_confidence
+
+        if not refreshed_place.primary_type_display_name and previous_place.primary_type_display_name:
+            refreshed_place.primary_type_display_name = previous_place.primary_type_display_name
+            if not refreshed_place.primary_type and previous_place.primary_type:
+                refreshed_place.primary_type = previous_place.primary_type
+            if not refreshed_place.types and previous_place.types:
+                refreshed_place.types = previous_place.types[:]
+            append_unique_reason(preserved_fields, "primary_category")
+        elif (
+            refreshed_place.primary_type_display_name == previous_place.primary_type_display_name
+            and not refreshed_place.primary_type
+            and previous_place.primary_type
+        ):
+            refreshed_place.primary_type = previous_place.primary_type
+            if not refreshed_place.types and previous_place.types:
+                refreshed_place.types = previous_place.types[:]
+
+        if (
+            not refreshed_place.primary_type_display_name_localized
+            and previous_place.primary_type_display_name_localized
+        ):
+            refreshed_place.primary_type_display_name_localized = previous_place.primary_type_display_name_localized
+        if not refreshed_place.category_display_en and previous_place.category_display_en:
+            refreshed_place.category_display_en = previous_place.category_display_en
+            refreshed_place.category_display_en_source = previous_place.category_display_en_source
+            refreshed_place.category_display_en_confidence = previous_place.category_display_en_confidence
+
+        if not refreshed_place.business_status and previous_place.business_status:
+            refreshed_place.business_status = previous_place.business_status
+            append_unique_reason(preserved_fields, "status")
+
+        if price_range_regressed_from_symbolic_tier(previous_place, refreshed_place):
+            preserve_previous_symbolic_price_range(previous_place, refreshed_place)
+            append_unique_reason(preserved_fields, "price_range")
+
+        if (
+            google_maps_uri_strength(refreshed_place.google_maps_uri)
+            < google_maps_uri_strength(previous_place.google_maps_uri)
+            and google_maps_uri_is_compatible_for_preservation(previous_place, refreshed_place)
+        ):
+            refreshed_place.google_maps_uri = previous_place.google_maps_uri
+            if not refreshed_place.google_place_id and previous_place.google_place_id:
+                refreshed_place.google_place_id = previous_place.google_place_id
+            if not refreshed_place.google_place_resource_name and previous_place.google_place_resource_name:
+                refreshed_place.google_place_resource_name = previous_place.google_place_resource_name
+            append_unique_reason(preserved_fields, "maps_url")
+        elif google_maps_uri_is_compatible_for_preservation(previous_place, refreshed_place):
+            if not refreshed_place.google_place_id and previous_place.google_place_id:
+                refreshed_place.google_place_id = previous_place.google_place_id
+            if not refreshed_place.google_place_resource_name and previous_place.google_place_resource_name:
+                refreshed_place.google_place_resource_name = previous_place.google_place_resource_name
+
+        if not refreshed_place.main_photo_url and previous_place.main_photo_url:
+            refreshed_place.main_photo_url = previous_place.main_photo_url
+            append_unique_reason(preserved_fields, "photo_url")
+        if not refreshed_place.photo_url and previous_place.photo_url:
+            refreshed_place.photo_url = previous_place.photo_url
+            append_unique_reason(preserved_fields, "photo_url")
         if not refreshed_place.review_topics and previous_place.review_topics:
             refreshed_place.review_topics = previous_place.review_topics[:]
             append_unique_reason(preserved_fields, "review_topics")
@@ -7614,6 +7691,20 @@ def semantic_description_for_preservation(
     )
 
 
+def cache_entry_with_refreshed_metadata(
+    existing_entry: EnrichmentCacheEntry,
+    refreshed_entry: EnrichmentCacheEntry,
+) -> EnrichmentCacheEntry:
+    updates: dict[str, Any] = {}
+    for field_name in ("fetched_at", "refresh_after", "input_signature"):
+        value = getattr(refreshed_entry, field_name)
+        if value is not None:
+            updates[field_name] = value
+    if not updates:
+        return existing_entry
+    return existing_entry.model_copy(update=updates)
+
+
 def google_maps_uri_is_compatible_for_preservation(
     previous_place: EnrichmentPlace,
     refreshed_place: EnrichmentPlace,
@@ -7623,6 +7714,202 @@ def google_maps_uri_is_compatible_for_preservation(
     if previous_address and refreshed_address and token_overlap_score(previous_address, refreshed_address) == 0:
         return False
     return True
+
+
+def enrichment_address_is_compatible_with_raw(
+    raw_place: RawPlace | None,
+    enrichment_place: EnrichmentPlace,
+) -> bool:
+    if raw_place is None:
+        return True
+    raw_address = as_string(raw_place.address)
+    if raw_address is None:
+        return True
+    enrichment_address = as_string(enrichment_place.formatted_address)
+    if enrichment_address is None:
+        return True
+    return not address_texts_conflict(raw_address, enrichment_address)
+
+
+def price_range_regressed_from_symbolic_tier(
+    previous_place: EnrichmentPlace,
+    refreshed_place: EnrichmentPlace,
+) -> bool:
+    previous_price = as_string(previous_place.price_range)
+    refreshed_price = as_string(refreshed_place.price_range)
+    if previous_price is None or refreshed_price is None:
+        return False
+    return (
+        symbolic_price_tier(previous_price) is not None
+        and symbolic_price_tier(refreshed_price) is None
+        and parse_price_text(refreshed_price) is not None
+    )
+
+
+def reset_semantic_description_after_price_preservation(place: EnrichmentPlace) -> None:
+    if not place.semantic_description and not place.semantic_description_signature:
+        return
+    place.semantic_description = None
+    place.semantic_description_signature = None
+    if not semantic_enrichment_state_is_populated(semantic_enrichment_state(place)):
+        place.semantic_source = None
+
+
+def preserve_previous_symbolic_price_range(
+    previous_place: EnrichmentPlace,
+    refreshed_place: EnrichmentPlace,
+) -> None:
+    numeric_price = as_string(refreshed_place.price_range)
+    for field_name in ("admission_price", "room_price"):
+        if numeric_price is not None and as_string(getattr(refreshed_place, field_name)) == numeric_price:
+            setattr(refreshed_place, field_name, None)
+    refreshed_place.price_range = previous_place.price_range
+    reset_semantic_description_after_price_preservation(refreshed_place)
+
+
+def enrichment_google_identity_shift_conflicts_with_raw(
+    previous_place: EnrichmentPlace,
+    refreshed_place: EnrichmentPlace,
+    *,
+    raw_place: RawPlace | None,
+    allow_identity_mismatch: bool,
+) -> bool:
+    if allow_identity_mismatch or raw_place is None:
+        return False
+    if not enrichment_identity_is_compatible_with_raw(raw_place, previous_place):
+        return False
+    previous_identity = enrichment_google_identity_for_shift_detection(previous_place)
+    refreshed_identity = enrichment_google_identity_for_shift_detection(refreshed_place)
+    if previous_identity is not None and refreshed_identity is not None and previous_identity == refreshed_identity:
+        return False
+    if not enrichment_identity_is_compatible_with_raw(raw_place, refreshed_place):
+        return True
+    if not enrichment_address_conflicts_with_raw_or_previous(
+        previous_place,
+        refreshed_place,
+        raw_place=raw_place,
+    ):
+        return False
+    if previous_identity is None or refreshed_identity is None:
+        return False
+    return True
+
+
+def enrichment_google_identity_for_shift_detection(place: EnrichmentPlace) -> str | None:
+    google_place_id = as_string(place.google_place_id)
+    if google_place_id is not None:
+        return f"google_place_id:{google_place_id}"
+    google_place_resource_name = normalized_google_place_resource_identity(place.google_place_resource_name)
+    if google_place_resource_name is not None:
+        return f"google_place_id:{google_place_resource_name}"
+    google_maps_identity = google_maps_url_identity(place.google_maps_uri)
+    if google_maps_identity is not None:
+        return google_maps_identity
+    search_result_identity = google_maps_url_identity(place.search_result_url)
+    if search_result_identity is not None:
+        return search_result_identity
+    return None
+
+
+def enrichment_address_conflicts_with_raw_or_previous(
+    previous_place: EnrichmentPlace,
+    refreshed_place: EnrichmentPlace,
+    *,
+    raw_place: RawPlace,
+) -> bool:
+    refreshed_address = refreshed_place.formatted_address
+    if refreshed_address is None:
+        return False
+    return address_texts_conflict(raw_place.address, refreshed_address) or address_texts_conflict(
+        previous_place.formatted_address,
+        refreshed_address,
+    )
+
+
+def address_texts_conflict(left: str | None, right: str | None) -> bool:
+    left_text = normalize_text(left)
+    right_text = normalize_text(right)
+    if not left_text or not right_text or left_text == right_text:
+        return False
+    left_street_numbers = address_street_numbers(as_string(left) or "")
+    right_street_numbers = address_street_numbers(as_string(right) or "")
+    if left_street_numbers and right_street_numbers and not left_street_numbers & right_street_numbers:
+        return True
+    left_numbers = set(re.findall(r"\d+", left_text))
+    right_numbers = set(re.findall(r"\d+", right_text))
+    if left_numbers and right_numbers and not left_numbers & right_numbers:
+        return True
+    return address_token_overlap_score(as_string(left) or "", as_string(right) or "") == 0
+
+
+ADDRESS_TOKEN_STOPWORDS = {
+    "city",
+    "country",
+    "county",
+    "district",
+    "prefecture",
+    "province",
+    "region",
+    "state",
+    "street",
+    "st",
+    "the",
+    "united",
+    "avenue",
+    "ave",
+    "road",
+    "rd",
+    "boulevard",
+    "blvd",
+    "lane",
+    "ln",
+    "drive",
+    "dr",
+    "way",
+    "place",
+    "pl",
+    "court",
+    "ct",
+    "square",
+    "sq",
+}
+
+
+def address_street_numbers(text: str) -> set[str]:
+    parts = [part.strip() for part in re.split(r"[,、]", text) if part.strip()]
+    if not parts:
+        parts = [text]
+    for part in parts:
+        numbers = set(re.findall(r"\d+", part))
+        if numbers:
+            return numbers
+    return set()
+
+
+def address_identity_tokens(text: str) -> set[str]:
+    parts = [part.strip() for part in re.split(r"[,、]", text) if part.strip()]
+    if not parts:
+        parts = [text]
+    streetish_parts = [
+        part
+        for index, part in enumerate(parts)
+        if index == 0 or re.search(r"\d", part)
+    ]
+    tokens = {
+        token
+        for part in streetish_parts
+        for token in re.findall(r"[\w]+", part.casefold())
+        if len(token) > 2 and not token.isdigit() and token not in ADDRESS_TOKEN_STOPWORDS
+    }
+    return tokens
+
+
+def address_token_overlap_score(left: str, right: str) -> int:
+    left_tokens = address_identity_tokens(left)
+    right_tokens = address_identity_tokens(right)
+    if not left_tokens or not right_tokens:
+        return 0
+    return len(left_tokens & right_tokens) * 5
 
 
 def load_places_cache(slug: str) -> dict[str, EnrichmentCacheEntry]:

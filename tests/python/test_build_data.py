@@ -3953,6 +3953,476 @@ class BuildDataTests(unittest.TestCase):
         self.assertIn("about", warning or "")
         self.assertIn("semantic_description", warning or "")
 
+    def test_preserve_existing_enrichment_keeps_rich_row_when_refresh_is_limited_view(self) -> None:
+        existing_entry = EnrichmentCacheEntry(
+            fetched_at="2026-07-06T00:00:00+00:00",
+            refresh_after="2026-07-07T00:00:00+00:00",
+            input_signature="old-signature",
+            source="google_maps_page",
+            query="Tanta de Miraflores, Lima",
+            matched=True,
+            place=EnrichmentPlace(
+                google_place_id="ChIJcRZpcB3IBZERnslL022_dbs",
+                display_name="Tanta de Miraflores",
+                formatted_address="Av. Vasco Núñez de Balboa 660, Miraflores 15074, Peru",
+                rating=4.4,
+                review_topics=[{"label": "ceviche", "count": 11}],
+                about_sections=[
+                    {
+                        "title": "Accessibility",
+                        "items": [{"label": "Wheelchair accessible entrance"}],
+                    }
+                ],
+                limited_view=False,
+            ),
+        )
+        refreshed_entry = EnrichmentCacheEntry(
+            fetched_at="2026-07-08T00:00:00+00:00",
+            refresh_after="2026-07-15T00:00:00+00:00",
+            input_signature="new-signature",
+            source="google_maps_page",
+            query="Tanta de Miraflores, Lima",
+            matched=True,
+            place=EnrichmentPlace(
+                google_place_id="ChIJcRZpcB3IBZERnslL022_dbs",
+                display_name="Tanta de Miraflores",
+                formatted_address="Av. Vasco Núñez de Balboa 660, Miraflores 15074, Peru",
+                rating=4.4,
+                review_topics=[{"label": "Photo of Christina", "count": 1010}],
+                about_sections=[{"title": "Accessibility"}],
+                limited_view=True,
+            ),
+        )
+
+        merged, warning = build_data.preserve_existing_enrichment(
+            slug="lima-peru",
+            place_id="gid:g-1hd_kmn5v",
+            place_name="Tanta de Miraflores",
+            existing_entry=existing_entry,
+            refreshed_entry=refreshed_entry,
+        )
+
+        self.assertIsNot(merged, existing_entry)
+        self.assertIs(merged.place, existing_entry.place)
+        self.assertEqual(merged.fetched_at, "2026-07-08T00:00:00+00:00")
+        self.assertEqual(merged.refresh_after, "2026-07-15T00:00:00+00:00")
+        self.assertEqual(merged.input_signature, "new-signature")
+        self.assertIn("limited view", warning or "")
+
+    def test_preserve_existing_enrichment_keeps_api_backed_limited_refresh(self) -> None:
+        existing_entry = EnrichmentCacheEntry(
+            fetched_at="2026-07-06T00:00:00+00:00",
+            source="google_maps_page",
+            query="Tanta de Miraflores, Lima",
+            matched=True,
+            place=EnrichmentPlace(
+                google_place_id="ChIJcRZpcB3IBZERnslL022_dbs",
+                display_name="Tanta de Miraflores",
+                formatted_address="Av. Vasco Núñez de Balboa 660, Miraflores 15074, Peru",
+                rating=4.4,
+                limited_view=False,
+            ),
+        )
+        refreshed_entry = EnrichmentCacheEntry(
+            fetched_at="2026-07-08T00:00:00+00:00",
+            source="google_places_api",
+            merged_sources=["google_maps_page", "google_places_api"],
+            query="Tanta de Miraflores, Lima",
+            matched=True,
+            place=EnrichmentPlace(
+                google_place_id="ChIJcRZpcB3IBZERnslL022_dbs",
+                display_name="Tanta de Miraflores",
+                formatted_address="Av. Vasco Núñez de Balboa 660, Miraflores 15074, Peru",
+                rating=4.5,
+                limited_view=True,
+            ),
+        )
+
+        merged, warning = build_data.preserve_existing_enrichment(
+            slug="lima-peru",
+            place_id="gid:g-1hd_kmn5v",
+            place_name="Tanta de Miraflores",
+            existing_entry=existing_entry,
+            refreshed_entry=refreshed_entry,
+        )
+
+        self.assertIs(merged, refreshed_entry)
+        self.assertIsNone(warning)
+        assert merged.place is not None
+        self.assertEqual(merged.place.rating, 4.5)
+
+    def test_preserve_existing_enrichment_does_not_keep_limited_view_for_stale_identity(self) -> None:
+        raw_place = RawPlace(
+            name="Lola Underground",
+            address="Hay St &, Cathedral Ave, Perth WA 6000, Australia",
+            maps_url="https://www.google.com/maps/search/?api=1&query=Lola+Underground",
+        )
+        existing_entry = EnrichmentCacheEntry(
+            fetched_at="2026-05-01T00:00:00+00:00",
+            source="google_maps_page",
+            query="Lola Underground, Perth",
+            matched=True,
+            place=EnrichmentPlace(
+                display_name="Pooles Temple",
+                formatted_address="Hay St &, Cathedral Ave, Perth WA 6000, Australia",
+                google_place_id="stale-pooles-place-id",
+                limited_view=False,
+            ),
+        )
+        refreshed_entry = EnrichmentCacheEntry(
+            fetched_at="2026-05-02T00:00:00+00:00",
+            source="google_maps_page",
+            query="Lola Underground, Perth",
+            matched=True,
+            place=EnrichmentPlace(
+                display_name="Lola Underground",
+                formatted_address="Hay St &, Cathedral Ave, Perth WA 6000, Australia",
+                limited_view=True,
+            ),
+        )
+
+        merged, warning = build_data.preserve_existing_enrichment(
+            slug="perth-and-fremantle-australia",
+            place_id="cid:3040698308894550531",
+            place_name="Lola Underground",
+            existing_entry=existing_entry,
+            refreshed_entry=refreshed_entry,
+            raw_place=raw_place,
+        )
+
+        self.assertIs(merged, refreshed_entry)
+        self.assertIsNone(warning)
+        assert merged.place is not None
+        self.assertEqual(merged.place.display_name, "Lola Underground")
+
+    def test_preserve_existing_enrichment_does_not_keep_limited_view_for_wrong_cached_address(self) -> None:
+        raw_place = RawPlace(
+            name="Tanta de Miraflores",
+            address="Av. Vasco Núñez de Balboa 660, Miraflores 15074, Peru",
+            maps_url="https://maps.google.com/?cid=111",
+        )
+        existing_entry = EnrichmentCacheEntry(
+            fetched_at="2026-07-06T00:00:00+00:00",
+            source="google_maps_page",
+            query="Tanta de Miraflores, Lima",
+            matched=True,
+            place=EnrichmentPlace(
+                google_place_id="same-name-wrong-branch",
+                display_name="Tanta de Miraflores",
+                formatted_address="Av. Primavera 120, Santiago de Surco 15023, Peru",
+                rating=4.6,
+                limited_view=False,
+            ),
+        )
+        refreshed_entry = EnrichmentCacheEntry(
+            fetched_at="2026-07-08T00:00:00+00:00",
+            source="google_maps_page",
+            query="Tanta de Miraflores, Lima",
+            matched=True,
+            place=EnrichmentPlace(
+                display_name="Tanta de Miraflores",
+                formatted_address="Av. Vasco Núñez de Balboa 660, Miraflores 15074, Peru",
+                limited_view=True,
+            ),
+        )
+
+        merged, warning = build_data.preserve_existing_enrichment(
+            slug="lima-peru",
+            place_id="cid:111",
+            place_name="Tanta de Miraflores",
+            existing_entry=existing_entry,
+            refreshed_entry=refreshed_entry,
+            raw_place=raw_place,
+        )
+
+        self.assertIs(merged, refreshed_entry)
+        self.assertIsNone(warning)
+
+    def test_preserve_existing_enrichment_keeps_symbolic_price_tier(self) -> None:
+        existing_entry = EnrichmentCacheEntry(
+            fetched_at="2026-06-11T00:00:00+00:00",
+            source="google_maps_page",
+            query="Mount Desert Island Ice Cream, Bar Harbor",
+            matched=True,
+            place=EnrichmentPlace(
+                google_place_id="ChIJHfztTmO_rkwRFQ1uTa_aXd4",
+                display_name="Mount Desert Island Ice Cream",
+                formatted_address="7 Firefly Ln, Bar Harbor, ME 04609",
+                price_range="$$",
+                primary_type="ice_cream_shop",
+                primary_type_display_name="Ice cream shop",
+                types=["bakery", "ice_cream_shop"],
+                semantic_description="A popular Bar Harbor scoop shop for housemade ice cream.",
+                semantic_description_signature="old-price-signature",
+                semantic_source="llm",
+            ),
+        )
+        refreshed_entry = EnrichmentCacheEntry(
+            fetched_at="2026-07-08T00:00:00+00:00",
+            source="google_maps_page",
+            query="Mount Desert Island Ice Cream, Bar Harbor",
+            matched=True,
+            place=EnrichmentPlace(
+                google_place_id="ChIJHfztTmO_rkwRFQ1uTa_aXd4",
+                display_name="Mount Desert Island Ice Cream",
+                formatted_address="7 Firefly Ln, Bar Harbor, ME 04609",
+                price_range="¥177,790",
+                room_price="¥177,790",
+                primary_type="ice_cream_shop",
+                primary_type_display_name="Ice cream shop",
+                types=["bakery", "ice_cream_shop"],
+                semantic_description="An ice cream shop with ¥177,790 pricing.",
+                semantic_description_signature="bad-price-signature",
+                semantic_source="llm",
+            ),
+        )
+
+        merged, warning = build_data.preserve_existing_enrichment(
+            slug="maine-coast-usa",
+            place_id="gid:g-1tj735th",
+            place_name="Mount Desert Island Ice Cream",
+            existing_entry=existing_entry,
+            refreshed_entry=refreshed_entry,
+        )
+
+        self.assertIs(merged, refreshed_entry)
+        assert merged.place is not None
+        self.assertEqual(merged.place.price_range, "$$")
+        self.assertIsNone(merged.place.room_price)
+        self.assertEqual(
+            merged.place.semantic_description,
+            "A popular Bar Harbor scoop shop for housemade ice cream.",
+        )
+        self.assertEqual(merged.place.semantic_description_signature, "old-price-signature")
+        self.assertIn("price_range", warning or "")
+        self.assertIn("semantic_description", warning or "")
+
+    def test_preserve_existing_enrichment_does_not_keep_symbolic_price_for_stale_identity(self) -> None:
+        raw_place = RawPlace(
+            name="Mount Desert Island Ice Cream",
+            address="7 Firefly Ln, Bar Harbor, ME 04609",
+            maps_url="https://maps.google.com/?cid=111",
+        )
+        existing_entry = EnrichmentCacheEntry(
+            fetched_at="2026-06-11T00:00:00+00:00",
+            source="google_maps_page",
+            query="Mount Desert Island Ice Cream, Bar Harbor",
+            matched=True,
+            place=EnrichmentPlace(
+                display_name="Different Hotel",
+                formatted_address="99 Other St, Bar Harbor, ME 04609",
+                price_range="$$",
+            ),
+        )
+        refreshed_entry = EnrichmentCacheEntry(
+            fetched_at="2026-07-08T00:00:00+00:00",
+            source="google_maps_page",
+            query="Mount Desert Island Ice Cream, Bar Harbor",
+            matched=True,
+            place=EnrichmentPlace(
+                display_name="Mount Desert Island Ice Cream",
+                formatted_address="7 Firefly Ln, Bar Harbor, ME 04609",
+                price_range="¥177,790",
+            ),
+        )
+
+        merged, warning = build_data.preserve_existing_enrichment(
+            slug="maine-coast-usa",
+            place_id="cid:111",
+            place_name="Mount Desert Island Ice Cream",
+            existing_entry=existing_entry,
+            refreshed_entry=refreshed_entry,
+            raw_place=raw_place,
+        )
+
+        self.assertIs(merged, refreshed_entry)
+        assert merged.place is not None
+        self.assertEqual(merged.place.price_range, "¥177,790")
+        self.assertIsNone(warning)
+
+    def test_preserve_existing_enrichment_keeps_saved_list_location_on_identity_shift(self) -> None:
+        raw_place = RawPlace(
+            name="Abito",
+            address="C. 56 451-Local 32, Zona Paseo Montejo, Centro, 97000 Mérida, Yuc., Mexico",
+            lat=20.9864,
+            lng=-89.6190,
+            maps_url="https://maps.google.com/?cid=111",
+            google_id="/g/11bym_dkp6",
+        )
+        existing_entry = EnrichmentCacheEntry(
+            fetched_at="2026-06-11T00:00:00+00:00",
+            source="google_maps_page",
+            query="Abito, Mérida",
+            matched=True,
+            place=EnrichmentPlace(
+                google_place_id="ChIJp4jyC1pxVo8RIVqMwMkIT8Q",
+                display_name="Abito",
+                formatted_address="Calle 60, C. 35 346, Zona Paseo Montejo, Centro, 97000 Mérida, Yuc., Mexico",
+                google_maps_uri="https://www.google.com/maps/place/Abito/@20.9854779,-89.6195071,17z/",
+                primary_type_display_name="Clothing store",
+            ),
+        )
+        refreshed_entry = EnrichmentCacheEntry(
+            fetched_at="2026-07-08T00:00:00+00:00",
+            source="google_maps_page",
+            query="Abito, Mérida",
+            matched=True,
+            place=EnrichmentPlace(
+                google_place_id="ChIJ1wykGfZyVo8RXFQFnJtWTTM",
+                display_name="Abito",
+                formatted_address="Internacional, 97295 Merida, Yucatan, Mexico",
+                google_maps_uri="https://www.google.com/maps/place/Abito/@20.933687,-89.6632749,17z/",
+                primary_type_display_name="Clothing store",
+            ),
+        )
+
+        merged, warning = build_data.preserve_existing_enrichment(
+            slug="merida-mexico",
+            place_id="gid:g-11bym_dkp6",
+            place_name="Abito",
+            existing_entry=existing_entry,
+            refreshed_entry=refreshed_entry,
+            raw_place=raw_place,
+        )
+
+        self.assertIs(merged, existing_entry)
+        self.assertIn("changed Google place identity", warning or "")
+
+    def test_preserve_existing_enrichment_catches_identity_shift_without_refreshed_place_id(self) -> None:
+        raw_place = RawPlace(
+            name="Abito",
+            address="C. 56 451-Local 32, Zona Paseo Montejo, Centro, 97000 Mérida, Yuc., Mexico",
+            maps_url="https://maps.google.com/?cid=111",
+        )
+        existing_entry = EnrichmentCacheEntry(
+            fetched_at="2026-06-11T00:00:00+00:00",
+            source="google_maps_page",
+            query="Abito, Mérida",
+            matched=True,
+            place=EnrichmentPlace(
+                google_place_id="ChIJp4jyC1pxVo8RIVqMwMkIT8Q",
+                display_name="Abito",
+                formatted_address="C. 56 451-Local 32, Zona Paseo Montejo, Centro, 97000 Mérida, Yuc., Mexico",
+                google_maps_uri="https://www.google.com/maps/place/Abito/@20.9854779,-89.6195071,17z/",
+            ),
+        )
+        refreshed_entry = EnrichmentCacheEntry(
+            fetched_at="2026-07-08T00:00:00+00:00",
+            source="google_maps_page",
+            query="Abito, Mérida",
+            matched=True,
+            place=EnrichmentPlace(
+                display_name="Abito",
+                formatted_address="Internacional, 97295 Merida, Yucatan, Mexico",
+                google_maps_uri="https://www.google.com/maps/place/Abito/@20.933687,-89.6632749,17z/",
+            ),
+        )
+
+        merged, warning = build_data.preserve_existing_enrichment(
+            slug="merida-mexico",
+            place_id="gid:g-11bym_dkp6",
+            place_name="Abito",
+            existing_entry=existing_entry,
+            refreshed_entry=refreshed_entry,
+            raw_place=raw_place,
+        )
+
+        self.assertIs(merged, existing_entry)
+        self.assertIn("changed Google place identity", warning or "")
+
+    def test_preserve_existing_enrichment_treats_locality_only_address_overlap_as_conflict(self) -> None:
+        raw_place = RawPlace(
+            name="Abito",
+            address="123 First St, Merida, Yucatan, Mexico",
+            maps_url="https://maps.google.com/?cid=111",
+        )
+        existing_entry = EnrichmentCacheEntry(
+            fetched_at="2026-06-11T00:00:00+00:00",
+            source="google_maps_page",
+            query="Abito, Mérida",
+            matched=True,
+            place=EnrichmentPlace(
+                google_place_id="saved-list-branch",
+                display_name="Abito",
+                formatted_address="123 First St, Merida, Yucatan, Mexico",
+                google_maps_uri="https://www.google.com/maps/place/Abito/@20.9854779,-89.6195071,17z/",
+            ),
+        )
+        refreshed_entry = EnrichmentCacheEntry(
+            fetched_at="2026-07-08T00:00:00+00:00",
+            source="google_maps_page",
+            query="Abito, Mérida",
+            matched=True,
+            place=EnrichmentPlace(
+                google_place_id="other-branch",
+                display_name="Abito",
+                formatted_address="456 Second Ave, Merida, Yucatan, Mexico",
+                google_maps_uri="https://www.google.com/maps/place/Abito/@20.933687,-89.6632749,17z/",
+            ),
+        )
+
+        merged, warning = build_data.preserve_existing_enrichment(
+            slug="merida-mexico",
+            place_id="gid:g-11bym_dkp6",
+            place_name="Abito",
+            existing_entry=existing_entry,
+            refreshed_entry=refreshed_entry,
+            raw_place=raw_place,
+        )
+
+        self.assertIs(merged, existing_entry)
+        self.assertIn("changed Google place identity", warning or "")
+
+    def test_enrichment_identity_shift_normalizes_resource_names_and_query_place_urls(self) -> None:
+        self.assertEqual(
+            build_data.enrichment_google_identity_for_shift_detection(
+                EnrichmentPlace(google_place_resource_name="places/ChIJ123")
+            ),
+            "google_place_id:ChIJ123",
+        )
+        self.assertEqual(
+            build_data.enrichment_google_identity_for_shift_detection(
+                EnrichmentPlace(
+                    google_maps_uri=(
+                        "https://www.google.com/maps/search/?api=1&query=Abito"
+                        "&query_place_id=ChIJ123"
+                    )
+                )
+            ),
+            "google_place_id:ChIJ123",
+        )
+
+    def test_google_maps_url_identity_prefers_maps_place_token(self) -> None:
+        token = "0x89c259a61c75684f:0x79d31adb12345678"
+
+        self.assertEqual(
+            build_data.google_maps_url_identity(
+                f"https://www.google.com/maps/place/Old+Name/data=!4m2!3m1!1s{token}"
+            ),
+            f"gms:{token}",
+        )
+        self.assertEqual(
+            build_data.google_maps_url_identity(
+                f"https://www.google.com/maps/place/New+Name/@20.0,-89.0,17z/data=!4m2!3m1!1s{token}"
+            ),
+            f"gms:{token}",
+        )
+
+    def test_address_texts_conflict_ignores_generic_street_and_postal_overlap(self) -> None:
+        self.assertTrue(build_data.address_texts_conflict("Oak Street, City", "Pine Street, City"))
+        self.assertTrue(
+            build_data.address_texts_conflict(
+                "123 First St, Merida 97000",
+                "456 Second Ave, Merida 97000",
+            )
+        )
+        self.assertFalse(
+            build_data.address_texts_conflict(
+                "123 First St, Merida 97000",
+                "123 First Street, Merida 97000",
+            )
+        )
+
     def test_preserve_existing_enrichment_skips_invalid_cached_semantic_description(self) -> None:
         existing_entry = EnrichmentCacheEntry(
             fetched_at="2026-05-01T00:00:00+00:00",
@@ -4180,11 +4650,11 @@ class BuildDataTests(unittest.TestCase):
             raw_place=raw_place,
         )
 
-        self.assertIsNotNone(warning)
+        self.assertIsNone(warning)
         assert merged.place is not None
         self.assertIsNone(merged.place.google_maps_uri)
         self.assertIsNone(merged.place.google_place_id)
-        self.assertEqual(merged.place.business_status, "OPERATIONAL")
+        self.assertIsNone(merged.place.business_status)
 
         refreshed_entry = EnrichmentCacheEntry(
             fetched_at="2026-05-02T00:00:00+00:00",
@@ -11634,6 +12104,7 @@ class BuildDataTests(unittest.TestCase):
             entry.place.about_sections,
             [{"title": "Amenities", "items": [{"label": "Restroom"}]}],
         )
+        self.assertTrue(entry.place.limited_view)
         self.assertEqual(entry.place.google_maps_uri, "https://maps.google.com/?cid=1")
         self.assertEqual(entry.merged_sources, ["google_maps_page", "google_places_api"])
 
