@@ -7813,28 +7813,64 @@ def prune_places_cache_to_raw_places(
     payload: dict[str, EnrichmentCacheEntry],
     raw: RawSavedList,
 ) -> tuple[dict[str, EnrichmentCacheEntry], int]:
+    if not raw.places:
+        return {}, len(payload)
+
+    candidate_key_counts: Counter[str] = Counter()
+    place_candidate_keys: list[tuple[str, list[str]]] = []
     current_primary_keys = raw_saved_list_primary_match_key_set(raw)
-    current_place_ids = {
-        key
-        for place in raw.places
-        for key in raw_place_lookup_keys(
+    for place in raw.places:
+        place_id = stable_place_id(place, source_type=raw.configured_source_type)
+        candidate_keys = raw_place_lookup_keys(
             place,
             source_type=raw.configured_source_type,
             blocked_alias_keys=current_primary_keys,
         )
-    }
-    current_place_ids.update(
-        stable_place_id(place, source_type=raw.configured_source_type)
-        for place in raw.places
-    )
-    if not current_place_ids:
-        return {}, len(payload)
-    pruned_payload = {
-        place_id: entry
-        for place_id, entry in payload.items()
-        if place_id in current_place_ids
-    }
-    return pruned_payload, len(payload) - len(pruned_payload)
+        candidate_key_counts.update(candidate_keys)
+        place_candidate_keys.append((place_id, candidate_keys))
+
+    pruned_payload: dict[str, EnrichmentCacheEntry] = {}
+    used_payload_keys: set[str] = set()
+    changed_count = 0
+
+    for place_id, candidate_keys in place_candidate_keys:
+        candidates = [
+            (key, payload[key])
+            for key in candidate_keys
+            if key in payload and (key == place_id or candidate_key_counts[key] == 1)
+        ]
+        if not candidates:
+            continue
+
+        selected_key, selected_entry = max(
+            candidates,
+            key=lambda candidate: cache_entry_alias_priority(
+                candidate[1],
+                exact_match=candidate[0] == place_id,
+            ),
+        )
+        pruned_payload[place_id] = selected_entry
+        used_payload_keys.add(selected_key)
+        if selected_key != place_id:
+            changed_count += 1
+
+    changed_count += len(payload) - len(used_payload_keys)
+    return pruned_payload, changed_count
+
+
+def cache_entry_alias_priority(
+    entry: EnrichmentCacheEntry,
+    *,
+    exact_match: bool,
+) -> tuple[datetime, bool]:
+    for value in (entry.last_verified_at, entry.fetched_at):
+        if value is None:
+            continue
+        try:
+            return (parse_metadata_datetime(value), exact_match)
+        except ValueError:
+            continue
+    return (datetime.min.replace(tzinfo=UTC), exact_match)
 
 
 def export_places_cache_json(slug: str, payload: dict[str, EnrichmentCacheEntry]) -> None:

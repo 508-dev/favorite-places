@@ -14451,7 +14451,7 @@ class BuildDataTests(unittest.TestCase):
         self.assertEqual(list(pruned_payload), ["cid:14063537238082844765"])
         self.assertIs(pruned_payload["cid:14063537238082844765"], current_entry)
 
-    def test_prune_places_cache_to_raw_places_keeps_cid_alias_rows(self) -> None:
+    def test_prune_places_cache_to_raw_places_migrates_cid_alias_rows(self) -> None:
         raw = RawSavedList(
             title="Tokyo",
             configured_source_type="google_list_url",
@@ -14483,9 +14483,9 @@ class BuildDataTests(unittest.TestCase):
             raw,
         )
 
-        self.assertEqual(pruned_count, 1)
-        self.assertEqual(list(pruned_payload), ["cid:6924437575605096209"])
-        self.assertIs(pruned_payload["cid:6924437575605096209"], alias_entry)
+        self.assertEqual(pruned_count, 2)
+        self.assertEqual(list(pruned_payload), ["cid:9055794338847426964"])
+        self.assertIs(pruned_payload["cid:9055794338847426964"], alias_entry)
 
     def test_prune_places_cache_to_raw_places_drops_all_rows_for_empty_guide(self) -> None:
         raw = RawSavedList(title="Empty", places=[])
