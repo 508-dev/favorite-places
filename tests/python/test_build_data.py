@@ -4045,6 +4045,49 @@ class BuildDataTests(unittest.TestCase):
         assert merged.place is not None
         self.assertEqual(merged.place.display_name, "Lola Underground")
 
+    def test_preserve_existing_enrichment_does_not_keep_limited_view_for_wrong_cached_address(self) -> None:
+        raw_place = RawPlace(
+            name="Tanta de Miraflores",
+            address="Av. Vasco Núñez de Balboa 660, Miraflores 15074, Peru",
+            maps_url="https://maps.google.com/?cid=111",
+        )
+        existing_entry = EnrichmentCacheEntry(
+            fetched_at="2026-07-06T00:00:00+00:00",
+            source="google_maps_page",
+            query="Tanta de Miraflores, Lima",
+            matched=True,
+            place=EnrichmentPlace(
+                google_place_id="same-name-wrong-branch",
+                display_name="Tanta de Miraflores",
+                formatted_address="Av. Primavera 120, Santiago de Surco 15023, Peru",
+                rating=4.6,
+                limited_view=False,
+            ),
+        )
+        refreshed_entry = EnrichmentCacheEntry(
+            fetched_at="2026-07-08T00:00:00+00:00",
+            source="google_maps_page",
+            query="Tanta de Miraflores, Lima",
+            matched=True,
+            place=EnrichmentPlace(
+                display_name="Tanta de Miraflores",
+                formatted_address="Av. Vasco Núñez de Balboa 660, Miraflores 15074, Peru",
+                limited_view=True,
+            ),
+        )
+
+        merged, warning = build_data.preserve_existing_enrichment(
+            slug="lima-peru",
+            place_id="cid:111",
+            place_name="Tanta de Miraflores",
+            existing_entry=existing_entry,
+            refreshed_entry=refreshed_entry,
+            raw_place=raw_place,
+        )
+
+        self.assertIs(merged, refreshed_entry)
+        self.assertIsNone(warning)
+
     def test_preserve_existing_enrichment_keeps_symbolic_price_tier(self) -> None:
         existing_entry = EnrichmentCacheEntry(
             fetched_at="2026-06-11T00:00:00+00:00",
@@ -4102,6 +4145,49 @@ class BuildDataTests(unittest.TestCase):
         self.assertEqual(merged.place.semantic_description_signature, "old-price-signature")
         self.assertIn("price_range", warning or "")
         self.assertIn("semantic_description", warning or "")
+
+    def test_preserve_existing_enrichment_does_not_keep_symbolic_price_for_stale_identity(self) -> None:
+        raw_place = RawPlace(
+            name="Mount Desert Island Ice Cream",
+            address="7 Firefly Ln, Bar Harbor, ME 04609",
+            maps_url="https://maps.google.com/?cid=111",
+        )
+        existing_entry = EnrichmentCacheEntry(
+            fetched_at="2026-06-11T00:00:00+00:00",
+            source="google_maps_page",
+            query="Mount Desert Island Ice Cream, Bar Harbor",
+            matched=True,
+            place=EnrichmentPlace(
+                display_name="Different Hotel",
+                formatted_address="99 Other St, Bar Harbor, ME 04609",
+                price_range="$$",
+            ),
+        )
+        refreshed_entry = EnrichmentCacheEntry(
+            fetched_at="2026-07-08T00:00:00+00:00",
+            source="google_maps_page",
+            query="Mount Desert Island Ice Cream, Bar Harbor",
+            matched=True,
+            place=EnrichmentPlace(
+                display_name="Mount Desert Island Ice Cream",
+                formatted_address="7 Firefly Ln, Bar Harbor, ME 04609",
+                price_range="¥177,790",
+            ),
+        )
+
+        merged, warning = build_data.preserve_existing_enrichment(
+            slug="maine-coast-usa",
+            place_id="cid:111",
+            place_name="Mount Desert Island Ice Cream",
+            existing_entry=existing_entry,
+            refreshed_entry=refreshed_entry,
+            raw_place=raw_place,
+        )
+
+        self.assertIs(merged, refreshed_entry)
+        assert merged.place is not None
+        self.assertEqual(merged.place.price_range, "¥177,790")
+        self.assertIsNone(warning)
 
     def test_preserve_existing_enrichment_keeps_saved_list_location_on_identity_shift(self) -> None:
         raw_place = RawPlace(
@@ -4235,6 +4321,25 @@ class BuildDataTests(unittest.TestCase):
 
         self.assertIs(merged, existing_entry)
         self.assertIn("changed Google place identity", warning or "")
+
+    def test_enrichment_identity_shift_normalizes_resource_names_and_query_place_urls(self) -> None:
+        self.assertEqual(
+            build_data.enrichment_google_identity_for_shift_detection(
+                EnrichmentPlace(google_place_resource_name="places/ChIJ123")
+            ),
+            "google_place_id:ChIJ123",
+        )
+        self.assertEqual(
+            build_data.enrichment_google_identity_for_shift_detection(
+                EnrichmentPlace(
+                    google_maps_uri=(
+                        "https://www.google.com/maps/search/?api=1&query=Abito"
+                        "&query_place_id=ChIJ123"
+                    )
+                )
+            ),
+            "google_place_id:ChIJ123",
+        )
 
     def test_preserve_existing_enrichment_skips_invalid_cached_semantic_description(self) -> None:
         existing_entry = EnrichmentCacheEntry(

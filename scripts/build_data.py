@@ -3021,6 +3021,39 @@ def extract_maps_place_token(maps_url: str | None) -> str | None:
     return match.group(1).lower()
 
 
+def extract_maps_query_place_id(maps_url: str | None) -> str | None:
+    normalized_url = as_string(maps_url)
+    if normalized_url is None:
+        return None
+    parsed = urlsplit(normalized_url)
+    for key, value in parse_qsl(parsed.query, keep_blank_values=False):
+        if key == "query_place_id" and value:
+            return value
+    return None
+
+
+def normalized_google_place_resource_identity(value: str | None) -> str | None:
+    normalized = as_string(value)
+    if normalized is None:
+        return None
+    return normalized.removeprefix("places/")
+
+
+def google_maps_url_identity(maps_url: str | None) -> str | None:
+    query_place_id = extract_maps_query_place_id(maps_url)
+    if query_place_id is not None:
+        return f"google_place_id:{query_place_id}"
+    cid = extract_maps_cid(maps_url)
+    if cid is not None:
+        return f"cid:{cid}"
+    normalized_url = as_string(maps_url)
+    if normalized_url is None or not resolved_google_maps_url_is_place_page(normalized_url):
+        return None
+    parsed = urlsplit(normalized_url)
+    path = unquote(parsed.path).rstrip("/")
+    return f"google_maps_uri:{parsed.netloc.lower()}{path}"
+
+
 def expand_location_tag_aliases(tags: set[str]) -> set[str]:
     expanded = set(tags)
     for tag in list(tags):
@@ -7493,8 +7526,13 @@ def preserve_existing_enrichment(
     can_preserve_previous_identity = (
         allow_identity_mismatch
         or raw_place is None
-        or enrichment_identity_is_compatible_with_raw(raw_place, previous_place)
+        or (
+            enrichment_identity_is_compatible_with_raw(raw_place, previous_place)
+            and enrichment_address_is_compatible_with_raw(raw_place, previous_place)
+        )
     )
+    if not can_preserve_previous_identity and refreshed_place.limited_view is True:
+        return refreshed_entry, None
 
     if (
         can_preserve_previous_identity
@@ -7562,7 +7600,7 @@ def preserve_existing_enrichment(
         refreshed_place.business_status = previous_place.business_status
         append_unique_reason(preserved_fields, "status")
 
-    if price_range_regressed_from_symbolic_tier(previous_place, refreshed_place):
+    if can_preserve_previous_identity and price_range_regressed_from_symbolic_tier(previous_place, refreshed_place):
         preserve_previous_symbolic_price_range(previous_place, refreshed_place)
         append_unique_reason(preserved_fields, "price_range")
 
@@ -7652,6 +7690,21 @@ def google_maps_uri_is_compatible_for_preservation(
     return True
 
 
+def enrichment_address_is_compatible_with_raw(
+    raw_place: RawPlace | None,
+    enrichment_place: EnrichmentPlace,
+) -> bool:
+    if raw_place is None:
+        return True
+    raw_address = as_string(raw_place.address)
+    if raw_address is None:
+        return True
+    enrichment_address = as_string(enrichment_place.formatted_address)
+    if enrichment_address is None:
+        return False
+    return not address_texts_conflict(raw_address, enrichment_address)
+
+
 def price_range_regressed_from_symbolic_tier(
     previous_place: EnrichmentPlace,
     refreshed_place: EnrichmentPlace,
@@ -7714,11 +7767,12 @@ def enrichment_google_identity_for_shift_detection(place: EnrichmentPlace) -> st
     google_place_id = as_string(place.google_place_id)
     if google_place_id is not None:
         return f"google_place_id:{google_place_id}"
-    google_place_resource_name = as_string(place.google_place_resource_name)
+    google_place_resource_name = normalized_google_place_resource_identity(place.google_place_resource_name)
     if google_place_resource_name is not None:
-        return f"google_place_resource_name:{google_place_resource_name}"
-    if resolved_google_maps_url_is_place_page(place.google_maps_uri):
-        return f"google_maps_uri:{place.google_maps_uri}"
+        return f"google_place_id:{google_place_resource_name}"
+    google_maps_identity = google_maps_url_identity(place.google_maps_uri)
+    if google_maps_identity is not None:
+        return google_maps_identity
     return None
 
 
@@ -7746,7 +7800,47 @@ def address_texts_conflict(left: str | None, right: str | None) -> bool:
     right_numbers = set(re.findall(r"\d+", right_text))
     if left_numbers and right_numbers and not left_numbers & right_numbers:
         return True
-    return token_overlap_score(left_text, right_text) <= 10
+    return address_token_overlap_score(left_text, right_text) == 0
+
+
+ADDRESS_TOKEN_STOPWORDS = {
+    "city",
+    "country",
+    "county",
+    "district",
+    "prefecture",
+    "province",
+    "region",
+    "state",
+    "the",
+    "united",
+}
+
+
+def address_identity_tokens(text: str) -> set[str]:
+    parts = [part.strip() for part in re.split(r"[,、]", text) if part.strip()]
+    if not parts:
+        parts = [text]
+    streetish_parts = [
+        part
+        for index, part in enumerate(parts)
+        if index == 0 or re.search(r"\d", part)
+    ]
+    tokens = {
+        token
+        for part in streetish_parts
+        for token in re.findall(r"[\w]+", part.casefold())
+        if len(token) > 2 and token not in ADDRESS_TOKEN_STOPWORDS
+    }
+    return tokens
+
+
+def address_token_overlap_score(left: str, right: str) -> int:
+    left_tokens = address_identity_tokens(left)
+    right_tokens = address_identity_tokens(right)
+    if not left_tokens or not right_tokens:
+        return 0
+    return len(left_tokens & right_tokens) * 5
 
 
 def load_places_cache(slug: str) -> dict[str, EnrichmentCacheEntry]:
