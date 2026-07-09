@@ -3956,6 +3956,8 @@ class BuildDataTests(unittest.TestCase):
     def test_preserve_existing_enrichment_keeps_rich_row_when_refresh_is_limited_view(self) -> None:
         existing_entry = EnrichmentCacheEntry(
             fetched_at="2026-07-06T00:00:00+00:00",
+            refresh_after="2026-07-07T00:00:00+00:00",
+            input_signature="old-signature",
             source="google_maps_page",
             query="Tanta de Miraflores, Lima",
             matched=True,
@@ -3976,6 +3978,8 @@ class BuildDataTests(unittest.TestCase):
         )
         refreshed_entry = EnrichmentCacheEntry(
             fetched_at="2026-07-08T00:00:00+00:00",
+            refresh_after="2026-07-15T00:00:00+00:00",
+            input_signature="new-signature",
             source="google_maps_page",
             query="Tanta de Miraflores, Lima",
             matched=True,
@@ -3998,7 +4002,11 @@ class BuildDataTests(unittest.TestCase):
             refreshed_entry=refreshed_entry,
         )
 
-        self.assertIs(merged, existing_entry)
+        self.assertIsNot(merged, existing_entry)
+        self.assertIs(merged.place, existing_entry.place)
+        self.assertEqual(merged.fetched_at, "2026-07-08T00:00:00+00:00")
+        self.assertEqual(merged.refresh_after, "2026-07-15T00:00:00+00:00")
+        self.assertEqual(merged.input_signature, "new-signature")
         self.assertIn("limited view", warning or "")
 
     def test_preserve_existing_enrichment_does_not_keep_limited_view_for_stale_identity(self) -> None:
@@ -4138,6 +4146,7 @@ class BuildDataTests(unittest.TestCase):
         self.assertIs(merged, refreshed_entry)
         assert merged.place is not None
         self.assertEqual(merged.place.price_range, "$$")
+        self.assertIsNone(merged.place.room_price)
         self.assertEqual(
             merged.place.semantic_description,
             "A popular Bar Harbor scoop shop for housemade ice cream.",
@@ -4568,11 +4577,11 @@ class BuildDataTests(unittest.TestCase):
             raw_place=raw_place,
         )
 
-        self.assertIsNotNone(warning)
+        self.assertIsNone(warning)
         assert merged.place is not None
         self.assertIsNone(merged.place.google_maps_uri)
         self.assertIsNone(merged.place.google_place_id)
-        self.assertEqual(merged.place.business_status, "OPERATIONAL")
+        self.assertIsNone(merged.place.business_status)
 
         refreshed_entry = EnrichmentCacheEntry(
             fetched_at="2026-05-02T00:00:00+00:00",
@@ -12022,6 +12031,7 @@ class BuildDataTests(unittest.TestCase):
             entry.place.about_sections,
             [{"title": "Amenities", "items": [{"label": "Restroom"}]}],
         )
+        self.assertTrue(entry.place.limited_view)
         self.assertEqual(entry.place.google_maps_uri, "https://maps.google.com/?cid=1")
         self.assertEqual(entry.merged_sources, ["google_maps_page", "google_places_api"])
 

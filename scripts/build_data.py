@@ -7480,6 +7480,9 @@ def merge_page_place_into_api_entry(
     if not api_place.about_sections:
         api_place.about_sections = page_place.about_sections
 
+    if page_place.limited_view is True:
+        api_place.limited_view = True
+
     if google_maps_uri_strength(page_place.google_maps_uri) > google_maps_uri_strength(api_place.google_maps_uri):
         api_place.google_maps_uri = page_place.google_maps_uri
 
@@ -7540,7 +7543,7 @@ def preserve_existing_enrichment(
         and refreshed_place.limited_view is True
     ):
         return (
-            existing_entry,
+            cache_entry_with_refreshed_metadata(existing_entry, refreshed_entry),
             f"WARNING: Preserving previous enrichment for {slug}:{place_id} [{place_name}] "
             "because refresh returned degraded result (limited view).",
         )
@@ -7559,77 +7562,78 @@ def preserve_existing_enrichment(
 
     preserved_fields: list[str] = []
 
-    if refreshed_place.rating is None and previous_place.rating is not None:
-        refreshed_place.rating = previous_place.rating
-        append_unique_reason(preserved_fields, "rating")
-    if refreshed_place.user_rating_count is None and previous_place.user_rating_count is not None:
-        refreshed_place.user_rating_count = previous_place.user_rating_count
-        append_unique_reason(preserved_fields, "user_rating_count")
-    if not refreshed_place.formatted_address and previous_place.formatted_address:
-        refreshed_place.formatted_address = previous_place.formatted_address
-        append_unique_reason(preserved_fields, "address")
-    if not refreshed_place.address_display_en and previous_place.address_display_en:
-        refreshed_place.address_display_en = previous_place.address_display_en
-        refreshed_place.address_display_en_source = previous_place.address_display_en_source
-        refreshed_place.address_display_en_confidence = previous_place.address_display_en_confidence
-
-    if not refreshed_place.primary_type_display_name and previous_place.primary_type_display_name:
-        refreshed_place.primary_type_display_name = previous_place.primary_type_display_name
-        if not refreshed_place.primary_type and previous_place.primary_type:
-            refreshed_place.primary_type = previous_place.primary_type
-        if not refreshed_place.types and previous_place.types:
-            refreshed_place.types = previous_place.types[:]
-        append_unique_reason(preserved_fields, "primary_category")
-    elif (
-        refreshed_place.primary_type_display_name == previous_place.primary_type_display_name
-        and not refreshed_place.primary_type
-        and previous_place.primary_type
-    ):
-        refreshed_place.primary_type = previous_place.primary_type
-        if not refreshed_place.types and previous_place.types:
-            refreshed_place.types = previous_place.types[:]
-
-    if not refreshed_place.primary_type_display_name_localized and previous_place.primary_type_display_name_localized:
-        refreshed_place.primary_type_display_name_localized = previous_place.primary_type_display_name_localized
-    if not refreshed_place.category_display_en and previous_place.category_display_en:
-        refreshed_place.category_display_en = previous_place.category_display_en
-        refreshed_place.category_display_en_source = previous_place.category_display_en_source
-        refreshed_place.category_display_en_confidence = previous_place.category_display_en_confidence
-
-    if not refreshed_place.business_status and previous_place.business_status:
-        refreshed_place.business_status = previous_place.business_status
-        append_unique_reason(preserved_fields, "status")
-
-    if can_preserve_previous_identity and price_range_regressed_from_symbolic_tier(previous_place, refreshed_place):
-        preserve_previous_symbolic_price_range(previous_place, refreshed_place)
-        append_unique_reason(preserved_fields, "price_range")
-
-    if (
-        can_preserve_previous_identity
-        and google_maps_uri_strength(refreshed_place.google_maps_uri)
-        < google_maps_uri_strength(previous_place.google_maps_uri)
-        and google_maps_uri_is_compatible_for_preservation(previous_place, refreshed_place)
-    ):
-        refreshed_place.google_maps_uri = previous_place.google_maps_uri
-        if not refreshed_place.google_place_id and previous_place.google_place_id:
-            refreshed_place.google_place_id = previous_place.google_place_id
-        if not refreshed_place.google_place_resource_name and previous_place.google_place_resource_name:
-            refreshed_place.google_place_resource_name = previous_place.google_place_resource_name
-        append_unique_reason(preserved_fields, "maps_url")
-    elif can_preserve_previous_identity and google_maps_uri_is_compatible_for_preservation(previous_place, refreshed_place):
-        if not refreshed_place.google_place_id and previous_place.google_place_id:
-            refreshed_place.google_place_id = previous_place.google_place_id
-        if not refreshed_place.google_place_resource_name and previous_place.google_place_resource_name:
-            refreshed_place.google_place_resource_name = previous_place.google_place_resource_name
-
-    if not refreshed_place.main_photo_url and previous_place.main_photo_url:
-        refreshed_place.main_photo_url = previous_place.main_photo_url
-        append_unique_reason(preserved_fields, "photo_url")
-    if not refreshed_place.photo_url and previous_place.photo_url:
-        refreshed_place.photo_url = previous_place.photo_url
-        append_unique_reason(preserved_fields, "photo_url")
-
     if can_preserve_previous_identity:
+        if refreshed_place.rating is None and previous_place.rating is not None:
+            refreshed_place.rating = previous_place.rating
+            append_unique_reason(preserved_fields, "rating")
+        if refreshed_place.user_rating_count is None and previous_place.user_rating_count is not None:
+            refreshed_place.user_rating_count = previous_place.user_rating_count
+            append_unique_reason(preserved_fields, "user_rating_count")
+        if not refreshed_place.formatted_address and previous_place.formatted_address:
+            refreshed_place.formatted_address = previous_place.formatted_address
+            append_unique_reason(preserved_fields, "address")
+        if not refreshed_place.address_display_en and previous_place.address_display_en:
+            refreshed_place.address_display_en = previous_place.address_display_en
+            refreshed_place.address_display_en_source = previous_place.address_display_en_source
+            refreshed_place.address_display_en_confidence = previous_place.address_display_en_confidence
+
+        if not refreshed_place.primary_type_display_name and previous_place.primary_type_display_name:
+            refreshed_place.primary_type_display_name = previous_place.primary_type_display_name
+            if not refreshed_place.primary_type and previous_place.primary_type:
+                refreshed_place.primary_type = previous_place.primary_type
+            if not refreshed_place.types and previous_place.types:
+                refreshed_place.types = previous_place.types[:]
+            append_unique_reason(preserved_fields, "primary_category")
+        elif (
+            refreshed_place.primary_type_display_name == previous_place.primary_type_display_name
+            and not refreshed_place.primary_type
+            and previous_place.primary_type
+        ):
+            refreshed_place.primary_type = previous_place.primary_type
+            if not refreshed_place.types and previous_place.types:
+                refreshed_place.types = previous_place.types[:]
+
+        if (
+            not refreshed_place.primary_type_display_name_localized
+            and previous_place.primary_type_display_name_localized
+        ):
+            refreshed_place.primary_type_display_name_localized = previous_place.primary_type_display_name_localized
+        if not refreshed_place.category_display_en and previous_place.category_display_en:
+            refreshed_place.category_display_en = previous_place.category_display_en
+            refreshed_place.category_display_en_source = previous_place.category_display_en_source
+            refreshed_place.category_display_en_confidence = previous_place.category_display_en_confidence
+
+        if not refreshed_place.business_status and previous_place.business_status:
+            refreshed_place.business_status = previous_place.business_status
+            append_unique_reason(preserved_fields, "status")
+
+        if price_range_regressed_from_symbolic_tier(previous_place, refreshed_place):
+            preserve_previous_symbolic_price_range(previous_place, refreshed_place)
+            append_unique_reason(preserved_fields, "price_range")
+
+        if (
+            google_maps_uri_strength(refreshed_place.google_maps_uri)
+            < google_maps_uri_strength(previous_place.google_maps_uri)
+            and google_maps_uri_is_compatible_for_preservation(previous_place, refreshed_place)
+        ):
+            refreshed_place.google_maps_uri = previous_place.google_maps_uri
+            if not refreshed_place.google_place_id and previous_place.google_place_id:
+                refreshed_place.google_place_id = previous_place.google_place_id
+            if not refreshed_place.google_place_resource_name and previous_place.google_place_resource_name:
+                refreshed_place.google_place_resource_name = previous_place.google_place_resource_name
+            append_unique_reason(preserved_fields, "maps_url")
+        elif google_maps_uri_is_compatible_for_preservation(previous_place, refreshed_place):
+            if not refreshed_place.google_place_id and previous_place.google_place_id:
+                refreshed_place.google_place_id = previous_place.google_place_id
+            if not refreshed_place.google_place_resource_name and previous_place.google_place_resource_name:
+                refreshed_place.google_place_resource_name = previous_place.google_place_resource_name
+
+        if not refreshed_place.main_photo_url and previous_place.main_photo_url:
+            refreshed_place.main_photo_url = previous_place.main_photo_url
+            append_unique_reason(preserved_fields, "photo_url")
+        if not refreshed_place.photo_url and previous_place.photo_url:
+            refreshed_place.photo_url = previous_place.photo_url
+            append_unique_reason(preserved_fields, "photo_url")
         if not refreshed_place.review_topics and previous_place.review_topics:
             refreshed_place.review_topics = previous_place.review_topics[:]
             append_unique_reason(preserved_fields, "review_topics")
@@ -7677,6 +7681,20 @@ def semantic_description_for_preservation(
         city_name=None,
         country_name=None,
     )
+
+
+def cache_entry_with_refreshed_metadata(
+    existing_entry: EnrichmentCacheEntry,
+    refreshed_entry: EnrichmentCacheEntry,
+) -> EnrichmentCacheEntry:
+    updates: dict[str, Any] = {}
+    for field_name in ("fetched_at", "refresh_after", "input_signature"):
+        value = getattr(refreshed_entry, field_name)
+        if value is not None:
+            updates[field_name] = value
+    if not updates:
+        return existing_entry
+    return existing_entry.model_copy(update=updates)
 
 
 def google_maps_uri_is_compatible_for_preservation(
@@ -7733,6 +7751,10 @@ def preserve_previous_symbolic_price_range(
     previous_place: EnrichmentPlace,
     refreshed_place: EnrichmentPlace,
 ) -> None:
+    numeric_price = as_string(refreshed_place.price_range)
+    for field_name in ("admission_price", "room_price"):
+        if numeric_price is not None and as_string(getattr(refreshed_place, field_name)) == numeric_price:
+            setattr(refreshed_place, field_name, None)
     refreshed_place.price_range = previous_place.price_range
     reset_semantic_description_after_price_preservation(refreshed_place)
 
