@@ -1573,6 +1573,22 @@ class BuildDataTests(unittest.TestCase):
 
         self.assertIn("cid:6924437575605096209", keys)
 
+    def test_trust_place_keys_skip_shadowed_cid_aliases(self) -> None:
+        keys = trust_signals.trust_place_keys(
+            RawPlace(
+                name="AFURI Harajuku",
+                maps_url="https://maps.google.com/?cid=111",
+                cid="111",
+                cid_aliases=["222"],
+            ),
+            place_id="cid:111",
+            enrichment_entry=None,
+            blocked_cid_alias_keys={"cid:222"},
+        )
+
+        self.assertIn("cid:111", keys)
+        self.assertNotIn("cid:222", keys)
+
     def test_place_selector_matches_cid_alias(self) -> None:
         place = RawPlace(
             name="AFURI Harajuku",
@@ -1589,6 +1605,40 @@ class BuildDataTests(unittest.TestCase):
         )
 
         self.assertEqual(matches, {"cid:6924437575605096209", "tokyo-japan:cid:6924437575605096209"})
+
+    def test_place_selector_does_not_match_shadowed_cid_alias(self) -> None:
+        alias_holder = RawPlace(
+            name="Alias Holder",
+            maps_url="https://maps.google.com/?cid=111",
+            cid="111",
+            cid_aliases=["222"],
+        )
+        current_holder = RawPlace(
+            name="Current Holder",
+            maps_url="https://maps.google.com/?cid=222",
+            cid="222",
+        )
+
+        self.assertEqual(
+            build_data.place_selector_matches(
+                "tokyo-japan",
+                alias_holder,
+                place_id="cid:111",
+                selectors={"cid:222"},
+                blocked_alias_keys={"cid:111", "cid:222"},
+            ),
+            set(),
+        )
+        self.assertEqual(
+            build_data.place_selector_matches(
+                "tokyo-japan",
+                current_holder,
+                place_id="cid:222",
+                selectors={"cid:222"},
+                blocked_alias_keys={"cid:111", "cid:222"},
+            ),
+            {"cid:222"},
+        )
 
     def test_enrichment_job_priority_handles_alias_cache_tuple_shape(self) -> None:
         priority = build_data.enrichment_job_priority(

@@ -871,6 +871,7 @@ def load_trust_signals_for_places(
         if location_context is not None and location_context[1]
         else infer_country_name(raw.title or slug)
     )
+    blocked_cid_alias_keys = raw_saved_list_current_cid_keys(raw)
     for index, place in enumerate(raw.places):
         place_id = stable_place_ids.get((slug, index))
         if place_id is None:
@@ -880,6 +881,7 @@ def load_trust_signals_for_places(
             place,
             place_id=place_id,
             enrichment_entry=enrichment_cache.get(place_id),
+            blocked_cid_alias_keys=blocked_cid_alias_keys,
         )
         lookup_keys[place_id] = keys
         all_keys.update(keys)
@@ -979,6 +981,7 @@ def refresh_trust_signals_for_raw_guides(
         ]
         guide_has_michelin_sources = bool(michelin_sources_by_guide.get(slug))
         guide_has_tabelog_sources = bool(tabelog_sources_by_guide.get(slug))
+        blocked_cid_alias_keys = raw_saved_list_current_cid_keys(raw)
         for index, place in enumerate(raw.places):
             place_id = stable_place_ids.get((slug, index))
             if place_id is None:
@@ -987,6 +990,7 @@ def refresh_trust_signals_for_raw_guides(
                 place,
                 place_id=place_id,
                 enrichment_entry=enrichment_cache.get(place_id),
+                blocked_cid_alias_keys=blocked_cid_alias_keys,
             )
             query = trust_search_query(
                 place.name,
@@ -2687,6 +2691,7 @@ def trust_place_keys(
     *,
     place_id: str,
     enrichment_entry: EnrichmentCacheEntry | None,
+    blocked_cid_alias_keys: set[str] | None = None,
 ) -> list[str]:
     keys: list[str] = []
     enrichment_place = enrichment_entry.place if enrichment_entry is not None else None
@@ -2697,14 +2702,19 @@ def trust_place_keys(
     if place.cid:
         keys.append(f"cid:{place.cid}")
     for cid_alias in place.cid_aliases:
-        if cid_alias:
-            keys.append(f"cid:{cid_alias}")
+        cid_alias_key = f"cid:{cid_alias}" if cid_alias else None
+        if cid_alias_key and (blocked_cid_alias_keys is None or cid_alias_key not in blocked_cid_alias_keys):
+            keys.append(cid_alias_key)
     if place.google_id:
         keys.append(f"gid:{place.google_id.strip('/').replace('/', '-')}")
     if place.maps_place_token:
         keys.append(f"gms:{place.maps_place_token}")
     keys.append(place_id)
     return list(dict.fromkeys(keys))
+
+
+def raw_saved_list_current_cid_keys(raw: RawSavedList) -> set[str]:
+    return {f"cid:{place.cid}" for place in raw.places if place.cid}
 
 
 def trust_search_query(place_name: str, *, city_name: str | None, country_name: str | None) -> str:

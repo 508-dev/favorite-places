@@ -4258,6 +4258,7 @@ def enrich_raw_sources(
                     place,
                     place_id=place_id,
                     selectors=normalized_place_selectors,
+                    blocked_alias_keys=current_primary_keys,
                 )
                 matched_place_selectors.update(selector_matches)
                 if not selector_matches:
@@ -4385,6 +4386,7 @@ def enrichment_source_refresh_lists(place_selectors: Sequence[str] | None) -> li
     }
     for raw_path in sorted(RAW_DIR.glob("*.json")):
         raw = RawSavedList.model_validate_json(raw_path.read_text(encoding="utf-8"))
+        current_primary_keys = raw_saved_list_primary_match_key_set(raw)
         for place in raw.places:
             place_id = stable_place_id(place, source_type=raw.configured_source_type)
             if place_selector_matches(
@@ -4392,6 +4394,7 @@ def enrichment_source_refresh_lists(place_selectors: Sequence[str] | None) -> li
                 place,
                 place_id=place_id,
                 selectors=normalized_place_selectors,
+                blocked_alias_keys=current_primary_keys,
             ):
                 refresh_slugs.add(raw_path.stem)
                 break
@@ -4448,6 +4451,7 @@ def refresh_cached_semantic_enrichment(
                     place,
                     place_id=place_id,
                     selectors=normalized_place_selectors,
+                    blocked_alias_keys=current_primary_keys,
                 )
                 matched_place_selectors.update(selector_matches)
                 if not selector_matches:
@@ -12950,6 +12954,7 @@ def place_selector_matches(
     *,
     place_id: str,
     selectors: set[str],
+    blocked_alias_keys: set[str] | None = None,
 ) -> set[str]:
     if not selectors:
         return set()
@@ -12959,11 +12964,16 @@ def place_selector_matches(
         f"{slug}:{place_id}".casefold(),
         f"guide-slug:{slug}".casefold(),
     }
+    cid_aliases = [
+        cid_alias
+        for cid_alias in place.cid_aliases
+        if not cid_alias or blocked_alias_keys is None or f"cid:{cid_alias}" not in blocked_alias_keys
+    ]
     for candidate in (
         place.name,
         place.maps_url,
         place.cid,
-        *place.cid_aliases,
+        *cid_aliases,
         place.google_id,
         place.maps_place_token,
     ):
@@ -12975,7 +12985,7 @@ def place_selector_matches(
     for prefix, candidate in (
         ("cid", place.cid),
         ("cid", extract_maps_cid(place.maps_url)),
-        *((("cid", cid_alias) for cid_alias in place.cid_aliases)),
+        *((("cid", cid_alias) for cid_alias in cid_aliases)),
         ("gms", place.maps_place_token),
         ("gms", extract_maps_place_token(place.maps_url)),
     ):
