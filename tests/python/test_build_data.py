@@ -4009,6 +4009,48 @@ class BuildDataTests(unittest.TestCase):
         self.assertEqual(merged.input_signature, "new-signature")
         self.assertIn("limited view", warning or "")
 
+    def test_preserve_existing_enrichment_keeps_api_backed_limited_refresh(self) -> None:
+        existing_entry = EnrichmentCacheEntry(
+            fetched_at="2026-07-06T00:00:00+00:00",
+            source="google_maps_page",
+            query="Tanta de Miraflores, Lima",
+            matched=True,
+            place=EnrichmentPlace(
+                google_place_id="ChIJcRZpcB3IBZERnslL022_dbs",
+                display_name="Tanta de Miraflores",
+                formatted_address="Av. Vasco Núñez de Balboa 660, Miraflores 15074, Peru",
+                rating=4.4,
+                limited_view=False,
+            ),
+        )
+        refreshed_entry = EnrichmentCacheEntry(
+            fetched_at="2026-07-08T00:00:00+00:00",
+            source="google_places_api",
+            merged_sources=["google_maps_page", "google_places_api"],
+            query="Tanta de Miraflores, Lima",
+            matched=True,
+            place=EnrichmentPlace(
+                google_place_id="ChIJcRZpcB3IBZERnslL022_dbs",
+                display_name="Tanta de Miraflores",
+                formatted_address="Av. Vasco Núñez de Balboa 660, Miraflores 15074, Peru",
+                rating=4.5,
+                limited_view=True,
+            ),
+        )
+
+        merged, warning = build_data.preserve_existing_enrichment(
+            slug="lima-peru",
+            place_id="gid:g-1hd_kmn5v",
+            place_name="Tanta de Miraflores",
+            existing_entry=existing_entry,
+            refreshed_entry=refreshed_entry,
+        )
+
+        self.assertIs(merged, refreshed_entry)
+        self.assertIsNone(warning)
+        assert merged.place is not None
+        self.assertEqual(merged.place.rating, 4.5)
+
     def test_preserve_existing_enrichment_does_not_keep_limited_view_for_stale_identity(self) -> None:
         raw_place = RawPlace(
             name="Lola Underground",
@@ -4348,6 +4390,37 @@ class BuildDataTests(unittest.TestCase):
                 )
             ),
             "google_place_id:ChIJ123",
+        )
+
+    def test_google_maps_url_identity_prefers_maps_place_token(self) -> None:
+        token = "0x89c259a61c75684f:0x79d31adb12345678"
+
+        self.assertEqual(
+            build_data.google_maps_url_identity(
+                f"https://www.google.com/maps/place/Old+Name/data=!4m2!3m1!1s{token}"
+            ),
+            f"gms:{token}",
+        )
+        self.assertEqual(
+            build_data.google_maps_url_identity(
+                f"https://www.google.com/maps/place/New+Name/@20.0,-89.0,17z/data=!4m2!3m1!1s{token}"
+            ),
+            f"gms:{token}",
+        )
+
+    def test_address_texts_conflict_ignores_generic_street_and_postal_overlap(self) -> None:
+        self.assertTrue(build_data.address_texts_conflict("Oak Street, City", "Pine Street, City"))
+        self.assertTrue(
+            build_data.address_texts_conflict(
+                "123 First St, Merida 97000",
+                "456 Second Ave, Merida 97000",
+            )
+        )
+        self.assertFalse(
+            build_data.address_texts_conflict(
+                "123 First St, Merida 97000",
+                "123 First Street, Merida 97000",
+            )
         )
 
     def test_preserve_existing_enrichment_skips_invalid_cached_semantic_description(self) -> None:

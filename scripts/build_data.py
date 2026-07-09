@@ -3046,6 +3046,9 @@ def google_maps_url_identity(maps_url: str | None) -> str | None:
     cid = extract_maps_cid(maps_url)
     if cid is not None:
         return f"cid:{cid}"
+    maps_place_token = extract_maps_place_token(maps_url)
+    if maps_place_token is not None:
+        return f"gms:{maps_place_token}"
     normalized_url = as_string(maps_url)
     if normalized_url is None or not resolved_google_maps_url_is_place_page(normalized_url):
         return None
@@ -7498,6 +7501,10 @@ def merged_enrichment_sources(*entries: EnrichmentCacheEntry) -> list[Literal["g
     return sources
 
 
+def cache_entry_includes_google_places_api(entry: EnrichmentCacheEntry) -> bool:
+    return entry.source == "google_places_api" or "google_places_api" in entry.merged_sources
+
+
 def preserve_existing_enrichment(
     *,
     slug: str,
@@ -7541,6 +7548,7 @@ def preserve_existing_enrichment(
         can_preserve_previous_identity
         and previous_place.limited_view is False
         and refreshed_place.limited_view is True
+        and not cache_entry_includes_google_places_api(refreshed_entry)
     ):
         return (
             cache_entry_with_refreshed_metadata(existing_entry, refreshed_entry),
@@ -7823,6 +7831,10 @@ def address_texts_conflict(left: str | None, right: str | None) -> bool:
     right_text = normalize_text(right)
     if not left_text or not right_text or left_text == right_text:
         return False
+    left_street_numbers = address_street_numbers(as_string(left) or "")
+    right_street_numbers = address_street_numbers(as_string(right) or "")
+    if left_street_numbers and right_street_numbers and not left_street_numbers & right_street_numbers:
+        return True
     left_numbers = set(re.findall(r"\d+", left_text))
     right_numbers = set(re.findall(r"\d+", right_text))
     if left_numbers and right_numbers and not left_numbers & right_numbers:
@@ -7839,9 +7851,39 @@ ADDRESS_TOKEN_STOPWORDS = {
     "province",
     "region",
     "state",
+    "street",
+    "st",
     "the",
     "united",
+    "avenue",
+    "ave",
+    "road",
+    "rd",
+    "boulevard",
+    "blvd",
+    "lane",
+    "ln",
+    "drive",
+    "dr",
+    "way",
+    "place",
+    "pl",
+    "court",
+    "ct",
+    "square",
+    "sq",
 }
+
+
+def address_street_numbers(text: str) -> set[str]:
+    parts = [part.strip() for part in re.split(r"[,、]", text) if part.strip()]
+    if not parts:
+        parts = [text]
+    for part in parts:
+        numbers = set(re.findall(r"\d+", part))
+        if numbers:
+            return numbers
+    return set()
 
 
 def address_identity_tokens(text: str) -> set[str]:
@@ -7857,7 +7899,7 @@ def address_identity_tokens(text: str) -> set[str]:
         token
         for part in streetish_parts
         for token in re.findall(r"[\w]+", part.casefold())
-        if len(token) > 2 and token not in ADDRESS_TOKEN_STOPWORDS
+        if len(token) > 2 and not token.isdigit() and token not in ADDRESS_TOKEN_STOPWORDS
     }
     return tokens
 
