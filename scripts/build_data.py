@@ -7701,7 +7701,7 @@ def enrichment_address_is_compatible_with_raw(
         return True
     enrichment_address = as_string(enrichment_place.formatted_address)
     if enrichment_address is None:
-        return False
+        return True
     return not address_texts_conflict(raw_address, enrichment_address)
 
 
@@ -7748,6 +7748,10 @@ def enrichment_google_identity_shift_conflicts_with_raw(
         return False
     if not enrichment_identity_is_compatible_with_raw(raw_place, previous_place):
         return False
+    previous_identity = enrichment_google_identity_for_shift_detection(previous_place)
+    refreshed_identity = enrichment_google_identity_for_shift_detection(refreshed_place)
+    if previous_identity is not None and refreshed_identity is not None and previous_identity == refreshed_identity:
+        return False
     if not enrichment_identity_is_compatible_with_raw(raw_place, refreshed_place):
         return True
     if not enrichment_address_conflicts_with_raw_or_previous(
@@ -7756,9 +7760,7 @@ def enrichment_google_identity_shift_conflicts_with_raw(
         raw_place=raw_place,
     ):
         return False
-    previous_identity = enrichment_google_identity_for_shift_detection(previous_place)
-    refreshed_identity = enrichment_google_identity_for_shift_detection(refreshed_place)
-    if previous_identity is None or refreshed_identity is None or previous_identity == refreshed_identity:
+    if previous_identity is None or refreshed_identity is None:
         return False
     return True
 
@@ -7773,6 +7775,9 @@ def enrichment_google_identity_for_shift_detection(place: EnrichmentPlace) -> st
     google_maps_identity = google_maps_url_identity(place.google_maps_uri)
     if google_maps_identity is not None:
         return google_maps_identity
+    search_result_identity = google_maps_url_identity(place.search_result_url)
+    if search_result_identity is not None:
+        return search_result_identity
     return None
 
 
@@ -7800,7 +7805,7 @@ def address_texts_conflict(left: str | None, right: str | None) -> bool:
     right_numbers = set(re.findall(r"\d+", right_text))
     if left_numbers and right_numbers and not left_numbers & right_numbers:
         return True
-    return address_token_overlap_score(left_text, right_text) == 0
+    return address_token_overlap_score(as_string(left) or "", as_string(right) or "") == 0
 
 
 ADDRESS_TOKEN_STOPWORDS = {
