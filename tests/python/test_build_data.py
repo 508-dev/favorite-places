@@ -17,7 +17,7 @@ from unittest.mock import patch
 from pydantic import ValidationError
 from PIL import Image
 
-from scripts import build_data
+from scripts import build_data, trust_signals
 from scripts.pipeline_models import (
     EnrichmentCacheEntry,
     EnrichmentPlace,
@@ -28,6 +28,7 @@ from scripts.pipeline_models import (
     RawPlace,
     RawSavedList,
     SourceConfig,
+    TrustSignal,
 )
 
 
@@ -1524,6 +1525,87 @@ class BuildDataTests(unittest.TestCase):
         self.assertEqual(guide.places[0].id, "cid:9055794338847426964")
         self.assertEqual(guide.places[0].note, "Manual ramen note")
         self.assertEqual(guide.places[0].website, "https://afuri.example/")
+        self.assertIs(enrichment_cache["cid:9055794338847426964"], enrichment_cache[old_place_id])
+
+    def test_normalize_guide_uses_cid_alias_for_trust_signal_lookup(self) -> None:
+        raw = RawSavedList(
+            title="Tokyo",
+            configured_source_type="google_list_url",
+            places=[
+                RawPlace(
+                    name="AFURI Harajuku",
+                    address="1 Chome-63-1 Jingumae, Shibuya City, Tokyo",
+                    maps_url="https://maps.google.com/?cid=9055794338847426964",
+                    cid="9055794338847426964",
+                    cid_aliases=["6924437575605096209"],
+                )
+            ],
+        )
+        signal = TrustSignal(
+            source="michelin",
+            label="Michelin Selected",
+            fetched_at="2026-04-20T00:00:00+00:00",
+            confidence="high",
+            match_reason="name_match",
+        )
+
+        with patch.object(build_data, "read_json", return_value={}):
+            guide = build_data.normalize_guide(
+                "tokyo-japan",
+                raw,
+                enrichment_cache={},
+                trust_signals={"cid:6924437575605096209": [signal]},
+            )
+
+        self.assertEqual([trust_signal.label for trust_signal in guide.places[0].trust_signals], ["Michelin Selected"])
+
+    def test_trust_place_keys_include_cid_aliases(self) -> None:
+        keys = trust_signals.trust_place_keys(
+            RawPlace(
+                name="AFURI Harajuku",
+                maps_url="https://maps.google.com/?cid=9055794338847426964",
+                cid="9055794338847426964",
+                cid_aliases=["6924437575605096209"],
+            ),
+            place_id="cid:9055794338847426964",
+            enrichment_entry=None,
+        )
+
+        self.assertIn("cid:6924437575605096209", keys)
+
+    def test_place_selector_matches_cid_alias(self) -> None:
+        place = RawPlace(
+            name="AFURI Harajuku",
+            maps_url="https://maps.google.com/?cid=9055794338847426964",
+            cid="9055794338847426964",
+            cid_aliases=["6924437575605096209"],
+        )
+
+        matches = build_data.place_selector_matches(
+            "tokyo-japan",
+            place,
+            place_id="cid:9055794338847426964",
+            selectors={"cid:6924437575605096209", "tokyo-japan:cid:6924437575605096209"},
+        )
+
+        self.assertEqual(matches, {"cid:6924437575605096209", "tokyo-japan:cid:6924437575605096209"})
+
+    def test_enrichment_job_priority_handles_alias_cache_tuple_shape(self) -> None:
+        priority = build_data.enrichment_job_priority(
+            (
+                "tokyo-japan",
+                "cid:9055794338847426964",
+                "cid:6924437575605096209",
+                None,
+                "AFURI Harajuku",
+                "missing-cache-entry",
+                {},
+                "Tokyo",
+                "Japan",
+            )
+        )
+
+        self.assertEqual(priority, (0, "tokyo-japan", "cid:9055794338847426964"))
 
     def test_preserve_existing_raw_saved_list_does_not_apply_to_non_matching_place(self) -> None:
         existing_payload = RawSavedList(

@@ -2696,6 +2696,9 @@ def trust_place_keys(
             keys.append(f"gpid:{google_place_id}")
     if place.cid:
         keys.append(f"cid:{place.cid}")
+    for cid_alias in place.cid_aliases:
+        if cid_alias:
+            keys.append(f"cid:{cid_alias}")
     if place.google_id:
         keys.append(f"gid:{place.google_id.strip('/').replace('/', '-')}")
     if place.maps_place_token:

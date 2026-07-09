@@ -3100,17 +3100,35 @@ def normalize_guide(
             source_type=raw.configured_source_type,
             blocked_alias_keys=current_primary_keys,
         )
-        place_trust_signals = (
-            [display_trust_signal(signal) for signal in trust_signals.get(place_id, [])]
-            if trust_signals is not None
-            else []
-        )
+        place_trust_signals: list[TrustSignal] = []
+        seen_trust_signals: set[tuple[Any, ...]] = set()
+        if trust_signals is not None:
+            for trust_signal_key in raw_place_lookup_keys(
+                place,
+                source_type=raw.configured_source_type,
+                blocked_alias_keys=current_primary_keys,
+            ):
+                for signal in trust_signals.get(trust_signal_key, []):
+                    dedupe_key = (
+                        signal.source,
+                        signal.label,
+                        signal.tier,
+                        signal.url,
+                        signal.title,
+                        signal.award_year,
+                    )
+                    if dedupe_key in seen_trust_signals:
+                        continue
+                    seen_trust_signals.add(dedupe_key)
+                    place_trust_signals.append(display_trust_signal(signal))
         override = place_override_for_ui_copy(
             slug,
             place_id,
             place_override_map.get(override_key, {}) if override_key is not None else {},
         )
         enrichment_cache_entry = enrichment_cache.get(cache_key) if cache_key is not None else None
+        if cache_key is not None and cache_key != place_id and place_id not in enrichment_cache:
+            enrichment_cache[place_id] = enrichment_cache[cache_key]
         enrichment = coerce_enrichment_place(enrichment_cache_entry)
         usable_enrichment_category = usable_enrichment_primary_category(
             enrichment,
@@ -7354,9 +7372,9 @@ def enrichment_refresh_reason(
 
 
 def enrichment_job_priority(
-    job: tuple[str, str, str, str, dict[str, Any], str | None, str | None]
+    job: tuple[str, str, str | None, str | None, str, str, dict[str, Any], str | None, str | None]
 ) -> tuple[int, str, str]:
-    slug, place_id, _place_name, refresh_reason, _place_payload, _city_name, _country_name = job
+    slug, place_id, _cache_key, _override_key, _place_name, refresh_reason, _place_payload, _city_name, _country_name = job
     return (
         ENRICHMENT_REFRESH_REASON_PRIORITY.get(refresh_reason, 99),
         slug,
@@ -12909,6 +12927,7 @@ def place_selector_matches(
         place.name,
         place.maps_url,
         place.cid,
+        *place.cid_aliases,
         place.google_id,
         place.maps_place_token,
     ):
@@ -12920,6 +12939,7 @@ def place_selector_matches(
     for prefix, candidate in (
         ("cid", place.cid),
         ("cid", extract_maps_cid(place.maps_url)),
+        *((("cid", cid_alias) for cid_alias in place.cid_aliases)),
         ("gms", place.maps_place_token),
         ("gms", extract_maps_place_token(place.maps_url)),
     ):
