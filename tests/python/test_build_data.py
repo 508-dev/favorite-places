@@ -17,7 +17,7 @@ from unittest.mock import patch
 from pydantic import ValidationError
 from PIL import Image
 
-from scripts import build_data
+from scripts import build_data, trust_signals
 from scripts.pipeline_models import (
     EnrichmentCacheEntry,
     EnrichmentPlace,
@@ -28,6 +28,7 @@ from scripts.pipeline_models import (
     RawPlace,
     RawSavedList,
     SourceConfig,
+    TrustSignal,
 )
 
 
@@ -1308,6 +1309,411 @@ class BuildDataTests(unittest.TestCase):
         self.assertEqual(merged.places[0].maps_place_token, "0xdeadbeef:0x1")
         self.assertEqual(merged.places[0].added_by, ListAuthor(name="Second Curator", profile_id="second-id"))
         self.assertTrue(merged.places[0].is_favorite)
+
+    def test_preserve_existing_raw_saved_list_keeps_old_cid_alias_when_cid_changes(self) -> None:
+        existing_payload = RawSavedList(
+            configured_source_type="google_list_url",
+            places=[
+                RawPlace(
+                    name="AFURI Harajuku",
+                    address="1 Chome-63-1 Jingumae, Shibuya City, Tokyo",
+                    lat=35.670991,
+                    lng=139.703802,
+                    maps_url="https://maps.google.com/?cid=6924437575605096209",
+                    cid="6924437575605096209",
+                    google_id="/g/1pty5xgj1",
+                )
+            ],
+        )
+        refreshed_payload = RawSavedList(
+            configured_source_type="google_list_url",
+            places=[
+                RawPlace(
+                    name="AFURI Harajuku",
+                    address="1 Chome-63-1 Jingumae, Shibuya City, Tokyo",
+                    lat=35.670991,
+                    lng=139.703802,
+                    maps_url="https://maps.google.com/?cid=9055794338847426964",
+                    cid="9055794338847426964",
+                    google_id="/g/1pty5xgj1",
+                )
+            ],
+        )
+
+        merged = build_data.preserve_existing_raw_saved_list(
+            slug="tokyo-japan",
+            existing_payload=existing_payload,
+            refreshed_payload=refreshed_payload,
+        )
+
+        self.assertEqual(merged.places[0].cid, "9055794338847426964")
+        self.assertEqual(merged.places[0].cid_aliases, ["6924437575605096209"])
+        self.assertIn(
+            "cid:6924437575605096209",
+            build_data.raw_place_match_keys(
+                merged.places[0],
+                source_type=merged.configured_source_type,
+            ),
+        )
+
+    def test_preserve_existing_raw_saved_list_carries_forward_cid_aliases(self) -> None:
+        existing_payload = RawSavedList(
+            configured_source_type="google_list_url",
+            places=[
+                RawPlace(
+                    name="AFURI Harajuku",
+                    address="1 Chome-63-1 Jingumae, Shibuya City, Tokyo",
+                    maps_url="https://maps.google.com/?cid=6924437575605096209",
+                    cid="6924437575605096209",
+                    cid_aliases=["1111111111111111111"],
+                    google_id="/g/1pty5xgj1",
+                )
+            ],
+        )
+        refreshed_payload = RawSavedList(
+            configured_source_type="google_list_url",
+            places=[
+                RawPlace(
+                    name="AFURI Harajuku",
+                    address="1 Chome-63-1 Jingumae, Shibuya City, Tokyo",
+                    maps_url="https://maps.google.com/?cid=9055794338847426964",
+                    cid="9055794338847426964",
+                    cid_aliases=["2222222222222222222"],
+                    google_id="/g/1pty5xgj1",
+                )
+            ],
+        )
+
+        merged = build_data.preserve_existing_raw_saved_list(
+            slug="tokyo-japan",
+            existing_payload=existing_payload,
+            refreshed_payload=refreshed_payload,
+        )
+
+        self.assertEqual(
+            merged.places[0].cid_aliases,
+            [
+                "2222222222222222222",
+                "1111111111111111111",
+                "6924437575605096209",
+            ],
+        )
+
+    def test_preserve_existing_raw_saved_list_keeps_cid_alias_for_strong_identity_rename(self) -> None:
+        existing_payload = RawSavedList(
+            configured_source_type="google_list_url",
+            places=[
+                RawPlace(
+                    name="Old Name",
+                    maps_url="https://maps.google.com/?cid=111",
+                    cid="111",
+                    google_id="/g/11sameplace",
+                )
+            ],
+        )
+        refreshed_payload = RawSavedList(
+            configured_source_type="google_list_url",
+            places=[
+                RawPlace(
+                    name="Completely New Brand",
+                    maps_url="https://maps.google.com/?cid=222",
+                    cid="222",
+                    google_id="/g/11sameplace",
+                )
+            ],
+        )
+
+        merged = build_data.preserve_existing_raw_saved_list(
+            slug="tokyo-japan",
+            existing_payload=existing_payload,
+            refreshed_payload=refreshed_payload,
+        )
+
+        self.assertEqual(merged.places[0].cid, "222")
+        self.assertEqual(merged.places[0].cid_aliases, ["111"])
+
+    def test_preserve_existing_raw_saved_list_uses_old_maps_url_cid_as_alias(self) -> None:
+        existing_payload = RawSavedList(
+            configured_source_type="google_list_url",
+            places=[
+                RawPlace(
+                    name="AFURI Harajuku",
+                    address="1 Chome-63-1 Jingumae, Shibuya City, Tokyo",
+                    maps_url="https://maps.google.com/?cid=6924437575605096209",
+                    cid=None,
+                    google_id="/g/1pty5xgj1",
+                )
+            ],
+        )
+        refreshed_payload = RawSavedList(
+            configured_source_type="google_list_url",
+            places=[
+                RawPlace(
+                    name="AFURI Harajuku",
+                    address="1 Chome-63-1 Jingumae, Shibuya City, Tokyo",
+                    maps_url="https://maps.google.com/?cid=9055794338847426964",
+                    cid="9055794338847426964",
+                    google_id="/g/1pty5xgj1",
+                )
+            ],
+        )
+
+        merged = build_data.preserve_existing_raw_saved_list(
+            slug="tokyo-japan",
+            existing_payload=existing_payload,
+            refreshed_payload=refreshed_payload,
+        )
+
+        self.assertEqual(merged.places[0].cid_aliases, ["6924437575605096209"])
+
+    def test_preserve_existing_raw_saved_list_does_not_let_alias_shadow_primary_cid(self) -> None:
+        existing_payload = RawSavedList(
+            configured_source_type="google_list_url",
+            places=[
+                RawPlace(
+                    name="Original Cafe",
+                    address="1 Coffee St",
+                    maps_url="https://maps.google.com/?cid=111",
+                    cid="111",
+                ),
+                RawPlace(
+                    name="Other Bakery",
+                    address="2 Bread St",
+                    maps_url="https://maps.google.com/?cid=222",
+                    cid="222",
+                ),
+            ],
+        )
+        refreshed_payload = RawSavedList(
+            configured_source_type="google_list_url",
+            places=[
+                RawPlace(
+                    name="Original Cafe",
+                    address=None,
+                    maps_url="https://maps.google.com/?cid=333",
+                    cid="333",
+                    cid_aliases=["222"],
+                )
+            ],
+        )
+
+        merged = build_data.preserve_existing_raw_saved_list(
+            slug="tokyo-japan",
+            existing_payload=existing_payload,
+            refreshed_payload=refreshed_payload,
+        )
+
+        self.assertIsNone(merged.places[0].address)
+        self.assertEqual(merged.places[0].cid, "333")
+
+    def test_normalize_guide_uses_cid_alias_for_override_and_cache_lookup(self) -> None:
+        raw = RawSavedList(
+            title="Tokyo",
+            configured_source_type="google_list_url",
+            places=[
+                RawPlace(
+                    name="AFURI Harajuku",
+                    address="1 Chome-63-1 Jingumae, Shibuya City, Tokyo",
+                    maps_url="https://maps.google.com/?cid=9055794338847426964",
+                    cid="9055794338847426964",
+                    cid_aliases=["6924437575605096209"],
+                )
+            ],
+        )
+        old_place_id = "cid:6924437575605096209"
+        enrichment_cache = {
+            old_place_id: EnrichmentCacheEntry(
+                fetched_at="2026-04-20T00:00:00+00:00",
+                source="google_maps_page",
+                query="AFURI Harajuku",
+                matched=True,
+                place=EnrichmentPlace(
+                    display_name="AFURI Harajuku",
+                    website="https://afuri.example/",
+                ),
+            )
+        }
+
+        with TemporaryDirectory() as tmpdir:
+            tmpdir_path = Path(tmpdir)
+            list_overrides_dir = tmpdir_path / "lists"
+            place_overrides_dir = tmpdir_path / "places"
+            list_overrides_dir.mkdir()
+            place_overrides_dir.mkdir()
+            (place_overrides_dir / "tokyo-japan.json").write_text(
+                json.dumps({old_place_id: {"note": "Manual ramen note"}}),
+                encoding="utf-8",
+            )
+
+            with (
+                patch.object(build_data, "LIST_OVERRIDES_DIR", list_overrides_dir),
+                patch.object(build_data, "PLACE_OVERRIDES_DIR", place_overrides_dir),
+            ):
+                guide = build_data.normalize_guide(
+                    "tokyo-japan",
+                    raw,
+                    enrichment_cache=enrichment_cache,
+                )
+
+        self.assertEqual(guide.places[0].id, "cid:9055794338847426964")
+        self.assertEqual(guide.places[0].note, "Manual ramen note")
+        self.assertEqual(guide.places[0].website, "https://afuri.example/")
+        self.assertIs(enrichment_cache["cid:9055794338847426964"], enrichment_cache[old_place_id])
+
+    def test_normalize_guide_uses_cid_alias_for_trust_signal_lookup(self) -> None:
+        raw = RawSavedList(
+            title="Tokyo",
+            configured_source_type="google_list_url",
+            places=[
+                RawPlace(
+                    name="AFURI Harajuku",
+                    address="1 Chome-63-1 Jingumae, Shibuya City, Tokyo",
+                    maps_url="https://maps.google.com/?cid=9055794338847426964",
+                    cid="9055794338847426964",
+                    cid_aliases=["6924437575605096209"],
+                )
+            ],
+        )
+        signal = TrustSignal(
+            source="michelin",
+            label="Michelin Selected",
+            fetched_at="2026-04-20T00:00:00+00:00",
+            confidence="high",
+            match_reason="name_match",
+        )
+
+        with patch.object(build_data, "read_json", return_value={}):
+            guide = build_data.normalize_guide(
+                "tokyo-japan",
+                raw,
+                enrichment_cache={},
+                trust_signals={"cid:6924437575605096209": [signal]},
+            )
+
+        self.assertEqual([trust_signal.label for trust_signal in guide.places[0].trust_signals], ["Michelin Selected"])
+
+    def test_trust_place_keys_include_cid_aliases(self) -> None:
+        keys = trust_signals.trust_place_keys(
+            RawPlace(
+                name="AFURI Harajuku",
+                maps_url="https://maps.google.com/?cid=9055794338847426964",
+                cid="9055794338847426964",
+                cid_aliases=["6924437575605096209"],
+            ),
+            place_id="cid:9055794338847426964",
+            enrichment_entry=None,
+        )
+
+        self.assertIn("cid:6924437575605096209", keys)
+
+    def test_trust_place_keys_skip_shadowed_cid_aliases(self) -> None:
+        keys = trust_signals.trust_place_keys(
+            RawPlace(
+                name="AFURI Harajuku",
+                maps_url="https://maps.google.com/?cid=111",
+                cid="111",
+                cid_aliases=["222"],
+            ),
+            place_id="cid:111",
+            enrichment_entry=None,
+            blocked_cid_alias_keys={"cid:222"},
+        )
+
+        self.assertIn("cid:111", keys)
+        self.assertNotIn("cid:222", keys)
+
+    def test_trust_enrichment_entry_for_place_uses_cid_alias_cache_row(self) -> None:
+        entry = EnrichmentCacheEntry(
+            fetched_at="2026-04-20T00:00:00+00:00",
+            query="AFURI Harajuku",
+            matched=True,
+            place=EnrichmentPlace(
+                display_name="AFURI Harajuku",
+                google_place_id="place123",
+            ),
+        )
+
+        resolved = trust_signals.trust_enrichment_entry_for_place(
+            {"cid:6924437575605096209": entry},
+            RawPlace(
+                name="AFURI Harajuku",
+                maps_url="https://maps.google.com/?cid=9055794338847426964",
+                cid="9055794338847426964",
+                cid_aliases=["6924437575605096209"],
+            ),
+            place_id="cid:9055794338847426964",
+            blocked_cid_alias_keys={"cid:9055794338847426964"},
+        )
+
+        self.assertIs(resolved, entry)
+
+    def test_place_selector_matches_cid_alias(self) -> None:
+        place = RawPlace(
+            name="AFURI Harajuku",
+            maps_url="https://maps.google.com/?cid=9055794338847426964",
+            cid="9055794338847426964",
+            cid_aliases=["6924437575605096209"],
+        )
+
+        matches = build_data.place_selector_matches(
+            "tokyo-japan",
+            place,
+            place_id="cid:9055794338847426964",
+            selectors={"cid:6924437575605096209", "tokyo-japan:cid:6924437575605096209"},
+        )
+
+        self.assertEqual(matches, {"cid:6924437575605096209", "tokyo-japan:cid:6924437575605096209"})
+
+    def test_place_selector_does_not_match_shadowed_cid_alias(self) -> None:
+        alias_holder = RawPlace(
+            name="Alias Holder",
+            maps_url="https://maps.google.com/?cid=111",
+            cid="111",
+            cid_aliases=["222"],
+        )
+        current_holder = RawPlace(
+            name="Current Holder",
+            maps_url="https://maps.google.com/?cid=222",
+            cid="222",
+        )
+
+        self.assertEqual(
+            build_data.place_selector_matches(
+                "tokyo-japan",
+                alias_holder,
+                place_id="cid:111",
+                selectors={"cid:222"},
+                blocked_alias_keys={"cid:111", "cid:222"},
+            ),
+            set(),
+        )
+        self.assertEqual(
+            build_data.place_selector_matches(
+                "tokyo-japan",
+                current_holder,
+                place_id="cid:222",
+                selectors={"cid:222"},
+                blocked_alias_keys={"cid:111", "cid:222"},
+            ),
+            {"cid:222"},
+        )
+
+    def test_enrichment_job_priority_handles_alias_cache_tuple_shape(self) -> None:
+        priority = build_data.enrichment_job_priority(
+            (
+                "tokyo-japan",
+                "cid:9055794338847426964",
+                "cid:6924437575605096209",
+                None,
+                "AFURI Harajuku",
+                "missing-cache-entry",
+                {},
+                "Tokyo",
+                "Japan",
+            )
+        )
+
+        self.assertEqual(priority, (0, "tokyo-japan", "cid:9055794338847426964"))
 
     def test_preserve_existing_raw_saved_list_does_not_apply_to_non_matching_place(self) -> None:
         existing_payload = RawSavedList(
@@ -14623,6 +15029,42 @@ class BuildDataTests(unittest.TestCase):
         self.assertEqual(pruned_count, 1)
         self.assertEqual(list(pruned_payload), ["cid:14063537238082844765"])
         self.assertIs(pruned_payload["cid:14063537238082844765"], current_entry)
+
+    def test_prune_places_cache_to_raw_places_migrates_cid_alias_rows(self) -> None:
+        raw = RawSavedList(
+            title="Tokyo",
+            configured_source_type="google_list_url",
+            places=[
+                RawPlace(
+                    name="AFURI Harajuku",
+                    maps_url="https://maps.google.com/?cid=9055794338847426964",
+                    cid="9055794338847426964",
+                    cid_aliases=["6924437575605096209"],
+                )
+            ],
+        )
+        alias_entry = EnrichmentCacheEntry(
+            fetched_at="2026-04-20T00:00:00+00:00",
+            query="AFURI old cid",
+            matched=True,
+        )
+        stale_entry = EnrichmentCacheEntry(
+            fetched_at="2026-04-01T00:00:00+00:00",
+            query="Deleted",
+            matched=True,
+        )
+
+        pruned_payload, pruned_count = build_data.prune_places_cache_to_raw_places(
+            {
+                "cid:6924437575605096209": alias_entry,
+                "cid:123": stale_entry,
+            },
+            raw,
+        )
+
+        self.assertEqual(pruned_count, 2)
+        self.assertEqual(list(pruned_payload), ["cid:9055794338847426964"])
+        self.assertIs(pruned_payload["cid:9055794338847426964"], alias_entry)
 
     def test_prune_places_cache_to_raw_places_drops_all_rows_for_empty_guide(self) -> None:
         raw = RawSavedList(title="Empty", places=[])

@@ -163,6 +163,7 @@ class RawPlace(PipelineModel):
     lng: float | None = None
     maps_url: str
     cid: str | None = None
+    cid_aliases: list[str] = Field(default_factory=list)
     google_id: str | None = None
     maps_place_token: str | None = None
     rating: float | None = None
