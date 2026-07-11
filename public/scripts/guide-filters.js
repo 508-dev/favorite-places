@@ -1,4 +1,5 @@
 import { loadSearchIndex, searchPlaces } from "./place-search.js";
+import { buildSearchConversation, buildSearchSuggestions } from "./search-conversation.js";
 
 function getTagComparisonValue(value) {
   const normalizedText = String(value || "")
@@ -650,6 +651,9 @@ if (root) {
   const reviewSummary = root.querySelector("[data-review-summary]");
   const metricMenus = Array.from(root.querySelectorAll(".metric-filter-menu"));
   const selectedTagsRow = root.querySelector("[data-selected-tags]");
+  const searchConversation = root.querySelector("[data-guide-search-conversation]");
+  const searchConversationSummary = root.querySelector("[data-guide-search-summary]");
+  const searchConversationSuggestions = root.querySelector("[data-guide-search-suggestions]");
   const suggestionList = root.querySelector("[data-suggestion-list]");
   const suggestionGroup = suggestionList?.closest(".control-group") || null;
   const autocomplete = root.querySelector("[data-tag-autocomplete]");
@@ -1455,6 +1459,38 @@ if (root) {
       resultsCount.textContent = `${visibleCards.length} place${visibleCards.length === 1 ? "" : "s"}${suffix}`;
     }
 
+    if (searchConversation && searchConversationSummary && searchConversationSuggestions) {
+      const visiblePlaceIds = new Set(
+        visibleCards.map((card) => card.dataset.placeId).filter(Boolean),
+      );
+      const visibleSearchResults = searchState
+        ? searchState.results.filter((result) => visiblePlaceIds.has(result.entry.id))
+        : [];
+      searchConversation.hidden = !query || !searchState;
+      searchConversationSummary.textContent =
+        query && searchState
+          ? buildSearchConversation({
+              count: visibleCards.length,
+              parsed: searchState.parsed,
+              scopeLabel: hasAdditionalFilters ? "the active filters in this guide" : "this guide",
+            })
+          : "";
+      searchConversationSuggestions.replaceChildren(
+        ...(query && searchState
+          ? buildSearchSuggestions({ parsed: searchState.parsed, results: visibleSearchResults })
+          : []
+        ).map((suggestion) => {
+          const button = document.createElement("button");
+          button.className = "tag-pill ui-tag-pill";
+          button.type = "button";
+          button.dataset.guideSearchSuggestionAction = suggestion.action;
+          button.dataset.guideSearchSuggestion = suggestion.query;
+          button.textContent = suggestion.label;
+          return button;
+        }),
+      );
+    }
+
     if (emptyState) {
       emptyState.dataset.visible = visibleCards.length === 0 ? "true" : "false";
       emptyState.textContent = buildEmptyStateMessage({
@@ -1483,6 +1519,20 @@ if (root) {
       button.hidden = !mapFramePlaceIds;
     });
 
+    const urlParams = new URLSearchParams(window.location.search);
+    if (query) {
+      urlParams.set("q", query);
+    } else {
+      urlParams.delete("q");
+    }
+    urlParams.delete("tag");
+    selectedTags.forEach((tag) => urlParams.append("tag", tag));
+    const nextSearch = urlParams.toString();
+    const nextUrl = `${window.location.pathname}${nextSearch ? `?${nextSearch}` : ""}${window.location.hash}`;
+    if (`${window.location.pathname}${window.location.search}${window.location.hash}` !== nextUrl) {
+      history.replaceState(history.state, "", nextUrl);
+    }
+
     root.dispatchEvent(
       new CustomEvent("guide:places-updated", {
         bubbles: true,
@@ -1499,6 +1549,18 @@ if (root) {
     consumeCompletedTags();
     updateAutocomplete();
     update();
+  });
+
+  searchConversationSuggestions?.addEventListener("click", (event) => {
+    const button = event.target.closest("[data-guide-search-suggestion]");
+    const suggestion = button?.dataset.guideSearchSuggestion || "";
+    const action = button?.dataset.guideSearchSuggestionAction || "append";
+    if (!searchInput) return;
+
+    searchInput.value =
+      action === "clear" ? "" : `${searchInput.value.trim()} ${suggestion}`.trim();
+    searchInput.focus();
+    update("search-suggestion");
   });
 
   searchInput?.addEventListener("keydown", (event) => {
