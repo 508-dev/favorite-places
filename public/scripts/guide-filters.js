@@ -1477,6 +1477,7 @@ if (root) {
           const button = document.createElement("button");
           button.className = "tag-pill ui-tag-pill";
           button.type = "button";
+          button.dataset.guideSearchSuggestionAction = suggestion.action;
           button.dataset.guideSearchSuggestion = suggestion.query;
           button.textContent = suggestion.label;
           return button;
@@ -1512,6 +1513,20 @@ if (root) {
       button.hidden = !mapFramePlaceIds;
     });
 
+    const urlParams = new URLSearchParams(window.location.search);
+    if (query) {
+      urlParams.set("q", query);
+    } else {
+      urlParams.delete("q");
+    }
+    urlParams.delete("tag");
+    selectedTags.forEach((tag) => urlParams.append("tag", tag));
+    const nextSearch = urlParams.toString();
+    const nextUrl = `${window.location.pathname}${nextSearch ? `?${nextSearch}` : ""}${window.location.hash}`;
+    if (`${window.location.pathname}${window.location.search}${window.location.hash}` !== nextUrl) {
+      history.replaceState(history.state, "", nextUrl);
+    }
+
     root.dispatchEvent(
       new CustomEvent("guide:places-updated", {
         bubbles: true,
@@ -1533,9 +1548,11 @@ if (root) {
   searchConversationSuggestions?.addEventListener("click", (event) => {
     const button = event.target.closest("[data-guide-search-suggestion]");
     const suggestion = button?.dataset.guideSearchSuggestion || "";
-    if (!suggestion || !searchInput) return;
+    const action = button?.dataset.guideSearchSuggestionAction || "append";
+    if (!searchInput) return;
 
-    searchInput.value = `${searchInput.value.trim()} ${suggestion}`.trim();
+    searchInput.value =
+      action === "clear" ? "" : `${searchInput.value.trim()} ${suggestion}`.trim();
     searchInput.focus();
     update("search-suggestion");
   });

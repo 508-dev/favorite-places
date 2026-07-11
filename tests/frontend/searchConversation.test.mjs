@@ -50,9 +50,18 @@ describe("search conversation", () => {
         ],
       }),
     ).toEqual([
-      { label: "Coffee Shop", query: "coffee shop" },
-      { label: "Laptop Friendly", query: "laptop friendly" },
-      { label: "Cozy", query: "cozy" },
+      { action: "append", label: "Coffee Shop", query: "coffee shop" },
+      { action: "append", label: "Laptop Friendly", query: "laptop friendly" },
+      { action: "append", label: "Cozy", query: "cozy" },
     ]);
+  });
+
+  it("offers a deterministic broadening action when there are no result signals", () => {
+    expect(
+      buildSearchSuggestions({
+        parsed: { categories: ["cafe"], vibes: [] },
+        results: [],
+      }),
+    ).toEqual([{ action: "clear", label: "Clear search", query: "" }]);
   });
 });

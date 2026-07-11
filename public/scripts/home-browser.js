@@ -402,6 +402,7 @@ if (root) {
           const button = document.createElement("button");
           button.className = "tag-pill ui-tag-pill";
           button.type = "button";
+          button.dataset.globalSearchSuggestionAction = suggestion.action;
           button.dataset.globalSearchSuggestion = suggestion.query;
           button.textContent = suggestion.label;
           return button;
@@ -721,9 +722,11 @@ if (root) {
   globalResultsSuggestions?.addEventListener("click", (event) => {
     const button = event.target.closest("[data-global-search-suggestion]");
     const suggestion = button?.dataset.globalSearchSuggestion || "";
-    if (!suggestion || !searchInput) return;
+    const action = button?.dataset.globalSearchSuggestionAction || "append";
+    if (!searchInput) return;
 
-    searchInput.value = `${searchInput.value.trim()} ${suggestion}`.trim();
+    searchInput.value =
+      action === "clear" ? "" : `${searchInput.value.trim()} ${suggestion}`.trim();
     searchInput.focus();
     update();
   });

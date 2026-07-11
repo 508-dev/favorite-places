@@ -53,10 +53,15 @@ export function buildSearchSuggestions({ parsed = {}, results = [], limit = 4 } 
     (Array.isArray(entry.vibe_tags) ? entry.vibe_tags : []).forEach(addCandidate);
   });
 
+  if (candidates.size === 0 && activeTerms.size > 0) {
+    return [{ action: "clear", label: "Clear search", query: "" }];
+  }
+
   return [...candidates.entries()]
     .sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0]))
     .slice(0, limit)
     .map(([query]) => ({
+      action: "append",
       label: query.replace(/\b\w/g, (letter) => letter.toUpperCase()),
       query,
     }));
