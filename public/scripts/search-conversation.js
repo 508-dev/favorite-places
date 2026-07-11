@@ -18,7 +18,10 @@ const joinTerms = (terms) => {
 export function buildSearchConversation({ count = 0, parsed = {}, scopeLabel = "" } = {}) {
   const categories = Array.isArray(parsed.categories) ? parsed.categories : [];
   const vibes = Array.isArray(parsed.vibes) ? parsed.vibes : [];
-  const terms = [...new Set([...vibes, ...categories].map(normalizePhrase).filter(Boolean))];
+  const unmatchedTerms = Array.isArray(parsed.unmatchedTerms) ? parsed.unmatchedTerms : [];
+  const terms = [
+    ...new Set([...vibes, ...categories, ...unmatchedTerms].map(normalizePhrase).filter(Boolean)),
+  ];
   const scope = scopeLabel ? ` in ${scopeLabel}` : "";
 
   if (count === 0) {

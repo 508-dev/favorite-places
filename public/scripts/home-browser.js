@@ -391,11 +391,15 @@ if (root) {
         ? "nearby guides"
         : "your guides";
     globalResultsConversation.hidden = false;
-    globalResultsSummary.textContent = buildSearchConversation({
+    const summary = buildSearchConversation({
       count: visibleResults.length,
       parsed: state.parsed,
       scopeLabel,
     });
+    globalResultsSummary.textContent =
+      searchResultView === "individual" && visibleResults.length > INDIVIDUAL_RESULT_LIMIT
+        ? `${summary} Showing the top ${INDIVIDUAL_RESULT_LIMIT} individual matches.`
+        : summary;
     globalResultsSuggestions.replaceChildren(
       ...buildSearchSuggestions({ parsed: state.parsed, results: visibleResults }).map(
         (suggestion) => {

@@ -30,6 +30,18 @@ describe("search conversation", () => {
     );
   });
 
+  it("includes literal query terms that the parser did not classify", () => {
+    expect(
+      buildSearchConversation({
+        count: 1,
+        parsed: { categories: [], unmatchedTerms: ["shibuya"], vibes: ["quiet"] },
+        scopeLabel: "this guide",
+      }),
+    ).toBe(
+      "I found 1 place for quiet and shibuya in this guide. Results are matched from saved place details and tags.",
+    );
+  });
+
   it("suggests frequent unused categories and vibe tags as refinements", () => {
     expect(
       buildSearchSuggestions({

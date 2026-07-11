@@ -1460,18 +1460,24 @@ if (root) {
     }
 
     if (searchConversation && searchConversationSummary && searchConversationSuggestions) {
+      const visiblePlaceIds = new Set(
+        visibleCards.map((card) => card.dataset.placeId).filter(Boolean),
+      );
+      const visibleSearchResults = searchState
+        ? searchState.results.filter((result) => visiblePlaceIds.has(result.entry.id))
+        : [];
       searchConversation.hidden = !query || !searchState;
       searchConversationSummary.textContent =
         query && searchState
           ? buildSearchConversation({
               count: visibleCards.length,
               parsed: searchState.parsed,
-              scopeLabel: "this guide",
+              scopeLabel: hasAdditionalFilters ? "the active filters in this guide" : "this guide",
             })
           : "";
       searchConversationSuggestions.replaceChildren(
         ...(query && searchState
-          ? buildSearchSuggestions({ parsed: searchState.parsed, results: searchState.results })
+          ? buildSearchSuggestions({ parsed: searchState.parsed, results: visibleSearchResults })
           : []
         ).map((suggestion) => {
           const button = document.createElement("button");
