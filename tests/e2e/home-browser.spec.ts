@@ -32,6 +32,10 @@ test("filters guides by country and renders global place search results", async 
   await page.locator("[data-home-search-input]").fill("museum");
   await expect(page.locator("[data-global-search-results]")).toBeVisible();
   await expect(page.locator("[data-global-search-title]")).toContainText("matching");
+  await expect(page.locator("[data-global-search-summary]")).toContainText(
+    "Results are matched from saved place details and tags.",
+  );
+  await expect(page.locator("[data-global-search-suggestions] button").first()).toBeVisible();
   await expect(page.locator("[data-global-search-disclosure]")).toHaveCount(0);
   await expect(page.locator("[data-grouped-search-list]")).toBeVisible();
   await expect(page.locator("[data-grouped-search-list]")).toContainText("Taipei");

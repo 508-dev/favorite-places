@@ -1,4 +1,5 @@
 import { loadSearchIndex, searchPlaces } from "./place-search.js";
+import { buildSearchConversation, buildSearchSuggestions } from "./search-conversation.js";
 
 function getTagComparisonValue(value) {
   const normalizedText = String(value || "")
@@ -650,6 +651,9 @@ if (root) {
   const reviewSummary = root.querySelector("[data-review-summary]");
   const metricMenus = Array.from(root.querySelectorAll(".metric-filter-menu"));
   const selectedTagsRow = root.querySelector("[data-selected-tags]");
+  const searchConversation = root.querySelector("[data-guide-search-conversation]");
+  const searchConversationSummary = root.querySelector("[data-guide-search-summary]");
+  const searchConversationSuggestions = root.querySelector("[data-guide-search-suggestions]");
   const suggestionList = root.querySelector("[data-suggestion-list]");
   const suggestionGroup = suggestionList?.closest(".control-group") || null;
   const autocomplete = root.querySelector("[data-tag-autocomplete]");
@@ -1455,6 +1459,31 @@ if (root) {
       resultsCount.textContent = `${visibleCards.length} place${visibleCards.length === 1 ? "" : "s"}${suffix}`;
     }
 
+    if (searchConversation && searchConversationSummary && searchConversationSuggestions) {
+      searchConversation.hidden = !query || !searchState;
+      searchConversationSummary.textContent =
+        query && searchState
+          ? buildSearchConversation({
+              count: visibleCards.length,
+              parsed: searchState.parsed,
+              scopeLabel: "this guide",
+            })
+          : "";
+      searchConversationSuggestions.replaceChildren(
+        ...(query && searchState
+          ? buildSearchSuggestions({ parsed: searchState.parsed, results: searchState.results })
+          : []
+        ).map((suggestion) => {
+          const button = document.createElement("button");
+          button.className = "tag-pill ui-tag-pill";
+          button.type = "button";
+          button.dataset.guideSearchSuggestion = suggestion.query;
+          button.textContent = suggestion.label;
+          return button;
+        }),
+      );
+    }
+
     if (emptyState) {
       emptyState.dataset.visible = visibleCards.length === 0 ? "true" : "false";
       emptyState.textContent = buildEmptyStateMessage({
@@ -1499,6 +1528,16 @@ if (root) {
     consumeCompletedTags();
     updateAutocomplete();
     update();
+  });
+
+  searchConversationSuggestions?.addEventListener("click", (event) => {
+    const button = event.target.closest("[data-guide-search-suggestion]");
+    const suggestion = button?.dataset.guideSearchSuggestion || "";
+    if (!suggestion || !searchInput) return;
+
+    searchInput.value = `${searchInput.value.trim()} ${suggestion}`.trim();
+    searchInput.focus();
+    update("search-suggestion");
   });
 
   searchInput?.addEventListener("keydown", (event) => {

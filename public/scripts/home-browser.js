@@ -1,6 +1,7 @@
 import { nearbyGuidesForLocation } from "./home-browser-nearby.js";
 import { parseHomeBrowserHash, serializeHomeBrowserHash } from "./home-browser-state.js";
 import { loadSearchIndex, searchGuides, searchPlaces } from "./place-search.js";
+import { buildSearchConversation, buildSearchSuggestions } from "./search-conversation.js";
 
 const GROUP_LIMIT = 5;
 const INDIVIDUAL_RESULT_LIMIT = 24;
@@ -20,7 +21,9 @@ if (root) {
   const homeGuideMap = root.querySelector("[data-home-guide-map]");
   const globalResults = root.querySelector("[data-global-search-results]");
   const globalResultsTitle = root.querySelector("[data-global-search-title]");
+  const globalResultsConversation = root.querySelector("[data-global-search-conversation]");
   const globalResultsSummary = root.querySelector("[data-global-search-summary]");
+  const globalResultsSuggestions = root.querySelector("[data-global-search-suggestions]");
   const globalResultsToolbar = root.querySelector("[data-global-search-toolbar]");
   const globalResultsList = root.querySelector("[data-global-search-list]");
   const groupedResultsList = root.querySelector("[data-grouped-search-list]");
@@ -370,6 +373,43 @@ if (root) {
     );
   };
 
+  const renderSearchConversation = (query, state, visibleResults) => {
+    if (!globalResultsConversation || !globalResultsSummary || !globalResultsSuggestions) {
+      return;
+    }
+
+    if (!query || !state) {
+      globalResultsConversation.hidden = true;
+      globalResultsSummary.textContent = "";
+      globalResultsSuggestions.replaceChildren();
+      return;
+    }
+
+    const scopeLabel = activeCountry
+      ? countryLabel(activeCountry)
+      : nearbyGuideState
+        ? "nearby guides"
+        : "your guides";
+    globalResultsConversation.hidden = false;
+    globalResultsSummary.textContent = buildSearchConversation({
+      count: visibleResults.length,
+      parsed: state.parsed,
+      scopeLabel,
+    });
+    globalResultsSuggestions.replaceChildren(
+      ...buildSearchSuggestions({ parsed: state.parsed, results: visibleResults }).map(
+        (suggestion) => {
+          const button = document.createElement("button");
+          button.className = "tag-pill ui-tag-pill";
+          button.type = "button";
+          button.dataset.globalSearchSuggestion = suggestion.query;
+          button.textContent = suggestion.label;
+          return button;
+        },
+      ),
+    );
+  };
+
   const renderGlobalSearch = (query, placeSearchState, filteredResults) => {
     if (!globalResults || !globalResultsList || !groupedResultsList || !globalResultsEmpty) {
       return;
@@ -393,6 +433,7 @@ if (root) {
       if (globalResultsSummary) {
         globalResultsSummary.textContent = "";
       }
+      renderSearchConversation("", null, []);
       updateSearchViewButtons();
       return;
     }
@@ -413,6 +454,7 @@ if (root) {
       if (globalResultsSummary) {
         globalResultsSummary.textContent = "";
       }
+      renderSearchConversation("", null, []);
       return;
     }
 
@@ -429,6 +471,7 @@ if (root) {
       if (globalResultsSummary) {
         globalResultsSummary.textContent = "Loading index...";
       }
+      renderSearchConversation("", null, []);
       return;
     }
 
@@ -473,34 +516,7 @@ if (root) {
           : `${pluralize(visibleResults.length, "matching place")}`;
     }
 
-    if (globalResultsSummary) {
-      const parsed = [
-        ...state.parsed.vibes.map((vibe) => vibe.replaceAll("-", " ")),
-        ...state.parsed.categories,
-      ];
-      const summaryBits = [];
-
-      if (parsed.length > 0) {
-        summaryBits.push(parsed.join(" · "));
-      }
-
-      if (activeCountry) {
-        summaryBits.push(`Filtered to ${countryLabel(activeCountry)}`);
-      } else if (nearbyGuideState) {
-        summaryBits.push("Filtered to guides near you");
-      }
-
-      if (searchResultView === "grouped" && visibleResults.length > 0) {
-        summaryBits.push(`Showing up to ${GROUP_LIMIT} places per guide`);
-      } else if (
-        searchResultView === "individual" &&
-        visibleResults.length > INDIVIDUAL_RESULT_LIMIT
-      ) {
-        summaryBits.push(`Showing top ${INDIVIDUAL_RESULT_LIMIT} individual matches`);
-      }
-
-      globalResultsSummary.textContent = summaryBits.join(" · ") || "All guides";
-    }
+    renderSearchConversation(query, state, visibleResults);
 
     updateSearchViewButtons();
   };
@@ -700,6 +716,16 @@ if (root) {
     toggle.addEventListener("click", () => {
       setSearchView(toggle.dataset.searchView || "grouped");
     });
+  });
+
+  globalResultsSuggestions?.addEventListener("click", (event) => {
+    const button = event.target.closest("[data-global-search-suggestion]");
+    const suggestion = button?.dataset.globalSearchSuggestion || "";
+    if (!suggestion || !searchInput) return;
+
+    searchInput.value = `${searchInput.value.trim()} ${suggestion}`.trim();
+    searchInput.focus();
+    update();
   });
 
   window.addEventListener("hashchange", () => {

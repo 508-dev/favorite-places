@@ -334,7 +334,10 @@ const homeJsonLd = [
         </div>
       </div>
       <div class="search-results-toolbar" data-global-search-toolbar>
-        <p class="small-copy ui-copy ui-copy--sm" data-global-search-summary></p>
+        <div class="search-conversation" data-global-search-conversation hidden>
+          <p class="small-copy ui-copy ui-copy--sm" data-global-search-summary></p>
+          <div class="tag-row ui-tag-row" data-global-search-suggestions></div>
+        </div>
         <fieldset class="search-view-toggle-group">
           <legend class="visually-hidden">Search results view</legend>
           <button
