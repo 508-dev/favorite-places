@@ -1556,6 +1556,76 @@ class BuildDataTests(unittest.TestCase):
         self.assertEqual(merged.places[0].lng, -122.4303822)
         self.assertEqual(merged.places[0].maps_url, existing_payload.places[0].maps_url)
 
+    def test_preserve_existing_raw_saved_list_matches_unique_name_after_identity_and_address_loss(
+        self,
+    ) -> None:
+        existing_place = RawPlace(
+            name="Example Cafe",
+            address="1 Example St, Example City",
+            lat=35.0,
+            lng=139.0,
+            maps_url="https://www.google.com/maps?cid=111",
+            cid="111",
+        )
+        refreshed_place = RawPlace(
+            name="Example Cafe",
+            address=None,
+            lat=36.0,
+            lng=140.0,
+            maps_url="https://www.google.com/maps/search/?api=1&query=Example+Cafe",
+        )
+
+        merged = build_data.preserve_existing_raw_saved_list(
+            slug="example-city",
+            existing_payload=RawSavedList(places=[existing_place]),
+            refreshed_payload=RawSavedList(places=[refreshed_place]),
+        )
+
+        self.assertEqual(merged.places[0].address, existing_place.address)
+        self.assertEqual((merged.places[0].lat, merged.places[0].lng), (35.0, 139.0))
+        self.assertEqual(merged.places[0].cid, "111")
+
+    def test_preserve_existing_raw_saved_list_rejects_ambiguous_name_only_identity_loss(
+        self,
+    ) -> None:
+        existing_payload = RawSavedList(
+            places=[
+                RawPlace(
+                    name="Example Cafe",
+                    address="1 First St, Example City",
+                    lat=35.0,
+                    lng=139.0,
+                    maps_url="https://www.google.com/maps?cid=111",
+                    cid="111",
+                ),
+                RawPlace(
+                    name="Example Cafe",
+                    address="2 Second St, Example City",
+                    lat=35.1,
+                    lng=139.1,
+                    maps_url="https://www.google.com/maps?cid=222",
+                    cid="222",
+                ),
+            ]
+        )
+        refreshed_place = RawPlace(
+            name="Example Cafe",
+            address=None,
+            lat=36.0,
+            lng=140.0,
+            maps_url="https://www.google.com/maps/search/?api=1&query=Example+Cafe",
+        )
+
+        merged = build_data.preserve_existing_raw_saved_list(
+            slug="example-city",
+            existing_payload=existing_payload,
+            refreshed_payload=RawSavedList(places=[refreshed_place]),
+        )
+
+        self.assertIsNone(merged.places[0].address)
+        self.assertEqual((merged.places[0].lat, merged.places[0].lng), (36.0, 140.0))
+        self.assertIsNone(merged.places[0].cid)
+
     def test_preserve_existing_raw_place_accepts_locality_only_coordinate_correction(
         self,
     ) -> None:
@@ -4823,6 +4893,29 @@ class BuildDataTests(unittest.TestCase):
                 "https://www.google.com/maps/search/?api=1&query=Example+Cafe"
                 f"&query_place_id={query_place_id}"
             ),
+        )
+        selectors = {
+            query_place_id.casefold(),
+            f"gpid:{query_place_id}".casefold(),
+            f"tokyo-japan:{query_place_id}".casefold(),
+            f"tokyo-japan:gpid:{query_place_id}".casefold(),
+        }
+
+        matches = build_data.place_selector_matches(
+            "tokyo-japan",
+            place,
+            place_id=f"gpid:{query_place_id}",
+            selectors=selectors,
+        )
+
+        self.assertEqual(matches, selectors)
+
+    def test_place_selector_matches_stored_google_places_id(self) -> None:
+        query_place_id = "ChIJ-stored-example"
+        place = RawPlace(
+            name="Example Cafe",
+            maps_url="https://www.google.com/maps/search/?api=1&query=Example+Cafe",
+            google_id=f"places/{query_place_id}",
         )
         selectors = {
             query_place_id.casefold(),

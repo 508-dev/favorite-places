@@ -6770,6 +6770,46 @@ def build_raw_place_preservation_index(
     return index
 
 
+def raw_place_identity_loss_fallback_candidate(
+    *,
+    existing_payload: RawSavedList,
+    refreshed_payload: RawSavedList,
+    refreshed_place: RawPlace,
+) -> RawPlace | None:
+    refreshed_name = as_string(refreshed_place.name)
+    if (
+        not refreshed_name
+        or as_string(refreshed_place.address)
+        or raw_place_has_durable_google_identity(refreshed_place)
+    ):
+        return None
+
+    compatible_refreshed_places = [
+        place
+        for place in refreshed_payload.places
+        if (place_name := as_string(place.name))
+        and raw_place_names_are_compatible(place_name, refreshed_name)
+    ]
+    if len(compatible_refreshed_places) != 1:
+        return None
+
+    compatible_existing_places = [
+        place
+        for place in existing_payload.places
+        if (place_name := as_string(place.name))
+        and raw_place_names_are_compatible(place_name, refreshed_name)
+    ]
+    if len(compatible_existing_places) != 1:
+        return None
+
+    candidate = compatible_existing_places[0]
+    if not raw_place_has_durable_google_identity(candidate):
+        return None
+    if not raw_place_coordinate_address_is_stable(candidate, refreshed_place):
+        return None
+    return candidate
+
+
 def preserve_existing_raw_place(
     *,
     existing_place: RawPlace,
@@ -9070,6 +9110,13 @@ def preserve_existing_raw_saved_list(
                 if raw_place_names_are_compatible(as_string(candidate.name), refreshed_name):
                     existing_place = candidate
                     break
+
+        if existing_place is None:
+            existing_place = raw_place_identity_loss_fallback_candidate(
+                existing_payload=existing_payload,
+                refreshed_payload=refreshed_payload,
+                refreshed_place=refreshed_place,
+            )
 
         if existing_place is None:
             updated_places.append(refreshed_place)
@@ -15163,7 +15210,10 @@ def place_selector_matches(
         ("cid", place.cid),
         ("cid", extract_maps_cid(place.maps_url)),
         *((("cid", cid_alias) for cid_alias in cid_aliases)),
-        ("gpid", extract_maps_query_place_id(place.maps_url)),
+        *(
+            ("gpid", google_places_id)
+            for google_places_id in sorted(raw_place_google_places_identities(place))
+        ),
         ("gms", place.maps_place_token),
         ("gms", extract_maps_place_token(place.maps_url)),
     ):
