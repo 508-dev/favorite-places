@@ -159,6 +159,7 @@ OPERATIONAL_CACHE_TTL = timedelta(days=14)
 PHOTOLESS_REAL_PLACE_CACHE_TTL = timedelta(days=1)
 RAW_SOURCE_CACHE_TTL = timedelta(days=14)
 RAW_SOURCE_REFRESH_JITTER = timedelta(days=3)
+RAW_PLACE_SUSPICIOUS_COORDINATE_SHIFT_METERS = 1_000.0
 SOURCE_HTTP_TIMEOUT_SECONDS = 30
 SOURCE_HTTP_USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
@@ -6715,6 +6716,19 @@ def preserve_existing_raw_place(
     if names_compatible and refreshed_place.added_by is None and existing_place.added_by is not None:
         updates["added_by"] = existing_place.added_by
         preserved_fields.append("added_by")
+    if names_compatible and raw_place_coordinates_should_be_preserved(
+        existing_place,
+        refreshed_place,
+    ):
+        updates["lat"] = existing_place.lat
+        updates["lng"] = existing_place.lng
+        preserved_fields.append("coordinates")
+    if "coordinates" in preserved_fields and raw_place_maps_url_should_be_preserved(
+        existing_place,
+        refreshed_place,
+    ):
+        updates["maps_url"] = existing_place.maps_url
+        preserved_fields.append("maps_url")
 
     if not updates:
         return refreshed_place, preserved_fields
@@ -6730,6 +6744,129 @@ def raw_place_strong_google_identity_matches(left: RawPlace, right: RawPlace) ->
     left_maps_place_token = raw_place_maps_place_token_identity(left)
     right_maps_place_token = raw_place_maps_place_token_identity(right)
     return left_maps_place_token is not None and left_maps_place_token == right_maps_place_token
+
+
+def raw_place_coordinates_should_be_preserved(
+    existing_place: RawPlace,
+    refreshed_place: RawPlace,
+) -> bool:
+    if not raw_place_coordinate_identity_matches(existing_place, refreshed_place):
+        return False
+    if not raw_place_coordinate_address_is_stable(existing_place, refreshed_place):
+        return False
+
+    existing_lat = as_float(existing_place.lat)
+    existing_lng = as_float(existing_place.lng)
+    if existing_lat is None or existing_lng is None:
+        return False
+
+    refreshed_lat = as_float(refreshed_place.lat)
+    refreshed_lng = as_float(refreshed_place.lng)
+    if refreshed_lat is None or refreshed_lng is None:
+        return True
+
+    return (
+        haversine_meters(
+            existing_lat,
+            existing_lng,
+            refreshed_lat,
+            refreshed_lng,
+        )
+        > RAW_PLACE_SUSPICIOUS_COORDINATE_SHIFT_METERS
+    )
+
+
+def raw_place_coordinate_identity_matches(left: RawPlace, right: RawPlace) -> bool:
+    if raw_place_strong_google_identity_matches(left, right):
+        return True
+
+    left_cids = {
+        cid
+        for cid in [raw_place_cid_identity(left), *left.cid_aliases]
+        if cid
+    }
+    right_cids = {
+        cid
+        for cid in [raw_place_cid_identity(right), *right.cid_aliases]
+        if cid
+    }
+    return bool(left_cids & right_cids)
+
+
+def raw_place_coordinate_address_is_stable(
+    existing_place: RawPlace,
+    refreshed_place: RawPlace,
+) -> bool:
+    existing_address = as_string(existing_place.address)
+    if not existing_address:
+        return False
+
+    refreshed_address = as_string(refreshed_place.address)
+    if not refreshed_address:
+        return raw_place_address_is_preservable(existing_place, refreshed_place)
+
+    existing_address_key = raw_place_coordinate_address_key(existing_address)
+    refreshed_address_key = raw_place_coordinate_address_key(refreshed_address)
+    return existing_address_key is not None and existing_address_key == refreshed_address_key
+
+
+def raw_place_coordinate_address_key(address: str) -> str | None:
+    normalized = unicodedata.normalize("NFKC", address).casefold()
+    normalized_characters = [
+        character if unicodedata.category(character)[0] in {"L", "N"} else " "
+        for character in normalized
+    ]
+    compact = re.sub(r"\s+", " ", "".join(normalized_characters)).strip()
+    return compact or None
+
+
+def raw_place_maps_url_should_be_preserved(
+    existing_place: RawPlace,
+    refreshed_place: RawPlace,
+) -> bool:
+    existing_url = as_string(existing_place.maps_url)
+    refreshed_url = as_string(refreshed_place.maps_url)
+    if not existing_url or existing_url == refreshed_url:
+        return False
+    if google_maps_uri_strength(existing_url) < google_maps_uri_strength(refreshed_url):
+        return False
+
+    existing_url_cid = extract_maps_cid(existing_url)
+    refreshed_cids = {
+        cid
+        for cid in [
+            as_string(refreshed_place.cid),
+            extract_maps_cid(refreshed_url),
+            *refreshed_place.cid_aliases,
+        ]
+        if cid
+    }
+    if existing_url_cid and refreshed_cids and existing_url_cid not in refreshed_cids:
+        return False
+
+    existing_query_place_id = extract_maps_query_place_id(existing_url)
+    refreshed_query_place_id = extract_maps_query_place_id(refreshed_url)
+    if (
+        existing_query_place_id
+        and refreshed_query_place_id
+        and existing_query_place_id != refreshed_query_place_id
+    ):
+        return False
+
+    existing_url_token = extract_maps_place_token(existing_url)
+    refreshed_tokens = {
+        token
+        for token in [
+            as_string(refreshed_place.maps_place_token),
+            extract_maps_place_token(refreshed_url),
+        ]
+        if token
+    }
+    return not (
+        existing_url_token
+        and refreshed_tokens
+        and existing_url_token not in refreshed_tokens
+    )
 
 
 def raw_place_names_are_compatible(existing_name: str | None, refreshed_name: str | None) -> bool:
