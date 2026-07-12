@@ -6731,10 +6731,22 @@ def preserve_existing_raw_place(
     ):
         updates["address"] = existing_place.address
         preserved_fields.append("address")
-    if names_compatible and not refreshed_place.google_id and existing_place.google_id:
+    if (
+        (names_compatible or preserve_coordinates)
+        and not refreshed_place.google_id
+        and existing_place.google_id
+    ):
         updates["google_id"] = existing_place.google_id
         preserved_fields.append("google_id")
-    if names_compatible and not refreshed_place.cid and existing_place.cid:
+    if (
+        (names_compatible or preserve_coordinates)
+        and not refreshed_place.cid
+        and existing_place.cid
+        and raw_place_refreshed_url_identity_is_compatible(
+            existing_place,
+            refreshed_place.maps_url,
+        )
+    ):
         updates["cid"] = existing_place.cid
         preserved_fields.append("cid")
     existing_cid = as_string(existing_place.cid) or extract_maps_cid(existing_place.maps_url)
@@ -6748,7 +6760,15 @@ def preserve_existing_raw_place(
         if preserved_cid_aliases != refreshed_place.cid_aliases:
             updates["cid_aliases"] = preserved_cid_aliases
             preserved_fields.append("cid_alias")
-    if names_compatible and not refreshed_place.maps_place_token and existing_place.maps_place_token:
+    if (
+        (names_compatible or preserve_coordinates)
+        and not refreshed_place.maps_place_token
+        and existing_place.maps_place_token
+        and raw_place_refreshed_url_identity_is_compatible(
+            existing_place,
+            refreshed_place.maps_url,
+        )
+    ):
         updates["maps_place_token"] = existing_place.maps_place_token
         preserved_fields.append("maps_place_token")
     if names_compatible and not refreshed_place.is_favorite and existing_place.is_favorite:
@@ -6861,13 +6881,13 @@ def raw_place_coordinate_address_is_stable(
     ):
         return False
 
-    existing_tokens, existing_country = raw_place_coordinate_address_comparison_key(
+    existing_parts, existing_country = raw_place_coordinate_address_comparison_key(
         existing_address
     )
-    refreshed_tokens, refreshed_country = raw_place_coordinate_address_comparison_key(
+    refreshed_parts, refreshed_country = raw_place_coordinate_address_comparison_key(
         refreshed_address
     )
-    if not existing_tokens or existing_tokens != refreshed_tokens:
+    if not existing_parts or existing_parts != refreshed_parts:
         return False
     return bool(
         existing_country is None
@@ -6929,8 +6949,10 @@ def raw_place_coordinate_address_has_street_level_evidence(address: str) -> bool
 
 def raw_place_coordinate_address_comparison_key(
     address: str,
-) -> tuple[tuple[str, ...], str | None]:
-    tokens: list[str] = []
+) -> tuple[tuple[tuple[str, ...], ...], str | None]:
+    comparison_parts: list[tuple[str, ...]] = []
+    street_numbers = raw_place_coordinate_street_numbers(address)
+    country: str | None = None
     normalized_address = raw_place_coordinate_strip_japanese_postal_prefix(address)
     for raw_part in re.split(r"[,、]", normalized_address):
         part = re.sub(
@@ -6971,16 +6993,62 @@ def raw_place_coordinate_address_comparison_key(
                 continue
 
             index = unit_identifier_index + 1
-        tokens.extend(comparison_part_tokens)
+        for country_suffix, country_code in raw_place_coordinate_country_token_identities():
+            suffix_length = len(country_suffix)
+            if tuple(comparison_part_tokens[-suffix_length:]) == country_suffix:
+                del comparison_part_tokens[-suffix_length:]
+                country = country_code
+                break
 
-    country: str | None = None
-    for country_suffix, country_code in raw_place_coordinate_country_token_identities():
-        suffix_length = len(country_suffix)
-        if tuple(tokens[-suffix_length:]) == country_suffix:
-            del tokens[-suffix_length:]
-            country = country_code
-            break
-    return tuple(tokens), country
+        comparison_part_tokens = [
+            token
+            for index, token in enumerate(comparison_part_tokens)
+            if not raw_place_coordinate_token_is_postal(
+                comparison_part_tokens,
+                index,
+                street_numbers,
+            )
+        ]
+        if comparison_part_tokens:
+            comparison_parts.append(tuple(comparison_part_tokens))
+    return tuple(sorted(comparison_parts)), country
+
+
+def raw_place_coordinate_token_is_postal(
+    tokens: list[str],
+    index: int,
+    street_numbers: set[str],
+) -> bool:
+    token = tokens[index]
+    numbers = set(re.findall(r"\d+", token))
+    if not numbers or numbers & street_numbers:
+        return False
+    previous_token = tokens[index - 1] if index > 0 else None
+    if previous_token in {"hwy", "rte"}:
+        return False
+
+    compact = re.sub(r"[^a-z0-9]", "", token)
+    if compact.isdigit():
+        if 4 <= len(compact) <= 6:
+            return True
+        if len(compact) == 3:
+            for neighbor_index in (index - 1, index + 1):
+                if not 0 <= neighbor_index < len(tokens):
+                    continue
+                neighbor = re.sub(r"[^0-9]", "", tokens[neighbor_index])
+                neighbor_numbers = set(re.findall(r"\d+", tokens[neighbor_index]))
+                if (
+                    4 <= len(neighbor) <= 6
+                    and neighbor_numbers
+                    and not neighbor_numbers & street_numbers
+                ):
+                    return True
+        return False
+    return (
+        3 <= len(compact) <= 7
+        and any(character.isalpha() for character in compact)
+        and any(character.isdigit() for character in compact)
+    )
 
 
 def raw_place_coordinate_strip_japanese_postal_prefix(address: str) -> str:
@@ -7195,11 +7263,77 @@ def raw_place_maps_url_should_be_preserved(
         ]
         if token
     }
-    return not (
+    if (
         existing_url_token
         and refreshed_tokens
         and existing_url_token not in refreshed_tokens
+    ):
+        return False
+
+    existing_url_has_identity = raw_place_maps_url_has_embedded_identity(existing_url)
+    refreshed_url_has_identity = raw_place_maps_url_has_embedded_identity(refreshed_url)
+    has_compatible_identity = bool(
+        (existing_url_cid and existing_url_cid in refreshed_cids)
+        or (
+            existing_query_place_id
+            and existing_query_place_id == refreshed_query_place_id
+        )
+        or (existing_url_token and existing_url_token in refreshed_tokens)
     )
+    return not (
+        existing_url_has_identity
+        and refreshed_url_has_identity
+        and not has_compatible_identity
+    )
+
+
+def raw_place_refreshed_url_identity_is_compatible(
+    existing_place: RawPlace,
+    refreshed_url: str | None,
+) -> bool:
+    url = as_string(refreshed_url)
+    if not url or not raw_place_maps_url_has_embedded_identity(url):
+        return True
+
+    matched_identity = False
+    refreshed_cid = extract_maps_cid(url)
+    if refreshed_cid:
+        existing_cids = {
+            cid
+            for cid in [
+                as_string(existing_place.cid),
+                extract_maps_cid(existing_place.maps_url),
+                *existing_place.cid_aliases,
+            ]
+            if cid
+        }
+        if existing_cids and refreshed_cid not in existing_cids:
+            return False
+        matched_identity = matched_identity or refreshed_cid in existing_cids
+
+    refreshed_query_place_id = extract_maps_query_place_id(url)
+    if refreshed_query_place_id:
+        existing_query_place_id = extract_maps_query_place_id(existing_place.maps_url)
+        if existing_query_place_id and refreshed_query_place_id != existing_query_place_id:
+            return False
+        matched_identity = matched_identity or (
+            refreshed_query_place_id == existing_query_place_id
+        )
+
+    refreshed_token = extract_maps_place_token(url)
+    if refreshed_token:
+        existing_tokens = {
+            token
+            for token in [
+                as_string(existing_place.maps_place_token),
+                extract_maps_place_token(existing_place.maps_url),
+            ]
+            if token
+        }
+        if existing_tokens and refreshed_token not in existing_tokens:
+            return False
+        matched_identity = matched_identity or refreshed_token in existing_tokens
+    return matched_identity
 
 
 def raw_place_maps_url_has_embedded_identity(url: str) -> bool:
