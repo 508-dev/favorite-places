@@ -7263,6 +7263,12 @@ def raw_place_coordinate_part_has_street_marker(
     address_key: str,
     tokens: list[str],
 ) -> bool:
+    normalized_part = unicodedata.normalize("NFKC", part).casefold()
+    if re.match(
+        r"\s*(?:c(?:\.|/)|p(?:\.\s*)?za\.?|pl\.)\s*(?=[^\W\d_])",
+        normalized_part,
+    ):
+        return True
     street_suffix_indexes = {
         index
         for index, token in enumerate(tokens)
@@ -7281,9 +7287,14 @@ def raw_place_coordinate_part_has_street_marker(
 
 
 def raw_place_coordinate_part_is_premise_number(tokens: list[str]) -> bool:
-    if not tokens or not any(character.isdigit() for character in tokens[0]):
+    premise_tokens = tokens
+    if premise_tokens and premise_tokens[0] in RAW_PLACE_UNIT_NUMBER_LABEL_TOKENS:
+        premise_tokens = premise_tokens[1:]
+    if not premise_tokens or not any(
+        character.isdigit() for character in premise_tokens[0]
+    ):
         return False
-    for token in tokens:
+    for token in premise_tokens:
         compact = re.sub(r"[^a-z0-9]", "", token)
         if compact.isdigit() and 1 <= len(compact) <= 4:
             continue
@@ -7454,6 +7465,7 @@ def raw_place_coordinate_address_comparison_key(
                 part_tokens,
                 index,
                 street_numbers,
+                country_code=country or country_hint,
             )
         }
         current_part_has_valid_postal = (
@@ -7480,6 +7492,7 @@ def raw_place_coordinate_address_comparison_key(
                     next_part_tokens,
                     index,
                     street_numbers,
+                    country_code=country or country_hint,
                 )
             }
             next_part_is_postal_only = (
@@ -7561,6 +7574,7 @@ def raw_place_coordinate_address_comparison_key(
                 comparison_part_tokens,
                 index,
                 street_numbers,
+                country_code=country or country_hint,
             )
         }
         comparison_part_tokens = [
@@ -7661,20 +7675,53 @@ def raw_place_coordinate_collapse_street_number_range(
     return collapsed if replaced else None
 
 
+def raw_place_coordinate_token_is_part_of_valid_alphanumeric_postal(
+    tokens: Sequence[str],
+    index: int,
+    country_code: str | None,
+) -> bool:
+    if country_code not in {"CA", "GB"}:
+        return False
+    for span_length in (1, 2):
+        first_start = max(0, index - span_length + 1)
+        last_start = min(index, len(tokens) - span_length)
+        for start in range(first_start, last_start + 1):
+            indexes = set(range(start, start + span_length))
+            if raw_place_coordinate_postal_evidence_is_valid_for_country(
+                tokens,
+                indexes,
+                country_code,
+            ):
+                return True
+    return False
+
+
 def raw_place_coordinate_token_is_postal(
     tokens: list[str],
     index: int,
     street_numbers: set[str],
+    *,
+    country_code: str | None = None,
 ) -> bool:
     token = tokens[index]
     numbers = set(re.findall(r"\d+", token))
-    if not numbers or numbers & street_numbers:
+    if not numbers:
+        return False
+    compact = re.sub(r"[^a-z0-9]", "", token)
+    if numbers & street_numbers and not (
+        any(character.isalpha() for character in compact)
+        and any(character.isdigit() for character in compact)
+        and raw_place_coordinate_token_is_part_of_valid_alphanumeric_postal(
+            tokens,
+            index,
+            country_code,
+        )
+    ):
         return False
     previous_token = tokens[index - 1] if index > 0 else None
     if previous_token in {"hwy", "rte"}:
         return False
 
-    compact = re.sub(r"[^a-z0-9]", "", token)
     if compact.isdigit():
         if 4 <= len(compact) <= 6:
             return True

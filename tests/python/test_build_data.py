@@ -2708,6 +2708,147 @@ class BuildDataTests(unittest.TestCase):
         self.assertEqual((merged.lat, merged.lng), (20.98, -89.62))
         self.assertIn("coordinates", preserved_fields)
 
+    def test_preserve_existing_raw_place_handles_abbreviated_street_prefix(
+        self,
+    ) -> None:
+        for address in (
+            "C. de la Cava Baja, 16, Centro, 28005 Madrid, Spain",
+            "C/ de Ponzano, 11, Chamberí, 28010 Madrid, Spain",
+            "P.za del Duomo, 21, 20121 Milano MI, Italy",
+            "Pl. de Carles Buïgas, 1, 43840 Salou, Spain",
+        ):
+            with self.subTest(address=address):
+                existing_place = RawPlace(
+                    name="Example Cafe",
+                    address=address,
+                    lat=40.0,
+                    lng=-3.0,
+                    maps_url="https://www.google.com/maps?cid=111",
+                    cid="111",
+                )
+                refreshed_place = existing_place.model_copy(
+                    update={"lat": 40.1, "lng": -3.1}
+                )
+
+                merged, preserved_fields = build_data.preserve_existing_raw_place(
+                    existing_place=existing_place,
+                    refreshed_place=refreshed_place,
+                )
+
+                self.assertEqual((merged.lat, merged.lng), (40.0, -3.0))
+                self.assertIn("coordinates", preserved_fields)
+
+        self.assertFalse(
+            build_data.raw_place_coordinate_address_has_street_level_evidence(
+                "Building C, 16, Queens, NY, United States"
+            )
+        )
+
+    def test_preserve_existing_raw_place_handles_no_prefixed_premise_number(
+        self,
+    ) -> None:
+        for address in (
+            "No. 91, Xinguang Rd, Taoyuan City, 330",
+            "No. 42, Yongkang St, Taipei City, 106",
+        ):
+            with self.subTest(address=address):
+                existing_place = RawPlace(
+                    name="Example Cafe",
+                    address=address,
+                    lat=25.0,
+                    lng=121.5,
+                    maps_url="https://www.google.com/maps?cid=111",
+                    cid="111",
+                )
+                refreshed_place = existing_place.model_copy(
+                    update={"lat": 25.1, "lng": 121.6}
+                )
+
+                merged, preserved_fields = build_data.preserve_existing_raw_place(
+                    existing_place=existing_place,
+                    refreshed_place=refreshed_place,
+                )
+
+                self.assertEqual((merged.lat, merged.lng), (25.0, 121.5))
+                self.assertIn("coordinates", preserved_fields)
+
+        self.assertFalse(
+            build_data.raw_place_coordinate_part_is_premise_number(["no", "name"])
+        )
+
+    def test_preserve_existing_raw_place_handles_postcode_digit_matching_street_number(
+        self,
+    ) -> None:
+        for existing_address, refreshed_address in (
+            (
+                "1 Leather Ln, London EC1N 2TD, United Kingdom",
+                "1 Leather Lane, London, United Kingdom",
+            ),
+            (
+                "1 Leather Ln, London EC1N 2TD, United Kingdom",
+                "1 Leather Lane, London EC1N2TD, United Kingdom",
+            ),
+            (
+                "1 Leather Ln, London EC1N 2TD, United Kingdom",
+                "1 Leather Lane, London EC2N 2TD, United Kingdom",
+            ),
+            (
+                "5 King St, Toronto M5V 2T6, Canada",
+                "5 King Street, Toronto, Canada",
+            ),
+        ):
+            with self.subTest(refreshed_address=refreshed_address):
+                existing_place = RawPlace(
+                    name="Example Cafe",
+                    address=existing_address,
+                    lat=51.52,
+                    lng=-0.11,
+                    maps_url="https://www.google.com/maps?cid=111",
+                    cid="111",
+                )
+                refreshed_place = existing_place.model_copy(
+                    update={
+                        "address": refreshed_address,
+                        "lat": 51.62,
+                        "lng": -0.21,
+                    }
+                )
+
+                merged, preserved_fields = build_data.preserve_existing_raw_place(
+                    existing_place=existing_place,
+                    refreshed_place=refreshed_place,
+                )
+
+                self.assertEqual((merged.lat, merged.lng), (51.52, -0.11))
+                self.assertIn("coordinates", preserved_fields)
+
+    def test_preserve_existing_raw_place_keeps_street_number_change_with_postcode(
+        self,
+    ) -> None:
+        existing_place = RawPlace(
+            name="Example Cafe",
+            address="1 Leather Ln, London EC1N 2TD, United Kingdom",
+            lat=51.52,
+            lng=-0.11,
+            maps_url="https://www.google.com/maps?cid=111",
+            cid="111",
+        )
+        refreshed_place = existing_place.model_copy(
+            update={
+                "address": "2 Leather Lane, London EC1N 2TD, United Kingdom",
+                "lat": 51.62,
+                "lng": -0.21,
+            }
+        )
+
+        merged, preserved_fields = build_data.preserve_existing_raw_place(
+            existing_place=existing_place,
+            refreshed_place=refreshed_place,
+        )
+
+        self.assertEqual((merged.lat, merged.lng), (51.62, -0.21))
+        self.assertNotIn("coordinates", preserved_fields)
+
     def test_preserve_existing_raw_place_keeps_non_latin_combining_marks(self) -> None:
         existing_place = RawPlace(
             name="Example Cafe",
