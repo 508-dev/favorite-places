@@ -6716,7 +6716,7 @@ def preserve_existing_raw_place(
     if names_compatible and refreshed_place.added_by is None and existing_place.added_by is not None:
         updates["added_by"] = existing_place.added_by
         preserved_fields.append("added_by")
-    if names_compatible and raw_place_coordinates_should_be_preserved(
+    if raw_place_coordinates_should_be_preserved(
         existing_place,
         refreshed_place,
     ):

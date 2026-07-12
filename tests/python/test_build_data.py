@@ -1696,6 +1696,32 @@ class BuildDataTests(unittest.TestCase):
         self.assertEqual((merged.lat, merged.lng), (35.6762, 139.6503))
         self.assertIn("coordinates", preserved_fields)
 
+    def test_preserve_existing_raw_place_handles_name_change_with_stable_identity(self) -> None:
+        existing_place = RawPlace(
+            name="Old Cafe Name",
+            address="1 Example St, Example City",
+            lat=35.0,
+            lng=139.0,
+            maps_url="https://www.google.com/maps?cid=111",
+            cid="111",
+        )
+        refreshed_place = existing_place.model_copy(
+            update={
+                "name": "Completely New Concept",
+                "lat": 36.0,
+                "lng": 140.0,
+            }
+        )
+
+        merged, preserved_fields = build_data.preserve_existing_raw_place(
+            existing_place=existing_place,
+            refreshed_place=refreshed_place,
+        )
+
+        self.assertEqual(merged.name, "Completely New Concept")
+        self.assertEqual((merged.lat, merged.lng), (35.0, 139.0))
+        self.assertIn("coordinates", preserved_fields)
+
     def test_preserve_existing_raw_place_accepts_changed_non_latin_address(self) -> None:
         existing_place = RawPlace(
             name="Example Cafe",
