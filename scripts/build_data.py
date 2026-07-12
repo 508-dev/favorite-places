@@ -180,6 +180,16 @@ RAW_PLACE_ADDRESS_TOKEN_ALIASES = {
     "street": "st",
     "terrace": "ter",
 }
+RAW_PLACE_DIRECTION_TOKEN_ALIASES = {
+    "east": "e",
+    "north": "n",
+    "northeast": "ne",
+    "northwest": "nw",
+    "south": "s",
+    "southeast": "se",
+    "southwest": "sw",
+    "west": "w",
+}
 RAW_PLACE_ORDINAL_WORD_VALUES = {
     "first": 1,
     "second": 2,
@@ -6797,6 +6807,7 @@ def preserve_existing_raw_place(
         and raw_place_refreshed_url_identity_is_compatible(
             existing_place,
             refreshed_place.maps_url,
+            refreshed_cid=as_string(refreshed_place.cid),
         )
     ):
         updates["google_id"] = existing_place.google_id
@@ -6808,6 +6819,7 @@ def preserve_existing_raw_place(
         and raw_place_refreshed_url_identity_is_compatible(
             existing_place,
             refreshed_place.maps_url,
+            refreshed_cid=as_string(refreshed_place.cid),
         )
     ):
         updates["cid"] = existing_place.cid
@@ -6830,6 +6842,7 @@ def preserve_existing_raw_place(
         and raw_place_refreshed_url_identity_is_compatible(
             existing_place,
             refreshed_place.maps_url,
+            refreshed_cid=as_string(refreshed_place.cid),
         )
     ):
         updates["maps_place_token"] = existing_place.maps_place_token
@@ -6903,12 +6916,28 @@ def raw_place_coordinate_identity_matches(left: RawPlace, right: RawPlace) -> bo
     google_places_ids_are_consistent = (
         len(left_google_places_ids) <= 1 and len(right_google_places_ids) <= 1
     )
+    google_places_ids_conflict = bool(
+        left_google_places_ids
+        and right_google_places_ids
+        and left_google_places_ids.isdisjoint(right_google_places_ids)
+    )
+
+    left_legacy_google_id = raw_place_legacy_google_id_identity(left)
+    right_legacy_google_id = raw_place_legacy_google_id_identity(right)
+    legacy_google_ids_conflict = bool(
+        left_legacy_google_id
+        and right_legacy_google_id
+        and left_legacy_google_id != right_legacy_google_id
+    )
 
     left_maps_place_token = raw_place_maps_place_token_identity(left)
     right_maps_place_token = raw_place_maps_place_token_identity(right)
     if (
         left_maps_place_token is not None
         and left_maps_place_token == right_maps_place_token
+        and google_places_ids_are_consistent
+        and not google_places_ids_conflict
+        and not legacy_google_ids_conflict
     ):
         return True
 
@@ -6941,11 +6970,6 @@ def raw_place_coordinate_identity_matches(left: RawPlace, right: RawPlace) -> bo
         for cid in [right_primary_cid, *right.cid_aliases]
         if cid
     }
-    google_places_ids_conflict = bool(
-        left_google_places_ids
-        and right_google_places_ids
-        and left_google_places_ids.isdisjoint(right_google_places_ids)
-    )
     names_are_compatible = raw_place_names_are_compatible(
         as_string(left.name),
         as_string(right.name),
@@ -7135,6 +7159,43 @@ def raw_place_coordinate_address_key(address: str) -> str | None:
     return compact or None
 
 
+def raw_place_coordinate_normalize_street_prefix(
+    part: str,
+    country_code: str | None,
+) -> str:
+    normalized = unicodedata.normalize("NFKC", part)
+    prefix_replacements = (
+        (r"^\s*c(?:\.|/)\s*(?=[^\W\d_])", "Calle "),
+        (r"^\s*pl\.\s*(?=[^\W\d_])", "Plaza "),
+    )
+    for pattern, replacement in prefix_replacements:
+        if re.match(pattern, normalized, flags=re.IGNORECASE):
+            return re.sub(
+                pattern,
+                replacement,
+                normalized,
+                count=1,
+                flags=re.IGNORECASE,
+            )
+    piazza_or_plaza_match = re.match(
+        r"^\s*p(?:\.\s*)?za\.?\s*(?=[^\W\d_])",
+        normalized,
+        flags=re.IGNORECASE,
+    )
+    if piazza_or_plaza_match is not None:
+        replacement = "Piazza " if country_code == "IT" else "Plaza "
+        return f"{replacement}{normalized[piazza_or_plaza_match.end():]}"
+    if country_code == "IT":
+        return re.sub(
+            r"^\s*str\.\s*(?=[^\W\d_])",
+            "Strada ",
+            normalized,
+            count=1,
+            flags=re.IGNORECASE,
+        )
+    return normalized
+
+
 def raw_place_coordinate_address_token_list(address_key: str) -> list[str]:
     raw_tokens = address_key.split()
     normalized_tokens: list[str] = []
@@ -7170,7 +7231,12 @@ def raw_place_coordinate_address_token_list(address_key: str) -> list[str]:
                 )
                 index += 2
                 continue
-        normalized_tokens.append(RAW_PLACE_ADDRESS_TOKEN_ALIASES.get(token, token))
+        normalized_tokens.append(
+            RAW_PLACE_DIRECTION_TOKEN_ALIASES.get(
+                token,
+                RAW_PLACE_ADDRESS_TOKEN_ALIASES.get(token, token),
+            )
+        )
         index += 1
     return normalized_tokens
 
@@ -7230,6 +7296,9 @@ def raw_place_coordinate_address_has_street_level_evidence(address: str) -> bool
             part,
             address_key,
             tokens,
+        ) and raw_place_coordinate_numeric_indexes_include_premise(
+            tokens,
+            numeric_indexes,
         ):
             return True
 
@@ -7272,12 +7341,12 @@ def raw_place_coordinate_part_has_street_marker(
     street_suffix_indexes = {
         index
         for index, token in enumerate(tokens)
-        if token in RAW_PLACE_STREET_SUFFIX_TOKENS
+        if index > 0 and token in RAW_PLACE_STREET_SUFFIX_TOKENS
     }
     if any(index > 0 for index in street_suffix_indexes):
         return True
     if re.search(
-        r"\b(?:allee|allée|av|avenida|calle|carrer|chaussee|chaussée|chemin|chome|corso|impasse|piazza|quai|r|rua|rue|str|strasse|straße|via)\b",
+        r"\b(?:allee|allée|av|avenida|calle|carrer|chaussee|chaussée|chemin|chome|corso|impasse|largo|passeig|piazza|plaza|quai|r|rua|rue|str|strada|strasse|straße|via|viale)\b",
         address_key,
     ):
         return True
@@ -7298,10 +7367,31 @@ def raw_place_coordinate_part_is_premise_number(tokens: list[str]) -> bool:
         compact = re.sub(r"[^a-z0-9]", "", token)
         if compact.isdigit() and 1 <= len(compact) <= 4:
             continue
+        if re.fullmatch(r"\d{1,4}[a-z]{1,3}", compact):
+            continue
         if compact.isalpha() and len(compact) <= 3:
             continue
         return False
     return True
+
+
+def raw_place_coordinate_numeric_indexes_include_premise(
+    tokens: Sequence[str],
+    numeric_indexes: set[int],
+) -> bool:
+    street_suffix_indexes = {
+        index
+        for index, token in enumerate(tokens)
+        if index > 0 and token in RAW_PLACE_STREET_SUFFIX_TOKENS
+    }
+    if not street_suffix_indexes:
+        return bool(numeric_indexes)
+    first_suffix_index = min(street_suffix_indexes)
+    last_suffix_index = max(street_suffix_indexes)
+    return any(
+        index < first_suffix_index or index == last_suffix_index + 1
+        for index in numeric_indexes
+    )
 
 
 def raw_place_coordinate_part_is_route_only(
@@ -7432,10 +7522,14 @@ def raw_place_coordinate_address_comparison_key(
         )
     )
     for raw_part_index, raw_part in enumerate(raw_parts):
+        part = raw_place_coordinate_normalize_street_prefix(
+            raw_part,
+            country or country_hint,
+        )
         part = re.sub(
             r"^\s*(?:unit\s+)?[^/\s,]+\s*/\s*",
             "",
-            raw_part,
+            part,
             flags=re.IGNORECASE,
         )
         part = re.sub(r"#\s*[\w-]+", "", part)
@@ -7447,7 +7541,9 @@ def raw_place_coordinate_address_comparison_key(
             part_tokens,
             part=raw_part,
         ):
-            part_tokens = [token for token in part_tokens if token != "and"]
+            part_tokens = [
+                token for token in part_tokens if token not in {"and", "at"}
+            ]
         uppercase_word_suffixes = {
             tuple(raw_place_coordinate_address_token_list(word_key))
             for word in re.findall(
@@ -8066,29 +8162,34 @@ def raw_place_maps_url_should_be_preserved(
 def raw_place_refreshed_url_identity_is_compatible(
     existing_place: RawPlace,
     refreshed_url: str | None,
+    *,
+    refreshed_cid: str | None = None,
 ) -> bool:
     if len(raw_place_google_places_identities(existing_place)) > 1:
         return False
+
+    existing_cids = {
+        cid
+        for cid in [
+            as_string(existing_place.cid),
+            extract_maps_cid(existing_place.maps_url),
+            *existing_place.cid_aliases,
+        ]
+        if cid
+    }
+    if refreshed_cid and existing_cids and refreshed_cid not in existing_cids:
+        return False
+    matched_identity = bool(refreshed_cid and refreshed_cid in existing_cids)
 
     url = as_string(refreshed_url)
     if not url or not raw_place_maps_url_has_embedded_identity(url):
         return True
 
-    matched_identity = False
-    refreshed_cid = extract_maps_cid(url)
-    if refreshed_cid:
-        existing_cids = {
-            cid
-            for cid in [
-                as_string(existing_place.cid),
-                extract_maps_cid(existing_place.maps_url),
-                *existing_place.cid_aliases,
-            ]
-            if cid
-        }
-        if existing_cids and refreshed_cid not in existing_cids:
+    refreshed_url_cid = extract_maps_cid(url)
+    if refreshed_url_cid:
+        if existing_cids and refreshed_url_cid not in existing_cids:
             return False
-        matched_identity = matched_identity or refreshed_cid in existing_cids
+        matched_identity = matched_identity or refreshed_url_cid in existing_cids
 
     refreshed_query_place_id = extract_maps_query_place_id(url)
     if refreshed_query_place_id:
@@ -8202,6 +8303,13 @@ def raw_place_google_id_identity(place: RawPlace) -> str | None:
     if not google_id:
         return None
     return google_id.strip("/").replace("/", "-")
+
+
+def raw_place_legacy_google_id_identity(place: RawPlace) -> str | None:
+    google_id = as_string(place.google_id)
+    if not google_id or google_id.startswith("places/") or "/" not in google_id:
+        return None
+    return raw_place_google_id_identity(place)
 
 
 def raw_place_google_places_id_identity(place: RawPlace) -> str | None:
