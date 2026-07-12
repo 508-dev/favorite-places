@@ -2629,6 +2629,33 @@ class BuildDataTests(unittest.TestCase):
         self.assertEqual((merged.lat, merged.lng), (40.7536, -73.9803))
         self.assertIn("coordinates", preserved_fields)
 
+    def test_preserve_existing_raw_place_does_not_treat_building_name_as_intersection(
+        self,
+    ) -> None:
+        existing_place = RawPlace(
+            name="Example Cafe",
+            address="One Court Square, Queens, NY, United States",
+            lat=40.747,
+            lng=-73.945,
+            maps_url="https://www.google.com/maps?cid=111",
+            cid="111",
+        )
+        refreshed_place = existing_place.model_copy(
+            update={
+                "address": "One Ct Sq, Queens, NY, USA",
+                "lat": 40.85,
+                "lng": -74.08,
+            }
+        )
+
+        merged, preserved_fields = build_data.preserve_existing_raw_place(
+            existing_place=existing_place,
+            refreshed_place=refreshed_place,
+        )
+
+        self.assertEqual((merged.lat, merged.lng), (40.85, -74.08))
+        self.assertNotIn("coordinates", preserved_fields)
+
     def test_preserve_existing_raw_place_normalizes_possessive_apostrophe(
         self,
     ) -> None:

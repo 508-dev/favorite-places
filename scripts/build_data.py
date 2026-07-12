@@ -7179,7 +7179,11 @@ def raw_place_coordinate_token_is_ordinal(token: str) -> bool:
     return token.startswith("ordinal_")
 
 
-def raw_place_coordinate_part_has_street_intersection(tokens: list[str]) -> bool:
+def raw_place_coordinate_part_has_street_intersection(
+    tokens: list[str],
+    *,
+    part: str | None = None,
+) -> bool:
     ordinal_street_count = sum(
         raw_place_coordinate_token_is_ordinal(token)
         and index + 1 < len(tokens)
@@ -7188,6 +7192,11 @@ def raw_place_coordinate_part_has_street_intersection(tokens: list[str]) -> bool
     )
     if ordinal_street_count >= 2:
         return True
+    if part is None or re.search(
+        r"(?:&|\b(?:and|at)\b)",
+        unicodedata.normalize("NFKC", part).casefold(),
+    ) is None:
+        return False
     return sum(
         index > 0
         and token in RAW_PLACE_STREET_SUFFIX_TOKENS
@@ -7225,8 +7234,8 @@ def raw_place_coordinate_address_has_street_level_evidence(address: str) -> bool
             return True
 
     if any(
-        raw_place_coordinate_part_has_street_intersection(tokens)
-        for _, _, tokens in parsed_parts
+        raw_place_coordinate_part_has_street_intersection(tokens, part=part)
+        for part, _, tokens in parsed_parts
     ):
         return True
 
@@ -7423,7 +7432,10 @@ def raw_place_coordinate_address_comparison_key(
         if address_key is None:
             continue
         part_tokens = raw_place_coordinate_address_token_list(address_key)
-        if raw_place_coordinate_part_has_street_intersection(part_tokens):
+        if raw_place_coordinate_part_has_street_intersection(
+            part_tokens,
+            part=raw_part,
+        ):
             part_tokens = [token for token in part_tokens if token != "and"]
         uppercase_word_suffixes = {
             tuple(raw_place_coordinate_address_token_list(word_key))
