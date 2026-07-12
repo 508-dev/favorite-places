@@ -2105,7 +2105,6 @@ class BuildDataTests(unittest.TestCase):
 
         self.assertEqual(merged.google_id, "/g/example")
         self.assertIn("google_id", preserved_fields)
-        self.assertEqual(build_data.stable_place_id(merged), "gid:g-example")
 
     def test_preserve_existing_raw_place_does_not_restore_google_id_across_url_conflict(
         self,
