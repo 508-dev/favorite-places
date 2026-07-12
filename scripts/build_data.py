@@ -7124,6 +7124,7 @@ def raw_place_coordinate_address_key(address: str) -> str | None:
             and "LATIN" in unicodedata.name(character, "")
         )
     normalized = unicodedata.normalize("NFKC", "".join(without_latin_diacritics))
+    normalized = re.sub(r"(?<=\w)['’ʼ](?=\w)", "", normalized)
     normalized_characters = [
         character
         if unicodedata.category(character)[0] in {"L", "M", "N"}
@@ -7179,10 +7180,18 @@ def raw_place_coordinate_token_is_ordinal(token: str) -> bool:
 
 
 def raw_place_coordinate_part_has_street_intersection(tokens: list[str]) -> bool:
-    return sum(
+    ordinal_street_count = sum(
         raw_place_coordinate_token_is_ordinal(token)
         and index + 1 < len(tokens)
         and tokens[index + 1] in RAW_PLACE_STREET_SUFFIX_TOKENS
+        for index, token in enumerate(tokens)
+    )
+    if ordinal_street_count >= 2:
+        return True
+    return sum(
+        index > 0
+        and token in RAW_PLACE_STREET_SUFFIX_TOKENS
+        and tokens[index - 1] not in RAW_PLACE_UNIT_PREFIX_TOKENS
         for index, token in enumerate(tokens)
     ) >= 2
 
@@ -7699,7 +7708,9 @@ def raw_place_coordinate_country_token_identities() -> tuple[
         "UK": "GB",
         "UAE": "AE",
         "US": "US",
+        "U.S.": "US",
         "USA": "US",
+        "U.S.A.": "US",
         "Korea": "KR",
         "South Korea": "KR",
         "韓国": "KR",
