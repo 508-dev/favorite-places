@@ -7553,6 +7553,8 @@ def raw_place_coordinate_postal_evidence_is_valid_for_country(
         return bool(re.fullmatch(r"\d{4}", compact_postal))
     if country_code == "IT":
         return bool(re.fullmatch(r"\d{5}", compact_postal))
+    if country_code == "GE":
+        return bool(re.fullmatch(r"\d{4}", compact_postal))
     if country_code == "TW":
         return bool(re.fullmatch(r"\d{3,6}", compact_postal))
     if country_code == "GB":
@@ -7570,6 +7572,21 @@ def raw_place_coordinate_country_span(
     *,
     expected_country: str | None = None,
 ) -> tuple[int, int, str] | None:
+    if expected_country == "GE":
+        for start in range(len(tokens) - 1, -1, -1):
+            if tokens[start] != "georgia":
+                continue
+            end = start + 1
+            trailing_indexes = set(range(end, len(tokens)))
+            if trailing_indexes and not (
+                raw_place_coordinate_postal_evidence_is_valid_for_country(
+                    tokens,
+                    trailing_indexes,
+                    "GE",
+                )
+            ):
+                continue
+            return start, end, "GE"
     for country_tokens, country_code in raw_place_coordinate_country_token_identities():
         if expected_country is not None and country_code != expected_country:
             continue
@@ -7588,6 +7605,27 @@ def raw_place_coordinate_country_span(
             ):
                 continue
             return start, end, country_code
+    return None
+
+
+def raw_place_coordinate_infer_georgia_country(raw_parts: Sequence[str]) -> str | None:
+    has_georgia_component = any(
+        raw_place_coordinate_address_key(part) == "georgia"
+        for part in raw_parts
+    )
+    if not has_georgia_component:
+        return None
+
+    subdivision_identities = raw_place_coordinate_subdivision_token_identities(None)
+    for part in raw_parts:
+        part_key = raw_place_coordinate_address_key(part)
+        if part_key is None or part_key == "georgia":
+            continue
+        identity = subdivision_identities.get(
+            tuple(raw_place_coordinate_address_token_list(part_key))
+        )
+        if identity is not None and identity[0] == "subdivision" and identity[1].startswith("ge-"):
+            return "GE"
     return None
 
 
@@ -7618,6 +7656,8 @@ def raw_place_coordinate_address_comparison_key(
             if country_span is not None:
                 country = country_span[2]
                 break
+    if country is None:
+        country = raw_place_coordinate_infer_georgia_country(raw_parts)
     if country is None:
         country = raw_place_coordinate_infer_country_from_subdivision_postal(
             normalized_address

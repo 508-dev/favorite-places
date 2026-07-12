@@ -3823,6 +3823,33 @@ class BuildDataTests(unittest.TestCase):
         self.assertEqual((merged.lat, merged.lng), (33.749, -84.388))
         self.assertIn("coordinates", preserved_fields)
 
+    def test_preserve_existing_raw_place_treats_georgia_as_country_with_georgian_subdivision(
+        self,
+    ) -> None:
+        existing_place = RawPlace(
+            name="Example Cafe",
+            address="1 Rustaveli Ave, Tbilisi, Georgia",
+            lat=41.7151,
+            lng=44.8271,
+            maps_url="https://www.google.com/maps?cid=111",
+            cid="111",
+        )
+        refreshed_place = existing_place.model_copy(
+            update={
+                "address": "1 Rustaveli Avenue, Tbilisi",
+                "lat": 41.8,
+                "lng": 44.9,
+            }
+        )
+
+        merged, preserved_fields = build_data.preserve_existing_raw_place(
+            existing_place=existing_place,
+            refreshed_place=refreshed_place,
+        )
+
+        self.assertEqual((merged.lat, merged.lng), (41.7151, 44.8271))
+        self.assertIn("coordinates", preserved_fields)
+
     def test_preserve_existing_raw_place_accepts_added_locality_with_large_shift(self) -> None:
         existing_place = RawPlace(
             name="Example Cafe",
