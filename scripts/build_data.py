@@ -6997,6 +6997,10 @@ def raw_place_maps_url_should_be_preserved(
         return False
     if google_maps_uri_strength(existing_url) < google_maps_uri_strength(refreshed_url):
         return False
+    if raw_place_maps_url_has_embedded_identity(
+        refreshed_url,
+    ) and not raw_place_maps_url_has_embedded_identity(existing_url):
+        return False
 
     existing_url_cid = extract_maps_cid(existing_url)
     refreshed_cids = {
@@ -7033,6 +7037,14 @@ def raw_place_maps_url_should_be_preserved(
         existing_url_token
         and refreshed_tokens
         and existing_url_token not in refreshed_tokens
+    )
+
+
+def raw_place_maps_url_has_embedded_identity(url: str) -> bool:
+    return bool(
+        extract_maps_cid(url)
+        or extract_maps_query_place_id(url)
+        or extract_maps_place_token(url)
     )
 
 

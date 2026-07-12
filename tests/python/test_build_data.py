@@ -1857,6 +1857,35 @@ class BuildDataTests(unittest.TestCase):
         )
         self.assertNotIn("maps_url", preserved_fields)
 
+    def test_preserve_existing_raw_place_keeps_identity_bearing_refreshed_maps_url(
+        self,
+    ) -> None:
+        existing_place = RawPlace(
+            name="Example Cafe",
+            address="1 Example St, Example City",
+            lat=35.0,
+            lng=139.0,
+            maps_url="https://www.google.com/maps/place/Example+Cafe",
+            google_id="/g/example",
+        )
+        refreshed_place = existing_place.model_copy(
+            update={
+                "lat": 36.0,
+                "lng": 140.0,
+                "maps_url": "https://www.google.com/maps?cid=111",
+                "cid": "111",
+            }
+        )
+
+        merged, preserved_fields = build_data.preserve_existing_raw_place(
+            existing_place=existing_place,
+            refreshed_place=refreshed_place,
+        )
+
+        self.assertEqual((merged.lat, merged.lng), (35.0, 139.0))
+        self.assertEqual(merged.maps_url, "https://www.google.com/maps?cid=111")
+        self.assertNotIn("maps_url", preserved_fields)
+
     def test_preserve_existing_raw_place_rejects_conflicting_prior_maps_url(self) -> None:
         existing_place = RawPlace(
             name="Relocated Cafe",
