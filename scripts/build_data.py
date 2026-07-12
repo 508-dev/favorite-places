@@ -161,6 +161,8 @@ RAW_SOURCE_CACHE_TTL = timedelta(days=14)
 RAW_SOURCE_REFRESH_JITTER = timedelta(days=3)
 RAW_PLACE_SUSPICIOUS_COORDINATE_SHIFT_METERS = 1_000.0
 RAW_PLACE_ADDRESS_TOKEN_ALIASES = {
+    "av": "ave",
+    "avenida": "ave",
     "avenue": "ave",
     "boulevard": "blvd",
     "circle": "cir",
@@ -172,9 +174,50 @@ RAW_PLACE_ADDRESS_TOKEN_ALIASES = {
     "place": "pl",
     "road": "rd",
     "route": "rte",
+    "r": "rua",
+    "str": "strasse",
     "square": "sq",
     "street": "st",
     "terrace": "ter",
+}
+RAW_PLACE_ORDINAL_WORD_VALUES = {
+    "first": 1,
+    "second": 2,
+    "third": 3,
+    "fourth": 4,
+    "fifth": 5,
+    "sixth": 6,
+    "seventh": 7,
+    "eighth": 8,
+    "ninth": 9,
+    "tenth": 10,
+    "eleventh": 11,
+    "twelfth": 12,
+    "thirteenth": 13,
+    "fourteenth": 14,
+    "fifteenth": 15,
+    "sixteenth": 16,
+    "seventeenth": 17,
+    "eighteenth": 18,
+    "nineteenth": 19,
+    "twentieth": 20,
+    "thirtieth": 30,
+    "fortieth": 40,
+    "fiftieth": 50,
+    "sixtieth": 60,
+    "seventieth": 70,
+    "eightieth": 80,
+    "ninetieth": 90,
+}
+RAW_PLACE_CARDINAL_TENS_VALUES = {
+    "twenty": 20,
+    "thirty": 30,
+    "forty": 40,
+    "fifty": 50,
+    "sixty": 60,
+    "seventy": 70,
+    "eighty": 80,
+    "ninety": 90,
 }
 RAW_PLACE_STREET_SUFFIX_TOKENS = frozenset(
     {*RAW_PLACE_ADDRESS_TOKEN_ALIASES.values(), "way"}
@@ -197,6 +240,7 @@ RAW_PLACE_UNIT_PREFIX_TOKENS = frozenset(
     }
 )
 RAW_PLACE_UNIT_NUMBER_LABEL_TOKENS = frozenset({"no", "number"})
+RAW_PLACE_TRAILING_UNIT_TOKENS = frozenset({"fl", "floor", "level", "lvl"})
 SOURCE_HTTP_TIMEOUT_SECONDS = 30
 SOURCE_HTTP_USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
@@ -6575,9 +6619,9 @@ def raw_place_primary_match_keys(place: RawPlace, *, source_type: str | None = N
     if maps_place_token:
         keys.append(f"gms:{maps_place_token}")
 
-    query_place_id = extract_maps_query_place_id(place.maps_url)
-    if query_place_id:
-        keys.append(f"gpid:{query_place_id}")
+    google_places_id = raw_place_google_places_id_identity(place)
+    if google_places_id:
+        keys.append(f"gpid:{google_places_id}")
 
     name = as_string(place.name)
     lat = as_float(place.lat)
@@ -6727,10 +6771,17 @@ def preserve_existing_raw_place(
         existing_place,
         refreshed_place,
     )
+    address_precision_regressed = raw_place_coordinate_address_precision_regressed(
+        existing_place,
+        refreshed_place,
+    )
 
     if (
         (names_compatible or preserve_coordinates)
-        and not refreshed_place.address
+        and (
+            not refreshed_place.address
+            or (preserve_coordinates and address_precision_regressed)
+        )
         and raw_place_address_is_preservable(existing_place, refreshed_place)
     ):
         updates["address"] = existing_place.address
@@ -6739,6 +6790,10 @@ def preserve_existing_raw_place(
         (names_compatible or preserve_coordinates)
         and not refreshed_place.google_id
         and existing_place.google_id
+        and raw_place_refreshed_url_identity_is_compatible(
+            existing_place,
+            refreshed_place.maps_url,
+        )
     ):
         updates["google_id"] = existing_place.google_id
         preserved_fields.append("google_id")
@@ -6839,15 +6894,15 @@ def raw_place_coordinates_should_be_preserved(
 
 
 def raw_place_coordinate_identity_matches(left: RawPlace, right: RawPlace) -> bool:
+    left_google_places_ids = raw_place_google_places_identities(left)
+    right_google_places_ids = raw_place_google_places_identities(right)
+    if len(left_google_places_ids) > 1 or len(right_google_places_ids) > 1:
+        return False
+
     if raw_place_strong_google_identity_matches(left, right):
         return True
 
-    left_query_place_id = extract_maps_query_place_id(left.maps_url)
-    right_query_place_id = extract_maps_query_place_id(right.maps_url)
-    if (
-        left_query_place_id is not None
-        and left_query_place_id == right_query_place_id
-    ):
+    if left_google_places_ids & right_google_places_ids:
         return True
 
     left_cids = {
@@ -6896,6 +6951,11 @@ def raw_place_coordinate_address_is_stable(
     refreshed_address = as_string(refreshed_place.address)
     if not refreshed_address:
         return raw_place_address_is_preservable(existing_place, refreshed_place)
+    if not raw_place_coordinate_address_has_street_level_evidence(refreshed_address):
+        return raw_place_coordinate_address_precision_regressed(
+            existing_place,
+            refreshed_place,
+        )
 
     existing_address_key = raw_place_coordinate_address_key(existing_address)
     refreshed_address_key = raw_place_coordinate_address_key(refreshed_address)
@@ -6908,11 +6968,7 @@ def raw_place_coordinate_address_is_stable(
     refreshed_street_numbers = raw_place_coordinate_street_numbers(refreshed_address)
     existing_comparison_address = existing_address
     refreshed_comparison_address = refreshed_address
-    if (
-        existing_street_numbers
-        and refreshed_street_numbers
-        and existing_street_numbers != refreshed_street_numbers
-    ):
+    if existing_street_numbers and refreshed_street_numbers:
         collapsed_existing_address = raw_place_coordinate_collapse_street_number_range(
             existing_address,
             refreshed_street_numbers,
@@ -6923,9 +6979,13 @@ def raw_place_coordinate_address_is_stable(
         )
         if collapsed_existing_address is not None:
             existing_comparison_address = collapsed_existing_address
-        elif collapsed_refreshed_address is not None:
+        if collapsed_refreshed_address is not None:
             refreshed_comparison_address = collapsed_refreshed_address
-        else:
+        if (
+            collapsed_existing_address is None
+            and collapsed_refreshed_address is None
+            and existing_street_numbers != refreshed_street_numbers
+        ):
             return False
 
     existing_parts, existing_country = raw_place_coordinate_address_comparison_key(
@@ -6953,10 +7013,66 @@ def raw_place_coordinate_address_is_stable(
     )
 
 
+def raw_place_coordinate_address_precision_regressed(
+    existing_place: RawPlace,
+    refreshed_place: RawPlace,
+) -> bool:
+    existing_address = as_string(existing_place.address)
+    refreshed_address = as_string(refreshed_place.address)
+    if not existing_address or not refreshed_address:
+        return False
+    if not raw_place_coordinate_address_has_street_level_evidence(existing_address):
+        return False
+    if raw_place_coordinate_address_has_street_level_evidence(refreshed_address):
+        return False
+    if not raw_place_address_is_preservable(existing_place, refreshed_place):
+        return False
+
+    existing_parts, existing_country = raw_place_coordinate_address_comparison_key(
+        existing_address
+    )
+    refreshed_parts, refreshed_country = raw_place_coordinate_address_comparison_key(
+        refreshed_address,
+        country_hint=existing_country,
+    )
+    if (
+        existing_country is not None
+        and refreshed_country is not None
+        and existing_country != refreshed_country
+    ):
+        return False
+    return bool(
+        refreshed_parts
+        and all(
+            any(
+                set(refreshed_part).issubset(set(existing_part))
+                for existing_part in existing_parts
+            )
+            for refreshed_part in refreshed_parts
+        )
+    )
+
+
 def raw_place_coordinate_address_key(address: str) -> str | None:
-    normalized = unicodedata.normalize("NFKC", address).casefold()
+    decomposed = unicodedata.normalize("NFKD", address.casefold())
+    without_latin_diacritics: list[str] = []
+    previous_base_is_latin = False
+    for character in decomposed:
+        category = unicodedata.category(character)
+        if category.startswith("M"):
+            if not previous_base_is_latin:
+                without_latin_diacritics.append(character)
+            continue
+        without_latin_diacritics.append(character)
+        previous_base_is_latin = bool(
+            category.startswith("L")
+            and "LATIN" in unicodedata.name(character, "")
+        )
+    normalized = unicodedata.normalize("NFKC", "".join(without_latin_diacritics))
     normalized_characters = [
-        character if unicodedata.category(character)[0] in {"L", "N"} else " "
+        character
+        if unicodedata.category(character)[0] in {"L", "M", "N"}
+        else " "
         for character in normalized
     ]
     compact = re.sub(r"\s+", " ", "".join(normalized_characters)).strip()
@@ -6964,10 +7080,56 @@ def raw_place_coordinate_address_key(address: str) -> str | None:
 
 
 def raw_place_coordinate_address_token_list(address_key: str) -> list[str]:
-    return [
-        RAW_PLACE_ADDRESS_TOKEN_ALIASES.get(token, token)
-        for token in address_key.split()
-    ]
+    raw_tokens = address_key.split()
+    normalized_tokens: list[str] = []
+    index = 0
+    while index < len(raw_tokens):
+        token = raw_tokens[index]
+        compound_strasse_match = re.fullmatch(
+            r"(.{2,}?)(?:strasse|str)",
+            token,
+        )
+        if compound_strasse_match is not None:
+            normalized_tokens.append(f"{compound_strasse_match.group(1)}strasse")
+            index += 1
+            continue
+        ordinal_match = re.fullmatch(r"(\d+)(?:st|nd|rd|th)", token)
+        if ordinal_match is not None:
+            normalized_tokens.append(f"ordinal_{int(ordinal_match.group(1))}")
+            index += 1
+            continue
+        ordinal_value = RAW_PLACE_ORDINAL_WORD_VALUES.get(token)
+        if ordinal_value is not None:
+            normalized_tokens.append(f"ordinal_{ordinal_value}")
+            index += 1
+            continue
+        cardinal_tens_value = RAW_PLACE_CARDINAL_TENS_VALUES.get(token)
+        if cardinal_tens_value is not None and index + 1 < len(raw_tokens):
+            ordinal_unit_value = RAW_PLACE_ORDINAL_WORD_VALUES.get(
+                raw_tokens[index + 1]
+            )
+            if ordinal_unit_value is not None and ordinal_unit_value < 10:
+                normalized_tokens.append(
+                    f"ordinal_{cardinal_tens_value + ordinal_unit_value}"
+                )
+                index += 2
+                continue
+        normalized_tokens.append(RAW_PLACE_ADDRESS_TOKEN_ALIASES.get(token, token))
+        index += 1
+    return normalized_tokens
+
+
+def raw_place_coordinate_token_is_ordinal(token: str) -> bool:
+    return token.startswith("ordinal_")
+
+
+def raw_place_coordinate_part_has_street_intersection(tokens: list[str]) -> bool:
+    return sum(
+        raw_place_coordinate_token_is_ordinal(token)
+        and index + 1 < len(tokens)
+        and tokens[index + 1] in RAW_PLACE_STREET_SUFFIX_TOKENS
+        for index, token in enumerate(tokens)
+    ) >= 2
 
 
 def raw_place_coordinate_address_has_street_level_evidence(address: str) -> bool:
@@ -6985,10 +7147,11 @@ def raw_place_coordinate_address_has_street_level_evidence(address: str) -> bool
             index
             for index, token in enumerate(tokens)
             if any(character.isdigit() for character in token)
+            and not raw_place_coordinate_token_is_ordinal(token)
         }
         if not numeric_indexes:
             continue
-        if raw_place_coordinate_part_is_route_only(tokens):
+        if raw_place_coordinate_part_is_route_only(tokens, address_key=address_key):
             continue
         if raw_place_coordinate_part_has_street_marker(
             part,
@@ -6996,6 +7159,12 @@ def raw_place_coordinate_address_has_street_level_evidence(address: str) -> bool
             tokens,
         ):
             return True
+
+    if any(
+        raw_place_coordinate_part_has_street_intersection(tokens)
+        for _, _, tokens in parsed_parts
+    ):
+        return True
 
     for index, (part, address_key, tokens) in enumerate(parsed_parts):
         if not raw_place_coordinate_part_has_street_marker(
@@ -7033,7 +7202,7 @@ def raw_place_coordinate_part_has_street_marker(
         address_key,
     ):
         return True
-    if re.search(r"(?:strasse|straße)\b", address_key):
+    if re.search(r"[^\W\d_]{2,}(?:str|strasse|straße)\b", address_key):
         return True
     return bool(re.search(r"(?:丁目|番地|號|号|路|街|道|巷|弄)", part))
 
@@ -7051,7 +7220,20 @@ def raw_place_coordinate_part_is_premise_number(tokens: list[str]) -> bool:
     return True
 
 
-def raw_place_coordinate_part_is_route_only(tokens: list[str]) -> bool:
+def raw_place_coordinate_part_is_route_only(
+    tokens: list[str],
+    *,
+    address_key: str,
+) -> bool:
+    raw_tokens = address_key.split()
+    if raw_tokens and raw_tokens[0] == "r":
+        has_street_name = any(
+            token.isalpha() and token not in RAW_PLACE_UNIT_PREFIX_TOKENS
+            for token in raw_tokens[1:]
+        )
+        if not has_street_name:
+            return True
+
     route_indexes = [
         index
         for index, token in enumerate(tokens)
@@ -7103,6 +7285,17 @@ def raw_place_coordinate_address_comparison_key(
         if address_key is None:
             continue
         part_tokens = raw_place_coordinate_address_token_list(address_key)
+        if raw_place_coordinate_part_has_street_intersection(part_tokens):
+            part_tokens = [token for token in part_tokens if token != "and"]
+        if (
+            len(part_tokens) >= 2
+            and part_tokens[-1] in RAW_PLACE_TRAILING_UNIT_TOKENS
+            and (
+                any(character.isdigit() for character in part_tokens[-2])
+                or part_tokens[-2] in {"basement", "ground", "mezzanine"}
+            )
+        ):
+            del part_tokens[-2:]
         comparison_part_tokens: list[str] = []
         index = 0
         while index < len(part_tokens):
@@ -7181,9 +7374,9 @@ def raw_place_coordinate_collapse_street_number_range(
         return endpoint
 
     collapsed = re.sub(
-        r"(?<!\d)(?P<start>\d+)\s*[-–—]\s*(?P<end>\d+)(?!\d)",
+        r"(?<!\d)(?P<start>\d+)\s*[-–—−]\s*(?P<end>\d+)(?!\d)",
         collapse,
-        address,
+        unicodedata.normalize("NFKC", address),
     )
     return collapsed if replaced else None
 
@@ -7380,6 +7573,7 @@ def raw_place_coordinate_part_street_numbers(
         index: set(re.findall(r"\d+", token))
         for index, token in enumerate(tokens)
         if re.search(r"\d", token)
+        and not raw_place_coordinate_token_is_ordinal(token)
     }
     skipped_indexes: set[int] = set()
     for index, token in enumerate(tokens):
@@ -7504,6 +7698,9 @@ def raw_place_refreshed_url_identity_is_compatible(
     existing_place: RawPlace,
     refreshed_url: str | None,
 ) -> bool:
+    if len(raw_place_google_places_identities(existing_place)) > 1:
+        return False
+
     url = as_string(refreshed_url)
     if not url or not raw_place_maps_url_has_embedded_identity(url):
         return True
@@ -7526,11 +7723,17 @@ def raw_place_refreshed_url_identity_is_compatible(
 
     refreshed_query_place_id = extract_maps_query_place_id(url)
     if refreshed_query_place_id:
-        existing_query_place_id = extract_maps_query_place_id(existing_place.maps_url)
-        if existing_query_place_id and refreshed_query_place_id != existing_query_place_id:
+        existing_query_place_ids = raw_place_google_places_identities(existing_place)
+        if (
+            len(existing_query_place_ids) > 1
+            or (
+                existing_query_place_ids
+                and refreshed_query_place_id not in existing_query_place_ids
+            )
+        ):
             return False
         matched_identity = matched_identity or (
-            refreshed_query_place_id == existing_query_place_id
+            refreshed_query_place_id in existing_query_place_ids
         )
 
     refreshed_token = extract_maps_place_token(url)
@@ -7612,6 +7815,28 @@ def raw_place_google_id_identity(place: RawPlace) -> str | None:
     if not google_id:
         return None
     return google_id.strip("/").replace("/", "-")
+
+
+def raw_place_google_places_id_identity(place: RawPlace) -> str | None:
+    identities = raw_place_google_places_identities(place)
+    return next(iter(identities)) if len(identities) == 1 else None
+
+
+def raw_place_google_places_identities(place: RawPlace) -> set[str]:
+    identities = {
+        identity
+        for identity in (extract_maps_query_place_id(place.maps_url),)
+        if identity is not None
+    }
+    google_id = as_string(place.google_id)
+    if google_id:
+        if google_id.startswith("places/"):
+            google_id = google_id.removeprefix("places/")
+            if google_id:
+                identities.add(google_id)
+        elif "/" not in google_id:
+            identities.add(google_id)
+    return identities
 
 
 def raw_place_maps_place_token_identity(place: RawPlace) -> str | None:
