@@ -6575,6 +6575,10 @@ def raw_place_primary_match_keys(place: RawPlace, *, source_type: str | None = N
     if maps_place_token:
         keys.append(f"gms:{maps_place_token}")
 
+    query_place_id = extract_maps_query_place_id(place.maps_url)
+    if query_place_id:
+        keys.append(f"gpid:{query_place_id}")
+
     name = as_string(place.name)
     lat = as_float(place.lat)
     lng = as_float(place.lng)
@@ -6838,6 +6842,14 @@ def raw_place_coordinate_identity_matches(left: RawPlace, right: RawPlace) -> bo
     if raw_place_strong_google_identity_matches(left, right):
         return True
 
+    left_query_place_id = extract_maps_query_place_id(left.maps_url)
+    right_query_place_id = extract_maps_query_place_id(right.maps_url)
+    if (
+        left_query_place_id is not None
+        and left_query_place_id == right_query_place_id
+    ):
+        return True
+
     left_cids = {
         cid
         for cid in [raw_place_cid_identity(left), *left.cid_aliases]
@@ -6848,7 +6860,27 @@ def raw_place_coordinate_identity_matches(left: RawPlace, right: RawPlace) -> bo
         for cid in [raw_place_cid_identity(right), *right.cid_aliases]
         if cid
     }
-    return bool(left_cids & right_cids)
+    if left_cids & right_cids:
+        return True
+
+    return bool(
+        raw_place_names_are_compatible(
+            as_string(left.name),
+            as_string(right.name),
+        )
+        and raw_place_has_durable_google_identity(left)
+        and not raw_place_has_durable_google_identity(right)
+    )
+
+
+def raw_place_has_durable_google_identity(place: RawPlace) -> bool:
+    return bool(
+        raw_place_google_id_identity(place)
+        or raw_place_maps_place_token_identity(place)
+        or raw_place_cid_identity(place)
+        or extract_maps_query_place_id(place.maps_url)
+        or any(as_string(cid_alias) for cid_alias in place.cid_aliases)
+    )
 
 
 def raw_place_coordinate_address_is_stable(
@@ -6887,6 +6919,16 @@ def raw_place_coordinate_address_is_stable(
     refreshed_parts, refreshed_country = raw_place_coordinate_address_comparison_key(
         refreshed_address
     )
+    if existing_country and not refreshed_country:
+        refreshed_parts, _ = raw_place_coordinate_address_comparison_key(
+            refreshed_address,
+            country_hint=existing_country,
+        )
+    elif refreshed_country and not existing_country:
+        existing_parts, _ = raw_place_coordinate_address_comparison_key(
+            existing_address,
+            country_hint=refreshed_country,
+        )
     if not existing_parts or existing_parts != refreshed_parts:
         return False
     return bool(
@@ -6915,11 +6957,15 @@ def raw_place_coordinate_address_token_list(address_key: str) -> list[str]:
 
 def raw_place_coordinate_address_has_street_level_evidence(address: str) -> bool:
     normalized_address = raw_place_coordinate_strip_japanese_postal_prefix(address)
+    parsed_parts: list[tuple[str, str, list[str]]] = []
     for part in re.split(r"[,、]", normalized_address):
         address_key = raw_place_coordinate_address_key(part)
         if address_key is None:
             continue
         tokens = raw_place_coordinate_address_token_list(address_key)
+        parsed_parts.append((part, address_key, tokens))
+
+    for part, address_key, tokens in parsed_parts:
         numeric_indexes = {
             index
             for index, token in enumerate(tokens)
@@ -6927,28 +6973,97 @@ def raw_place_coordinate_address_has_street_level_evidence(address: str) -> bool
         }
         if not numeric_indexes:
             continue
-
-        street_suffix_indexes = {
-            index
-            for index, token in enumerate(tokens)
-            if token in RAW_PLACE_STREET_SUFFIX_TOKENS
-        }
-        if any(index > 0 for index in street_suffix_indexes):
-            return True
-        if set(tokens) & {"hwy", "rte"}:
-            return True
-        if re.search(
-            r"\b(?:allee|allée|av|avenida|calle|carrer|chaussee|chaussée|chemin|corso|impasse|piazza|quai|rua|rue|strasse|straße|via)\b",
+        if raw_place_coordinate_part_is_route_only(tokens):
+            continue
+        if raw_place_coordinate_part_has_street_marker(
+            part,
             address_key,
+            tokens,
         ):
             return True
-        if re.search(r"(?:丁目|番地|號|号|路|街|道|巷|弄)", part):
-            return True
+
+    for index, (part, address_key, tokens) in enumerate(parsed_parts):
+        if not raw_place_coordinate_part_has_street_marker(
+            part,
+            address_key,
+            tokens,
+        ):
+            continue
+        if set(tokens) & {"hwy", "rte"}:
+            continue
+        for neighbor_index in (index - 1, index + 1):
+            if not 0 <= neighbor_index < len(parsed_parts):
+                continue
+            if raw_place_coordinate_part_is_premise_number(
+                parsed_parts[neighbor_index][2]
+            ):
+                return True
     return False
+
+
+def raw_place_coordinate_part_has_street_marker(
+    part: str,
+    address_key: str,
+    tokens: list[str],
+) -> bool:
+    street_suffix_indexes = {
+        index
+        for index, token in enumerate(tokens)
+        if token in RAW_PLACE_STREET_SUFFIX_TOKENS
+    }
+    if any(index > 0 for index in street_suffix_indexes):
+        return True
+    if re.search(
+        r"\b(?:allee|allée|av|avenida|calle|carrer|chaussee|chaussée|chemin|chome|corso|impasse|piazza|quai|r|rua|rue|str|strasse|straße|via)\b",
+        address_key,
+    ):
+        return True
+    return bool(re.search(r"(?:丁目|番地|號|号|路|街|道|巷|弄)", part))
+
+
+def raw_place_coordinate_part_is_premise_number(tokens: list[str]) -> bool:
+    if not tokens or not any(character.isdigit() for character in tokens[0]):
+        return False
+    for token in tokens:
+        compact = re.sub(r"[^a-z0-9]", "", token)
+        if compact.isdigit() and 1 <= len(compact) <= 4:
+            continue
+        if compact.isalpha() and len(compact) <= 3:
+            continue
+        return False
+    return True
+
+
+def raw_place_coordinate_part_is_route_only(tokens: list[str]) -> bool:
+    route_indexes = [
+        index
+        for index, token in enumerate(tokens)
+        if token in {"hwy", "rte"}
+    ]
+    if not route_indexes:
+        return False
+    route_qualifiers = {"i", "interstate", "m", "state", "us"}
+    for index, token in enumerate(tokens[: route_indexes[0]]):
+        compact = re.sub(r"[^a-z0-9]", "", token)
+        if not compact or not compact[0].isdigit():
+            continue
+        previous_token = tokens[index - 1] if index > 0 else None
+        if previous_token in route_qualifiers | RAW_PLACE_UNIT_PREFIX_TOKENS:
+            continue
+        if (
+            previous_token in RAW_PLACE_UNIT_NUMBER_LABEL_TOKENS
+            and index > 1
+            and tokens[index - 2] in RAW_PLACE_UNIT_PREFIX_TOKENS
+        ):
+            continue
+        return False
+    return True
 
 
 def raw_place_coordinate_address_comparison_key(
     address: str,
+    *,
+    country_hint: str | None = None,
 ) -> tuple[tuple[tuple[str, ...], ...], str | None]:
     comparison_parts: list[tuple[str, ...]] = []
     street_numbers = raw_place_coordinate_street_numbers(address)
@@ -7011,6 +7126,13 @@ def raw_place_coordinate_address_comparison_key(
         ]
         if comparison_part_tokens:
             comparison_parts.append(tuple(comparison_part_tokens))
+    subdivision_identities = raw_place_coordinate_subdivision_token_identities(
+        country or country_hint
+    )
+    comparison_parts = [
+        subdivision_identities.get(part, part)
+        for part in comparison_parts
+    ]
     return tuple(sorted(comparison_parts)), country
 
 
@@ -7118,7 +7240,42 @@ def raw_place_coordinate_add_country_token_identity(
     address_key = raw_place_coordinate_address_key(country_name)
     if address_key is None:
         return
+    if address_key == "georgia":
+        return
     identities[tuple(raw_place_coordinate_address_token_list(address_key))] = country_code
+
+
+@lru_cache(maxsize=None)
+def raw_place_coordinate_subdivision_token_identities(
+    country_code: str | None,
+) -> dict[tuple[str, ...], tuple[str, ...]]:
+    candidates: dict[tuple[str, ...], set[str]] = {}
+    for subdivision in pycountry.subdivisions:
+        subdivision_code = as_string(getattr(subdivision, "code", None))
+        subdivision_name = as_string(getattr(subdivision, "name", None))
+        if not subdivision_code or not subdivision_name:
+            continue
+        subdivision_country_code = subdivision_code.split("-", 1)[0]
+        if country_code and subdivision_country_code != country_code:
+            continue
+
+        name_key = raw_place_coordinate_address_key(subdivision_name)
+        if name_key:
+            name_tokens = tuple(raw_place_coordinate_address_token_list(name_key))
+            candidates.setdefault(name_tokens, set()).add(subdivision_code)
+        if country_code and "-" in subdivision_code:
+            code_key = raw_place_coordinate_address_key(
+                subdivision_code.split("-", 1)[1]
+            )
+            if code_key:
+                code_tokens = tuple(raw_place_coordinate_address_token_list(code_key))
+                candidates.setdefault(code_tokens, set()).add(subdivision_code)
+
+    return {
+        tokens: ("subdivision", next(iter(subdivision_codes)).casefold())
+        for tokens, subdivision_codes in candidates.items()
+        if len(subdivision_codes) == 1
+    }
 
 
 def raw_place_coordinate_street_numbers(address: str) -> set[str]:
