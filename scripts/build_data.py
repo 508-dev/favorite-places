@@ -171,10 +171,32 @@ RAW_PLACE_ADDRESS_TOKEN_ALIASES = {
     "parkway": "pkwy",
     "place": "pl",
     "road": "rd",
+    "route": "rte",
     "square": "sq",
     "street": "st",
     "terrace": "ter",
 }
+RAW_PLACE_STREET_SUFFIX_TOKENS = frozenset(
+    {*RAW_PLACE_ADDRESS_TOKEN_ALIASES.values(), "way"}
+)
+RAW_PLACE_UNIT_PREFIX_TOKENS = frozenset(
+    {
+        "apartment",
+        "apt",
+        "building",
+        "floor",
+        "fl",
+        "level",
+        "lvl",
+        "room",
+        "rm",
+        "ste",
+        "suite",
+        "tower",
+        "unit",
+    }
+)
+RAW_PLACE_UNIT_NUMBER_LABEL_TOKENS = frozenset({"no", "number"})
 SOURCE_HTTP_TIMEOUT_SECONDS = 30
 SOURCE_HTTP_USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
@@ -6828,12 +6850,12 @@ def raw_place_coordinate_address_is_stable(
     if existing_address_key == refreshed_address_key:
         return True
 
-    existing_street_numbers = address_street_numbers(existing_address)
-    refreshed_street_numbers = address_street_numbers(refreshed_address)
+    existing_street_numbers = raw_place_coordinate_street_numbers(existing_address)
+    refreshed_street_numbers = raw_place_coordinate_street_numbers(refreshed_address)
     if (
         existing_street_numbers
         and refreshed_street_numbers
-        and not existing_street_numbers & refreshed_street_numbers
+        and existing_street_numbers != refreshed_street_numbers
     ):
         return False
 
@@ -6868,9 +6890,100 @@ def raw_place_coordinate_address_key(address: str) -> str | None:
 
 
 def raw_place_coordinate_address_tokens(address_key: str) -> set[str]:
-    return {
+    return set(raw_place_coordinate_address_token_list(address_key))
+
+
+def raw_place_coordinate_address_token_list(address_key: str) -> list[str]:
+    return [
         RAW_PLACE_ADDRESS_TOKEN_ALIASES.get(token, token)
         for token in address_key.split()
+    ]
+
+
+def raw_place_coordinate_street_numbers(address: str) -> set[str]:
+    parts = [part.strip() for part in re.split(r"[,、]", address) if part.strip()]
+    if not parts:
+        parts = [address]
+
+    parsed_parts: list[tuple[str, list[str]]] = []
+    for part in parts:
+        address_key = raw_place_coordinate_address_key(part)
+        if address_key is None:
+            continue
+        tokens = raw_place_coordinate_address_token_list(address_key)
+        if any(re.search(r"\d", token) for token in tokens):
+            parsed_parts.append((part, tokens))
+
+    for part, tokens in parsed_parts:
+        if set(tokens) & RAW_PLACE_STREET_SUFFIX_TOKENS:
+            return raw_place_coordinate_part_street_numbers(part, tokens)
+
+    for part, tokens in parsed_parts:
+        if part.lstrip().startswith("#") or set(tokens) & RAW_PLACE_UNIT_PREFIX_TOKENS:
+            continue
+        return {
+            number
+            for token in tokens
+            for number in re.findall(r"\d+", token)
+        }
+    return set()
+
+
+def raw_place_coordinate_part_street_numbers(
+    part: str,
+    tokens: list[str],
+) -> set[str]:
+    slash_unit_match = re.match(
+        r"\s*(?:unit\s+)?[^/\s,]+\s*/\s*(\d+(?:\s*-\s*\d+)?)",
+        part,
+        re.IGNORECASE,
+    )
+    if slash_unit_match is not None:
+        return set(re.findall(r"\d+", slash_unit_match.group(1)))
+
+    numeric_tokens = {
+        index: set(re.findall(r"\d+", token))
+        for index, token in enumerate(tokens)
+        if re.search(r"\d", token)
+    }
+    skipped_indexes: set[int] = set()
+    for index, token in enumerate(tokens):
+        if token not in RAW_PLACE_UNIT_PREFIX_TOKENS:
+            continue
+        candidate_index = index + 1
+        if (
+            candidate_index < len(tokens)
+            and tokens[candidate_index] in RAW_PLACE_UNIT_NUMBER_LABEL_TOKENS
+        ):
+            candidate_index += 1
+        if candidate_index in numeric_tokens:
+            skipped_indexes.add(candidate_index)
+    if part.lstrip().startswith("#") and numeric_tokens:
+        skipped_indexes.add(min(numeric_tokens))
+
+    candidate_indexes = [
+        index
+        for index in numeric_tokens
+        if index not in skipped_indexes
+    ]
+    if not candidate_indexes:
+        return set()
+
+    street_suffix_index = max(
+        index
+        for index, token in enumerate(tokens)
+        if token in RAW_PLACE_STREET_SUFFIX_TOKENS
+    )
+    before_suffix = [index for index in candidate_indexes if index < street_suffix_index]
+    selected_indexes = before_suffix or [
+        index
+        for index in candidate_indexes
+        if index > street_suffix_index
+    ][:1]
+    return {
+        number
+        for index in selected_indexes
+        for number in numeric_tokens[index]
     }
 
 
