@@ -6957,7 +6957,12 @@ def raw_place_coordinate_identity_matches(left: RawPlace, right: RawPlace) -> bo
 
     left_primary_cid = raw_place_cid_identity(left)
     right_primary_cid = raw_place_cid_identity(right)
-    if left_primary_cid is not None and left_primary_cid == right_primary_cid:
+    if (
+        left_primary_cid is not None
+        and left_primary_cid == right_primary_cid
+        and not google_places_ids_conflict
+        and not legacy_google_ids_conflict
+    ):
         return True
 
     left_cids = {
@@ -6978,6 +6983,7 @@ def raw_place_coordinate_identity_matches(left: RawPlace, right: RawPlace) -> bo
         left_cids & right_cids
         and google_places_ids_are_consistent
         and not google_places_ids_conflict
+        and not legacy_google_ids_conflict
         and names_are_compatible
     ):
         return True
@@ -7282,11 +7288,16 @@ def raw_place_coordinate_address_has_street_level_evidence(address: str) -> bool
         parsed_parts.append((part, address_key, tokens))
 
     for part, address_key, tokens in parsed_parts:
+        hash_unit_token_indexes = raw_place_coordinate_hash_unit_token_indexes(
+            part,
+            tokens,
+        )
         numeric_indexes = {
             index
             for index, token in enumerate(tokens)
             if any(character.isdigit() for character in token)
             and not raw_place_coordinate_token_is_ordinal(token)
+            and index not in hash_unit_token_indexes
         }
         if not numeric_indexes:
             continue
@@ -7346,7 +7357,7 @@ def raw_place_coordinate_part_has_street_marker(
     if any(index > 0 for index in street_suffix_indexes):
         return True
     if re.search(
-        r"\b(?:allee|allée|av|avenida|calle|carrer|chaussee|chaussée|chemin|chome|corso|impasse|largo|passeig|piazza|plaza|quai|r|rua|rue|str|strada|strasse|straße|via|viale)\b",
+        r"\b(?:allee|allée|av|avenida|avenue|boulevard|calle|carrer|chaussee|chaussée|chemin|chome|corso|impasse|largo|passeig|piazza|plaza|quai|r|rua|rue|str|strada|strasse|straße|via|viale)\b",
         address_key,
     ):
         return True
@@ -7373,6 +7384,33 @@ def raw_place_coordinate_part_is_premise_number(tokens: list[str]) -> bool:
             continue
         return False
     return True
+
+
+def raw_place_coordinate_hash_unit_token_indexes(
+    part: str,
+    tokens: Sequence[str],
+) -> set[int]:
+    matched_indexes: set[int] = set()
+    search_end = len(tokens)
+    hash_units = re.findall(
+        r"#\s*([\w-]+)",
+        unicodedata.normalize("NFKC", part),
+    )
+    for hash_unit in reversed(hash_units):
+        address_key = raw_place_coordinate_address_key(hash_unit)
+        if address_key is None:
+            continue
+        unit_tokens = raw_place_coordinate_address_token_list(address_key)
+        if not unit_tokens:
+            continue
+        for start in range(search_end - len(unit_tokens), -1, -1):
+            end = start + len(unit_tokens)
+            if list(tokens[start:end]) != unit_tokens:
+                continue
+            matched_indexes.update(range(start, end))
+            search_end = start
+            break
+    return matched_indexes
 
 
 def raw_place_coordinate_numeric_indexes_include_premise(
@@ -7475,6 +7513,8 @@ def raw_place_coordinate_postal_evidence_is_valid_for_country(
         return bool(re.fullmatch(r"\d{4}", compact_postal))
     if country_code == "IT":
         return bool(re.fullmatch(r"\d{5}", compact_postal))
+    if country_code == "TW":
+        return bool(re.fullmatch(r"\d{3,6}", compact_postal))
     if country_code == "GB":
         return bool(
             re.fullmatch(
@@ -7483,6 +7523,32 @@ def raw_place_coordinate_postal_evidence_is_valid_for_country(
             )
         )
     return False
+
+
+def raw_place_coordinate_country_span(
+    tokens: Sequence[str],
+    *,
+    expected_country: str | None = None,
+) -> tuple[int, int, str] | None:
+    for country_tokens, country_code in raw_place_coordinate_country_token_identities():
+        if expected_country is not None and country_code != expected_country:
+            continue
+        country_length = len(country_tokens)
+        for start in range(len(tokens) - country_length, -1, -1):
+            end = start + country_length
+            if tuple(tokens[start:end]) != country_tokens:
+                continue
+            trailing_indexes = set(range(end, len(tokens)))
+            if trailing_indexes and not (
+                raw_place_coordinate_postal_evidence_is_valid_for_country(
+                    tokens,
+                    trailing_indexes,
+                    country_code,
+                )
+            ):
+                continue
+            return start, end, country_code
+    return None
 
 
 def raw_place_coordinate_address_comparison_key(
@@ -7501,16 +7567,16 @@ def raw_place_coordinate_address_comparison_key(
         if raw_place_coordinate_address_key(part) is not None
     ]
     if raw_parts:
-        last_part_key = raw_place_coordinate_address_key(raw_parts[-1])
-        last_part_tokens = (
-            raw_place_coordinate_address_token_list(last_part_key)
-            if last_part_key
-            else []
-        )
-        for country_suffix, country_code in raw_place_coordinate_country_token_identities():
-            suffix_length = len(country_suffix)
-            if tuple(last_part_tokens[-suffix_length:]) == country_suffix:
-                country = country_code
+        for raw_part_index in dict.fromkeys((len(raw_parts) - 1, 0)):
+            part_key = raw_place_coordinate_address_key(raw_parts[raw_part_index])
+            part_tokens = (
+                raw_place_coordinate_address_token_list(part_key)
+                if part_key
+                else []
+            )
+            country_span = raw_place_coordinate_country_span(part_tokens)
+            if country_span is not None:
+                country = country_span[2]
                 break
     if country is None:
         country = raw_place_coordinate_infer_country_from_subdivision_postal(
@@ -7650,18 +7716,14 @@ def raw_place_coordinate_address_comparison_key(
                 continue
 
             index = unit_identifier_index + 1
-        for country_suffix, country_code in raw_place_coordinate_country_token_identities():
-            if (
-                raw_part_index != len(raw_parts) - 1
-                and country_code != country_hint
-            ):
-                continue
-            suffix_length = len(country_suffix)
-            if tuple(comparison_part_tokens[-suffix_length:]) == country_suffix:
-                del comparison_part_tokens[-suffix_length:]
-                if raw_part_index == len(raw_parts) - 1:
-                    country = country_code
-                break
+        country_span = raw_place_coordinate_country_span(
+            comparison_part_tokens,
+            expected_country=country or country_hint,
+        )
+        if country_span is not None:
+            country_start, country_end, country_code = country_span
+            del comparison_part_tokens[country_start:country_end]
+            country = country or country_code
 
         postal_token_indexes = {
             index
@@ -7819,6 +7881,8 @@ def raw_place_coordinate_token_is_postal(
         return False
 
     if compact.isdigit():
+        if country_code == "TW" and 3 <= len(compact) <= 6:
+            return True
         if 4 <= len(compact) <= 6:
             return True
         if len(compact) == 3:
@@ -7878,6 +7942,9 @@ def raw_place_coordinate_country_token_identities() -> tuple[
         "スペイン": "ES",
         "フランス": "FR",
         "モナコ": "MC",
+        "イタリア": "IT",
+        "メキシコ": "MX",
+        "オーストラリア": "AU",
         "日本": "JP",
         "中国": "CN",
         "Ivory Coast": "CI",
@@ -15096,6 +15163,7 @@ def place_selector_matches(
         ("cid", place.cid),
         ("cid", extract_maps_cid(place.maps_url)),
         *((("cid", cid_alias) for cid_alias in cid_aliases)),
+        ("gpid", extract_maps_query_place_id(place.maps_url)),
         ("gms", place.maps_place_token),
         ("gms", extract_maps_place_token(place.maps_url)),
     ):
