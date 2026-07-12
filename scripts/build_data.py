@@ -6859,24 +6859,19 @@ def raw_place_coordinate_address_is_stable(
     ):
         return False
 
-    existing_tokens = raw_place_coordinate_address_tokens(existing_address_key)
-    refreshed_tokens = raw_place_coordinate_address_tokens(refreshed_address_key)
-    for shorter_tokens, longer_tokens in (
-        (existing_tokens, refreshed_tokens),
-        (refreshed_tokens, existing_tokens),
-    ):
-        numeric_tokens = {
-            token
-            for token in shorter_tokens
-            if any(character.isdigit() for character in token)
-        }
-        if (
-            len(shorter_tokens) >= 3
-            and numeric_tokens
-            and shorter_tokens <= longer_tokens
-        ):
-            return True
-    return False
+    existing_tokens, existing_country = raw_place_coordinate_address_comparison_key(
+        existing_address
+    )
+    refreshed_tokens, refreshed_country = raw_place_coordinate_address_comparison_key(
+        refreshed_address
+    )
+    if not existing_tokens or existing_tokens != refreshed_tokens:
+        return False
+    return bool(
+        existing_country is None
+        or refreshed_country is None
+        or existing_country == refreshed_country
+    )
 
 
 def raw_place_coordinate_address_key(address: str) -> str | None:
@@ -6889,10 +6884,6 @@ def raw_place_coordinate_address_key(address: str) -> str | None:
     return compact or None
 
 
-def raw_place_coordinate_address_tokens(address_key: str) -> set[str]:
-    return set(raw_place_coordinate_address_token_list(address_key))
-
-
 def raw_place_coordinate_address_token_list(address_key: str) -> list[str]:
     return [
         RAW_PLACE_ADDRESS_TOKEN_ALIASES.get(token, token)
@@ -6900,7 +6891,134 @@ def raw_place_coordinate_address_token_list(address_key: str) -> list[str]:
     ]
 
 
+def raw_place_coordinate_address_comparison_key(
+    address: str,
+) -> tuple[tuple[str, ...], str | None]:
+    tokens: list[str] = []
+    normalized_address = raw_place_coordinate_strip_japanese_postal_prefix(address)
+    for raw_part in re.split(r"[,、]", normalized_address):
+        part = re.sub(
+            r"^\s*(?:unit\s+)?[^/\s,]+\s*/\s*",
+            "",
+            raw_part,
+            flags=re.IGNORECASE,
+        )
+        part = re.sub(r"#\s*[\w-]+", "", part)
+        address_key = raw_place_coordinate_address_key(part)
+        if address_key is None:
+            continue
+        part_tokens = raw_place_coordinate_address_token_list(address_key)
+        comparison_part_tokens: list[str] = []
+        index = 0
+        while index < len(part_tokens):
+            token = part_tokens[index]
+            unit_identifier_index = index + 1
+            if (
+                unit_identifier_index < len(part_tokens)
+                and part_tokens[unit_identifier_index]
+                in RAW_PLACE_UNIT_NUMBER_LABEL_TOKENS
+            ):
+                unit_identifier_index += 1
+            is_unit_designator = bool(
+                token in RAW_PLACE_UNIT_PREFIX_TOKENS
+                and unit_identifier_index < len(part_tokens)
+                and part_tokens[unit_identifier_index]
+                not in RAW_PLACE_STREET_SUFFIX_TOKENS
+                and (
+                    not comparison_part_tokens
+                    or comparison_part_tokens[-1] in RAW_PLACE_STREET_SUFFIX_TOKENS
+                )
+            )
+            if not is_unit_designator:
+                comparison_part_tokens.append(token)
+                index += 1
+                continue
+
+            index = unit_identifier_index + 1
+        tokens.extend(comparison_part_tokens)
+
+    country: str | None = None
+    for country_suffix, country_code in raw_place_coordinate_country_token_identities():
+        suffix_length = len(country_suffix)
+        if tuple(tokens[-suffix_length:]) == country_suffix:
+            del tokens[-suffix_length:]
+            country = country_code
+            break
+    return tuple(tokens), country
+
+
+def raw_place_coordinate_strip_japanese_postal_prefix(address: str) -> str:
+    normalized = unicodedata.normalize("NFKC", address)
+    return re.sub(r"^\s*〒\s*\d{3}\s*-\s*\d{4}\s*", "", normalized)
+
+
+@lru_cache(maxsize=1)
+def raw_place_coordinate_country_token_identities() -> tuple[
+    tuple[tuple[str, ...], str],
+    ...,
+]:
+    country_alias_codes = {
+        "England": "GB",
+        "Scotland": "GB",
+        "Wales": "GB",
+        "Northern Ireland": "GB",
+        "UK": "GB",
+        "UAE": "AE",
+        "USA": "US",
+        "Korea": "KR",
+        "South Korea": "KR",
+        "韓国": "KR",
+        "Taiwan": "TW",
+        "台灣": "TW",
+        "台湾": "TW",
+        "Trinidad & Tobago": "TT",
+        "España": "ES",
+        "Espanya": "ES",
+        "スペイン": "ES",
+        "フランス": "FR",
+        "モナコ": "MC",
+        "日本": "JP",
+        "中国": "CN",
+        "Ivory Coast": "CI",
+    }
+    suffix_identities: dict[tuple[str, ...], str] = {}
+    for country in pycountry.countries:
+        country_code = country.alpha_2
+        for attribute in ("name", "official_name", "common_name"):
+            country_name = getattr(country, attribute, None)
+            if country_name:
+                raw_place_coordinate_add_country_token_identity(
+                    suffix_identities,
+                    country_name,
+                    country_code,
+                )
+    for country_name, country_code in country_alias_codes.items():
+        raw_place_coordinate_add_country_token_identity(
+            suffix_identities,
+            country_name,
+            country_code,
+        )
+    return tuple(
+        sorted(
+            suffix_identities.items(),
+            key=lambda item: (-len(item[0]), item[0]),
+        )
+    )
+
+
+def raw_place_coordinate_add_country_token_identity(
+    identities: dict[tuple[str, ...], str],
+    country_name: str,
+    country_code: str,
+) -> None:
+    address_key = raw_place_coordinate_address_key(country_name)
+    if address_key is None:
+        return
+    identities[tuple(raw_place_coordinate_address_token_list(address_key))] = country_code
+
+
 def raw_place_coordinate_street_numbers(address: str) -> set[str]:
+    address = raw_place_coordinate_strip_japanese_postal_prefix(address)
     parts = [part.strip() for part in re.split(r"[,、]", address) if part.strip()]
     if not parts:
         parts = [address]
