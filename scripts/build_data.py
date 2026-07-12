@@ -6838,6 +6838,8 @@ def raw_place_coordinate_address_is_stable(
     existing_address = as_string(existing_place.address)
     if not existing_address:
         return False
+    if not raw_place_coordinate_address_has_street_level_evidence(existing_address):
+        return False
 
     refreshed_address = as_string(refreshed_place.address)
     if not refreshed_address:
@@ -6889,6 +6891,40 @@ def raw_place_coordinate_address_token_list(address_key: str) -> list[str]:
         RAW_PLACE_ADDRESS_TOKEN_ALIASES.get(token, token)
         for token in address_key.split()
     ]
+
+
+def raw_place_coordinate_address_has_street_level_evidence(address: str) -> bool:
+    normalized_address = raw_place_coordinate_strip_japanese_postal_prefix(address)
+    for part in re.split(r"[,、]", normalized_address):
+        address_key = raw_place_coordinate_address_key(part)
+        if address_key is None:
+            continue
+        tokens = raw_place_coordinate_address_token_list(address_key)
+        numeric_indexes = {
+            index
+            for index, token in enumerate(tokens)
+            if any(character.isdigit() for character in token)
+        }
+        if not numeric_indexes:
+            continue
+
+        street_suffix_indexes = {
+            index
+            for index, token in enumerate(tokens)
+            if token in RAW_PLACE_STREET_SUFFIX_TOKENS
+        }
+        if any(index > 0 for index in street_suffix_indexes):
+            return True
+        if set(tokens) & {"hwy", "rte"}:
+            return True
+        if re.search(
+            r"\b(?:allee|allée|av|avenida|calle|carrer|chaussee|chaussée|chemin|corso|impasse|piazza|quai|rua|rue|strasse|straße|via)\b",
+            address_key,
+        ):
+            return True
+        if re.search(r"(?:丁目|番地|號|号|路|街|道|巷|弄)", part):
+            return True
+    return False
 
 
 def raw_place_coordinate_address_comparison_key(
@@ -7112,6 +7148,14 @@ def raw_place_maps_url_should_be_preserved(
     existing_url = as_string(existing_place.maps_url)
     refreshed_url = as_string(refreshed_place.maps_url)
     if not existing_url or existing_url == refreshed_url:
+        return False
+    if (
+        not raw_place_names_are_compatible(
+            as_string(existing_place.name),
+            as_string(refreshed_place.name),
+        )
+        and not raw_place_maps_url_has_embedded_identity(existing_url)
+    ):
         return False
     if google_maps_uri_strength(existing_url) < google_maps_uri_strength(refreshed_url):
         return False
