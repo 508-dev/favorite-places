@@ -4781,6 +4781,10 @@ def stable_place_id(place: RawPlace, *, source_type: str | None = None) -> str:
     if maps_place_token:
         return f"gms:{maps_place_token}"
 
+    query_place_id = extract_maps_query_place_id(place.maps_url)
+    if query_place_id:
+        return f"gpid:{query_place_id}"
+
     if source_type == "google_export_csv":
         maps_url_id = short_maps_url_id(place.maps_url)
         if maps_url_id:
@@ -7004,6 +7008,21 @@ def raw_place_coordinate_address_is_stable(
             existing_comparison_address,
             country_hint=refreshed_country,
         )
+    elif existing_country is None and refreshed_country is None:
+        subdivision_country_codes = (
+            raw_place_coordinate_subdivision_country_codes(existing_parts)
+            | raw_place_coordinate_subdivision_country_codes(refreshed_parts)
+        )
+        if len(subdivision_country_codes) == 1:
+            subdivision_country_code = next(iter(subdivision_country_codes))
+            existing_parts, _ = raw_place_coordinate_address_comparison_key(
+                existing_comparison_address,
+                country_hint=subdivision_country_code,
+            )
+            refreshed_parts, _ = raw_place_coordinate_address_comparison_key(
+                refreshed_comparison_address,
+                country_hint=subdivision_country_code,
+            )
     if not existing_parts or existing_parts != refreshed_parts:
         return False
     return bool(
@@ -7439,6 +7458,7 @@ def raw_place_coordinate_country_token_identities() -> tuple[
         "Northern Ireland": "GB",
         "UK": "GB",
         "UAE": "AE",
+        "US": "US",
         "USA": "US",
         "Korea": "KR",
         "South Korea": "KR",
@@ -7524,6 +7544,18 @@ def raw_place_coordinate_subdivision_token_identities(
         tokens: ("subdivision", next(iter(subdivision_codes)).casefold())
         for tokens, subdivision_codes in candidates.items()
         if len(subdivision_codes) == 1
+    }
+
+
+def raw_place_coordinate_subdivision_country_codes(
+    comparison_parts: tuple[tuple[str, ...], ...],
+) -> set[str]:
+    return {
+        part[1].split("-", 1)[0].upper()
+        for part in comparison_parts
+        if len(part) == 2
+        and part[0] == "subdivision"
+        and "-" in part[1]
     }
 
 
@@ -7764,8 +7796,15 @@ def raw_place_names_are_compatible(existing_name: str | None, refreshed_name: st
     if not existing_name or not refreshed_name:
         return True
 
+    existing_name_key = raw_place_coordinate_address_key(existing_name)
+    refreshed_name_key = raw_place_coordinate_address_key(refreshed_name)
+    if existing_name_key is not None and existing_name_key == refreshed_name_key:
+        return True
+
     existing_slug = slugify(existing_name)
     refreshed_slug = slugify(refreshed_name)
+    if existing_slug == "item" or refreshed_slug == "item":
+        return False
     if existing_slug == refreshed_slug:
         return True
 
