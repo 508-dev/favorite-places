@@ -159,6 +159,98 @@ OPERATIONAL_CACHE_TTL = timedelta(days=14)
 PHOTOLESS_REAL_PLACE_CACHE_TTL = timedelta(days=1)
 RAW_SOURCE_CACHE_TTL = timedelta(days=14)
 RAW_SOURCE_REFRESH_JITTER = timedelta(days=3)
+RAW_PLACE_SUSPICIOUS_COORDINATE_SHIFT_METERS = 1_000.0
+RAW_PLACE_ADDRESS_TOKEN_ALIASES = {
+    "av": "ave",
+    "avenida": "ave",
+    "avenue": "ave",
+    "boulevard": "blvd",
+    "circle": "cir",
+    "court": "ct",
+    "drive": "dr",
+    "highway": "hwy",
+    "lane": "ln",
+    "parkway": "pkwy",
+    "place": "pl",
+    "road": "rd",
+    "route": "rte",
+    "r": "rua",
+    "str": "strasse",
+    "square": "sq",
+    "street": "st",
+    "terrace": "ter",
+}
+RAW_PLACE_DIRECTION_TOKEN_ALIASES = {
+    "east": "e",
+    "north": "n",
+    "northeast": "ne",
+    "northwest": "nw",
+    "south": "s",
+    "southeast": "se",
+    "southwest": "sw",
+    "west": "w",
+}
+RAW_PLACE_ORDINAL_WORD_VALUES = {
+    "first": 1,
+    "second": 2,
+    "third": 3,
+    "fourth": 4,
+    "fifth": 5,
+    "sixth": 6,
+    "seventh": 7,
+    "eighth": 8,
+    "ninth": 9,
+    "tenth": 10,
+    "eleventh": 11,
+    "twelfth": 12,
+    "thirteenth": 13,
+    "fourteenth": 14,
+    "fifteenth": 15,
+    "sixteenth": 16,
+    "seventeenth": 17,
+    "eighteenth": 18,
+    "nineteenth": 19,
+    "twentieth": 20,
+    "thirtieth": 30,
+    "fortieth": 40,
+    "fiftieth": 50,
+    "sixtieth": 60,
+    "seventieth": 70,
+    "eightieth": 80,
+    "ninetieth": 90,
+}
+RAW_PLACE_CARDINAL_TENS_VALUES = {
+    "twenty": 20,
+    "thirty": 30,
+    "forty": 40,
+    "fifty": 50,
+    "sixty": 60,
+    "seventy": 70,
+    "eighty": 80,
+    "ninety": 90,
+}
+RAW_PLACE_STREET_SUFFIX_TOKENS = frozenset(
+    {*RAW_PLACE_ADDRESS_TOKEN_ALIASES.values(), "way"}
+)
+RAW_PLACE_UNIT_PREFIX_TOKENS = frozenset(
+    {
+        "apartment",
+        "apt",
+        "building",
+        "floor",
+        "fl",
+        "level",
+        "lvl",
+        "room",
+        "rm",
+        "ste",
+        "suite",
+        "tower",
+        "unit",
+    }
+)
+RAW_PLACE_UNIT_NUMBER_LABEL_TOKENS = frozenset({"no", "number"})
+RAW_PLACE_TRAILING_UNIT_TOKENS = frozenset({"fl", "floor", "level", "lvl"})
 SOURCE_HTTP_TIMEOUT_SECONDS = 30
 SOURCE_HTTP_USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
@@ -4699,6 +4791,10 @@ def stable_place_id(place: RawPlace, *, source_type: str | None = None) -> str:
     if maps_place_token:
         return f"gms:{maps_place_token}"
 
+    query_place_id = extract_maps_query_place_id(place.maps_url)
+    if query_place_id:
+        return f"gpid:{query_place_id}"
+
     if source_type == "google_export_csv":
         maps_url_id = short_maps_url_id(place.maps_url)
         if maps_url_id:
@@ -6537,6 +6633,10 @@ def raw_place_primary_match_keys(place: RawPlace, *, source_type: str | None = N
     if maps_place_token:
         keys.append(f"gms:{maps_place_token}")
 
+    google_places_id = raw_place_google_places_id_identity(place)
+    if google_places_id:
+        keys.append(f"gpid:{google_places_id}")
+
     name = as_string(place.name)
     lat = as_float(place.lat)
     lng = as_float(place.lng)
@@ -6670,6 +6770,46 @@ def build_raw_place_preservation_index(
     return index
 
 
+def raw_place_identity_loss_fallback_candidate(
+    *,
+    existing_payload: RawSavedList,
+    refreshed_payload: RawSavedList,
+    refreshed_place: RawPlace,
+) -> RawPlace | None:
+    refreshed_name = as_string(refreshed_place.name)
+    if (
+        not refreshed_name
+        or as_string(refreshed_place.address)
+        or raw_place_has_durable_google_identity(refreshed_place)
+    ):
+        return None
+
+    compatible_refreshed_places = [
+        place
+        for place in refreshed_payload.places
+        if (place_name := as_string(place.name))
+        and raw_place_names_are_compatible(place_name, refreshed_name)
+    ]
+    if len(compatible_refreshed_places) != 1:
+        return None
+
+    compatible_existing_places = [
+        place
+        for place in existing_payload.places
+        if (place_name := as_string(place.name))
+        and raw_place_names_are_compatible(place_name, refreshed_name)
+    ]
+    if len(compatible_existing_places) != 1:
+        return None
+
+    candidate = compatible_existing_places[0]
+    if not raw_place_has_durable_google_identity(candidate):
+        return None
+    if not raw_place_coordinate_address_is_stable(candidate, refreshed_place):
+        return None
+    return candidate
+
+
 def preserve_existing_raw_place(
     *,
     existing_place: RawPlace,
@@ -6681,18 +6821,47 @@ def preserve_existing_raw_place(
     refreshed_name = as_string(refreshed_place.name)
     names_compatible = raw_place_names_are_compatible(existing_name, refreshed_name)
     strong_identity_compatible = raw_place_strong_google_identity_matches(existing_place, refreshed_place)
+    preserve_coordinates = raw_place_coordinates_should_be_preserved(
+        existing_place,
+        refreshed_place,
+    )
+    address_precision_regressed = raw_place_coordinate_address_precision_regressed(
+        existing_place,
+        refreshed_place,
+    )
 
     if (
-        names_compatible
-        and not refreshed_place.address
+        (names_compatible or preserve_coordinates)
+        and (
+            not refreshed_place.address
+            or (preserve_coordinates and address_precision_regressed)
+        )
         and raw_place_address_is_preservable(existing_place, refreshed_place)
     ):
         updates["address"] = existing_place.address
         preserved_fields.append("address")
-    if names_compatible and not refreshed_place.google_id and existing_place.google_id:
+    if (
+        (names_compatible or preserve_coordinates)
+        and not refreshed_place.google_id
+        and existing_place.google_id
+        and raw_place_refreshed_url_identity_is_compatible(
+            existing_place,
+            refreshed_place.maps_url,
+            refreshed_cid=as_string(refreshed_place.cid),
+        )
+    ):
         updates["google_id"] = existing_place.google_id
         preserved_fields.append("google_id")
-    if names_compatible and not refreshed_place.cid and existing_place.cid:
+    if (
+        (names_compatible or preserve_coordinates)
+        and not refreshed_place.cid
+        and existing_place.cid
+        and raw_place_refreshed_url_identity_is_compatible(
+            existing_place,
+            refreshed_place.maps_url,
+            refreshed_cid=as_string(refreshed_place.cid),
+        )
+    ):
         updates["cid"] = existing_place.cid
         preserved_fields.append("cid")
     existing_cid = as_string(existing_place.cid) or extract_maps_cid(existing_place.maps_url)
@@ -6706,7 +6875,16 @@ def preserve_existing_raw_place(
         if preserved_cid_aliases != refreshed_place.cid_aliases:
             updates["cid_aliases"] = preserved_cid_aliases
             preserved_fields.append("cid_alias")
-    if names_compatible and not refreshed_place.maps_place_token and existing_place.maps_place_token:
+    if (
+        (names_compatible or preserve_coordinates)
+        and not refreshed_place.maps_place_token
+        and existing_place.maps_place_token
+        and raw_place_refreshed_url_identity_is_compatible(
+            existing_place,
+            refreshed_place.maps_url,
+            refreshed_cid=as_string(refreshed_place.cid),
+        )
+    ):
         updates["maps_place_token"] = existing_place.maps_place_token
         preserved_fields.append("maps_place_token")
     if names_compatible and not refreshed_place.is_favorite and existing_place.is_favorite:
@@ -6715,6 +6893,16 @@ def preserve_existing_raw_place(
     if names_compatible and refreshed_place.added_by is None and existing_place.added_by is not None:
         updates["added_by"] = existing_place.added_by
         preserved_fields.append("added_by")
+    if preserve_coordinates:
+        updates["lat"] = existing_place.lat
+        updates["lng"] = existing_place.lng
+        preserved_fields.append("coordinates")
+    if "coordinates" in preserved_fields and raw_place_maps_url_should_be_preserved(
+        existing_place,
+        refreshed_place,
+    ):
+        updates["maps_url"] = existing_place.maps_url
+        preserved_fields.append("maps_url")
 
     if not updates:
         return refreshed_place, preserved_fields
@@ -6732,12 +6920,1476 @@ def raw_place_strong_google_identity_matches(left: RawPlace, right: RawPlace) ->
     return left_maps_place_token is not None and left_maps_place_token == right_maps_place_token
 
 
+def raw_place_coordinates_should_be_preserved(
+    existing_place: RawPlace,
+    refreshed_place: RawPlace,
+) -> bool:
+    if not raw_place_coordinate_identity_matches(existing_place, refreshed_place):
+        return False
+    if not raw_place_coordinate_address_is_stable(existing_place, refreshed_place):
+        return False
+
+    existing_lat = as_float(existing_place.lat)
+    existing_lng = as_float(existing_place.lng)
+    if existing_lat is None or existing_lng is None:
+        return False
+
+    refreshed_lat = as_float(refreshed_place.lat)
+    refreshed_lng = as_float(refreshed_place.lng)
+    if refreshed_lat is None or refreshed_lng is None:
+        return True
+
+    return (
+        haversine_meters(
+            existing_lat,
+            existing_lng,
+            refreshed_lat,
+            refreshed_lng,
+        )
+        > RAW_PLACE_SUSPICIOUS_COORDINATE_SHIFT_METERS
+    )
+
+
+def raw_place_coordinate_identity_matches(left: RawPlace, right: RawPlace) -> bool:
+    left_google_places_ids = raw_place_google_places_identities(left)
+    right_google_places_ids = raw_place_google_places_identities(right)
+    google_places_ids_are_consistent = (
+        len(left_google_places_ids) <= 1 and len(right_google_places_ids) <= 1
+    )
+    google_places_ids_conflict = bool(
+        left_google_places_ids
+        and right_google_places_ids
+        and left_google_places_ids.isdisjoint(right_google_places_ids)
+    )
+
+    left_legacy_google_id = raw_place_legacy_google_id_identity(left)
+    right_legacy_google_id = raw_place_legacy_google_id_identity(right)
+    legacy_google_ids_conflict = bool(
+        left_legacy_google_id
+        and right_legacy_google_id
+        and left_legacy_google_id != right_legacy_google_id
+    )
+
+    left_maps_place_token = raw_place_maps_place_token_identity(left)
+    right_maps_place_token = raw_place_maps_place_token_identity(right)
+    if (
+        left_maps_place_token is not None
+        and left_maps_place_token == right_maps_place_token
+        and google_places_ids_are_consistent
+        and not google_places_ids_conflict
+        and not legacy_google_ids_conflict
+    ):
+        return True
+
+    left_google_id = raw_place_google_id_identity(left)
+    right_google_id = raw_place_google_id_identity(right)
+    if (
+        google_places_ids_are_consistent
+        and left_google_id is not None
+        and left_google_id == right_google_id
+    ):
+        return True
+
+    if google_places_ids_are_consistent and (
+        left_google_places_ids & right_google_places_ids
+    ):
+        return True
+
+    left_primary_cid = raw_place_cid_identity(left)
+    right_primary_cid = raw_place_cid_identity(right)
+    if (
+        left_primary_cid is not None
+        and left_primary_cid == right_primary_cid
+        and not google_places_ids_conflict
+        and not legacy_google_ids_conflict
+    ):
+        return True
+
+    left_cids = {
+        cid
+        for cid in [left_primary_cid, *left.cid_aliases]
+        if cid
+    }
+    right_cids = {
+        cid
+        for cid in [right_primary_cid, *right.cid_aliases]
+        if cid
+    }
+    names_are_compatible = raw_place_names_are_compatible(
+        as_string(left.name),
+        as_string(right.name),
+    )
+    if (
+        left_cids & right_cids
+        and google_places_ids_are_consistent
+        and not google_places_ids_conflict
+        and not legacy_google_ids_conflict
+        and names_are_compatible
+    ):
+        return True
+
+    if not google_places_ids_are_consistent:
+        return False
+
+    return bool(
+        names_are_compatible
+        and raw_place_has_durable_google_identity(left)
+        and not raw_place_has_durable_google_identity(right)
+    )
+
+
+def raw_place_has_durable_google_identity(place: RawPlace) -> bool:
+    return bool(
+        raw_place_google_id_identity(place)
+        or raw_place_maps_place_token_identity(place)
+        or raw_place_cid_identity(place)
+        or extract_maps_query_place_id(place.maps_url)
+        or any(as_string(cid_alias) for cid_alias in place.cid_aliases)
+    )
+
+
+def raw_place_coordinate_address_is_stable(
+    existing_place: RawPlace,
+    refreshed_place: RawPlace,
+) -> bool:
+    existing_address = as_string(existing_place.address)
+    if not existing_address:
+        return False
+    if not raw_place_coordinate_address_has_street_level_evidence(existing_address):
+        return False
+
+    refreshed_address = as_string(refreshed_place.address)
+    if not refreshed_address:
+        return raw_place_address_is_preservable(existing_place, refreshed_place)
+    if not raw_place_coordinate_address_has_street_level_evidence(refreshed_address):
+        return raw_place_coordinate_address_precision_regressed(
+            existing_place,
+            refreshed_place,
+        )
+
+    existing_address_key = raw_place_coordinate_address_key(existing_address)
+    refreshed_address_key = raw_place_coordinate_address_key(refreshed_address)
+    if existing_address_key is None or refreshed_address_key is None:
+        return False
+    if existing_address_key == refreshed_address_key:
+        return True
+
+    existing_street_numbers = raw_place_coordinate_street_numbers(existing_address)
+    refreshed_street_numbers = raw_place_coordinate_street_numbers(refreshed_address)
+    existing_comparison_address = existing_address
+    refreshed_comparison_address = refreshed_address
+    if existing_street_numbers and refreshed_street_numbers:
+        collapsed_existing_address = raw_place_coordinate_collapse_street_number_range(
+            existing_address,
+            refreshed_street_numbers,
+        )
+        collapsed_refreshed_address = raw_place_coordinate_collapse_street_number_range(
+            refreshed_address,
+            existing_street_numbers,
+        )
+        if collapsed_existing_address is not None:
+            existing_comparison_address = collapsed_existing_address
+        if collapsed_refreshed_address is not None:
+            refreshed_comparison_address = collapsed_refreshed_address
+        if (
+            collapsed_existing_address is None
+            and collapsed_refreshed_address is None
+            and existing_street_numbers != refreshed_street_numbers
+        ):
+            return False
+
+    existing_parts, existing_country = raw_place_coordinate_address_comparison_key(
+        existing_comparison_address
+    )
+    refreshed_parts, refreshed_country = raw_place_coordinate_address_comparison_key(
+        refreshed_comparison_address
+    )
+    if existing_country and not refreshed_country:
+        refreshed_parts, _ = raw_place_coordinate_address_comparison_key(
+            refreshed_comparison_address,
+            country_hint=existing_country,
+        )
+    elif refreshed_country and not existing_country:
+        existing_parts, _ = raw_place_coordinate_address_comparison_key(
+            existing_comparison_address,
+            country_hint=refreshed_country,
+        )
+    elif existing_country is None and refreshed_country is None:
+        subdivision_country_codes = (
+            raw_place_coordinate_subdivision_country_codes(existing_parts)
+            | raw_place_coordinate_subdivision_country_codes(refreshed_parts)
+        )
+        if len(subdivision_country_codes) == 1:
+            subdivision_country_code = next(iter(subdivision_country_codes))
+            existing_parts, _ = raw_place_coordinate_address_comparison_key(
+                existing_comparison_address,
+                country_hint=subdivision_country_code,
+            )
+            refreshed_parts, _ = raw_place_coordinate_address_comparison_key(
+                refreshed_comparison_address,
+                country_hint=subdivision_country_code,
+            )
+    if not existing_parts or existing_parts != refreshed_parts:
+        return False
+    return bool(
+        existing_country is None
+        or refreshed_country is None
+        or existing_country == refreshed_country
+    )
+
+
+def raw_place_coordinate_address_precision_regressed(
+    existing_place: RawPlace,
+    refreshed_place: RawPlace,
+) -> bool:
+    existing_address = as_string(existing_place.address)
+    refreshed_address = as_string(refreshed_place.address)
+    if not existing_address or not refreshed_address:
+        return False
+    if not raw_place_coordinate_address_has_street_level_evidence(existing_address):
+        return False
+    if raw_place_coordinate_address_has_street_level_evidence(refreshed_address):
+        return False
+    if not raw_place_address_is_preservable(existing_place, refreshed_place):
+        return False
+
+    existing_parts, existing_country = raw_place_coordinate_address_comparison_key(
+        existing_address
+    )
+    refreshed_parts, refreshed_country = raw_place_coordinate_address_comparison_key(
+        refreshed_address,
+        country_hint=existing_country,
+    )
+    if (
+        existing_country is not None
+        and refreshed_country is not None
+        and existing_country != refreshed_country
+    ):
+        return False
+    return bool(
+        refreshed_parts
+        and all(
+            any(
+                set(refreshed_part).issubset(set(existing_part))
+                for existing_part in existing_parts
+            )
+            for refreshed_part in refreshed_parts
+        )
+    )
+
+
+def raw_place_coordinate_address_key(address: str) -> str | None:
+    decomposed = unicodedata.normalize("NFKD", address.casefold())
+    without_latin_diacritics: list[str] = []
+    previous_base_is_latin = False
+    for character in decomposed:
+        category = unicodedata.category(character)
+        if category.startswith("M"):
+            if not previous_base_is_latin:
+                without_latin_diacritics.append(character)
+            continue
+        without_latin_diacritics.append(character)
+        previous_base_is_latin = bool(
+            category.startswith("L")
+            and "LATIN" in unicodedata.name(character, "")
+        )
+    normalized = unicodedata.normalize("NFKC", "".join(without_latin_diacritics))
+    normalized = re.sub(r"(?<=\w)['’ʼ](?=\w)", "", normalized)
+    normalized_characters = [
+        character
+        if unicodedata.category(character)[0] in {"L", "M", "N"}
+        else " "
+        for character in normalized
+    ]
+    compact = re.sub(r"\s+", " ", "".join(normalized_characters)).strip()
+    return compact or None
+
+
+def raw_place_coordinate_normalize_street_prefix(
+    part: str,
+    country_code: str | None,
+) -> str:
+    normalized = unicodedata.normalize("NFKC", part)
+    prefix_replacements = (
+        (r"^\s*c(?:\.|/)\s*(?=[^\W\d_])", "Calle "),
+        (r"^\s*pl\.\s*(?=[^\W\d_])", "Plaza "),
+    )
+    for pattern, replacement in prefix_replacements:
+        if re.match(pattern, normalized, flags=re.IGNORECASE):
+            return re.sub(
+                pattern,
+                replacement,
+                normalized,
+                count=1,
+                flags=re.IGNORECASE,
+            )
+    piazza_or_plaza_match = re.match(
+        r"^\s*p(?:\.\s*)?za\.?\s*(?=[^\W\d_])",
+        normalized,
+        flags=re.IGNORECASE,
+    )
+    if piazza_or_plaza_match is not None:
+        replacement = "Piazza " if country_code == "IT" else "Plaza "
+        return f"{replacement}{normalized[piazza_or_plaza_match.end():]}"
+    if country_code == "IT":
+        return re.sub(
+            r"^\s*str\.\s*(?=[^\W\d_])",
+            "Strada ",
+            normalized,
+            count=1,
+            flags=re.IGNORECASE,
+        )
+    return normalized
+
+
+def raw_place_coordinate_address_token_list(address_key: str) -> list[str]:
+    raw_tokens = address_key.split()
+    normalized_tokens: list[str] = []
+    index = 0
+    while index < len(raw_tokens):
+        token = raw_tokens[index]
+        compound_strasse_match = re.fullmatch(
+            r"(.{2,}?)(?:strasse|str)",
+            token,
+        )
+        if compound_strasse_match is not None:
+            normalized_tokens.append(f"{compound_strasse_match.group(1)}strasse")
+            index += 1
+            continue
+        ordinal_match = re.fullmatch(r"(\d+)(?:st|nd|rd|th)", token)
+        if ordinal_match is not None:
+            normalized_tokens.append(f"ordinal_{int(ordinal_match.group(1))}")
+            index += 1
+            continue
+        ordinal_value = RAW_PLACE_ORDINAL_WORD_VALUES.get(token)
+        if ordinal_value is not None:
+            normalized_tokens.append(f"ordinal_{ordinal_value}")
+            index += 1
+            continue
+        cardinal_tens_value = RAW_PLACE_CARDINAL_TENS_VALUES.get(token)
+        if cardinal_tens_value is not None and index + 1 < len(raw_tokens):
+            ordinal_unit_value = RAW_PLACE_ORDINAL_WORD_VALUES.get(
+                raw_tokens[index + 1]
+            )
+            if ordinal_unit_value is not None and ordinal_unit_value < 10:
+                normalized_tokens.append(
+                    f"ordinal_{cardinal_tens_value + ordinal_unit_value}"
+                )
+                index += 2
+                continue
+        normalized_tokens.append(
+            RAW_PLACE_DIRECTION_TOKEN_ALIASES.get(
+                token,
+                RAW_PLACE_ADDRESS_TOKEN_ALIASES.get(token, token),
+            )
+        )
+        index += 1
+    return normalized_tokens
+
+
+def raw_place_coordinate_token_is_ordinal(token: str) -> bool:
+    return token.startswith("ordinal_")
+
+
+def raw_place_coordinate_part_has_street_intersection(
+    tokens: list[str],
+    *,
+    part: str | None = None,
+) -> bool:
+    ordinal_street_count = sum(
+        raw_place_coordinate_token_is_ordinal(token)
+        and index + 1 < len(tokens)
+        and tokens[index + 1] in RAW_PLACE_STREET_SUFFIX_TOKENS
+        for index, token in enumerate(tokens)
+    )
+    if ordinal_street_count >= 2:
+        return True
+    if part is None or re.search(
+        r"(?:&|\b(?:and|at)\b)",
+        unicodedata.normalize("NFKC", part).casefold(),
+    ) is None:
+        return False
+    return sum(
+        index > 0
+        and token in RAW_PLACE_STREET_SUFFIX_TOKENS
+        and tokens[index - 1] not in RAW_PLACE_UNIT_PREFIX_TOKENS
+        for index, token in enumerate(tokens)
+    ) >= 2
+
+
+def raw_place_coordinate_address_has_street_level_evidence(address: str) -> bool:
+    normalized_address = raw_place_coordinate_strip_japanese_postal_prefix(address)
+    parsed_parts: list[tuple[str, str, list[str]]] = []
+    for part in re.split(r"[,、]", normalized_address):
+        address_key = raw_place_coordinate_address_key(part)
+        if address_key is None:
+            continue
+        tokens = raw_place_coordinate_address_token_list(address_key)
+        parsed_parts.append((part, address_key, tokens))
+
+    for part, address_key, tokens in parsed_parts:
+        hash_unit_token_indexes = raw_place_coordinate_hash_unit_token_indexes(
+            part,
+            tokens,
+        )
+        numeric_indexes = {
+            index
+            for index, token in enumerate(tokens)
+            if any(character.isdigit() for character in token)
+            and not raw_place_coordinate_token_is_ordinal(token)
+            and index not in hash_unit_token_indexes
+        }
+        if not numeric_indexes:
+            continue
+        if raw_place_coordinate_part_is_route_only(tokens, address_key=address_key):
+            continue
+        if raw_place_coordinate_part_has_street_marker(
+            part,
+            address_key,
+            tokens,
+        ) and raw_place_coordinate_numeric_indexes_include_premise(
+            tokens,
+            numeric_indexes,
+        ):
+            return True
+
+    if any(
+        raw_place_coordinate_part_has_street_intersection(tokens, part=part)
+        for part, _, tokens in parsed_parts
+    ):
+        return True
+
+    for index, (part, address_key, tokens) in enumerate(parsed_parts):
+        if not raw_place_coordinate_part_has_street_marker(
+            part,
+            address_key,
+            tokens,
+        ):
+            continue
+        if set(tokens) & {"hwy", "rte"}:
+            continue
+        for neighbor_index in (index - 1, index + 1):
+            if not 0 <= neighbor_index < len(parsed_parts):
+                continue
+            if raw_place_coordinate_part_is_premise_number(
+                parsed_parts[neighbor_index][2]
+            ):
+                return True
+    return False
+
+
+def raw_place_coordinate_part_has_street_marker(
+    part: str,
+    address_key: str,
+    tokens: list[str],
+) -> bool:
+    normalized_part = unicodedata.normalize("NFKC", part).casefold()
+    if re.match(
+        r"\s*(?:c(?:\.|/)|p(?:\.\s*)?za\.?|pl\.)\s*(?=[^\W\d_])",
+        normalized_part,
+    ):
+        return True
+    street_suffix_indexes = {
+        index
+        for index, token in enumerate(tokens)
+        if index > 0 and token in RAW_PLACE_STREET_SUFFIX_TOKENS
+    }
+    if any(index > 0 for index in street_suffix_indexes):
+        return True
+    if re.search(
+        r"\b(?:allee|allée|av|avenida|avenue|boulevard|calle|carrer|chaussee|chaussée|chemin|chome|corso|impasse|largo|passeig|piazza|plaza|quai|r|rua|rue|str|strada|strasse|straße|via|viale)\b",
+        address_key,
+    ):
+        return True
+    if re.search(r"[^\W\d_]{2,}(?:str|strasse|straße)\b", address_key):
+        return True
+    return bool(re.search(r"(?:丁目|番地|號|号|路|街|道|巷|弄)", part))
+
+
+def raw_place_coordinate_part_is_premise_number(tokens: list[str]) -> bool:
+    premise_tokens = tokens
+    if premise_tokens and premise_tokens[0] in RAW_PLACE_UNIT_NUMBER_LABEL_TOKENS:
+        premise_tokens = premise_tokens[1:]
+    if not premise_tokens or not any(
+        character.isdigit() for character in premise_tokens[0]
+    ):
+        return False
+    for token in premise_tokens:
+        compact = re.sub(r"[^a-z0-9]", "", token)
+        if compact.isdigit() and 1 <= len(compact) <= 4:
+            continue
+        if re.fullmatch(r"\d{1,4}[a-z]{1,3}", compact):
+            continue
+        if compact.isalpha() and len(compact) <= 3:
+            continue
+        return False
+    return True
+
+
+def raw_place_coordinate_hash_unit_token_indexes(
+    part: str,
+    tokens: Sequence[str],
+) -> set[int]:
+    matched_indexes: set[int] = set()
+    search_end = len(tokens)
+    hash_units = re.findall(
+        r"#\s*([\w-]+)",
+        unicodedata.normalize("NFKC", part),
+    )
+    for hash_unit in reversed(hash_units):
+        address_key = raw_place_coordinate_address_key(hash_unit)
+        if address_key is None:
+            continue
+        unit_tokens = raw_place_coordinate_address_token_list(address_key)
+        if not unit_tokens:
+            continue
+        for start in range(search_end - len(unit_tokens), -1, -1):
+            end = start + len(unit_tokens)
+            if list(tokens[start:end]) != unit_tokens:
+                continue
+            matched_indexes.update(range(start, end))
+            search_end = start
+            break
+    return matched_indexes
+
+
+def raw_place_coordinate_numeric_indexes_include_premise(
+    tokens: Sequence[str],
+    numeric_indexes: set[int],
+) -> bool:
+    street_suffix_indexes = {
+        index
+        for index, token in enumerate(tokens)
+        if index > 0 and token in RAW_PLACE_STREET_SUFFIX_TOKENS
+    }
+    if not street_suffix_indexes:
+        return bool(numeric_indexes)
+    first_suffix_index = min(street_suffix_indexes)
+    last_suffix_index = max(street_suffix_indexes)
+    return any(
+        index < first_suffix_index or index == last_suffix_index + 1
+        for index in numeric_indexes
+    )
+
+
+def raw_place_coordinate_part_is_route_only(
+    tokens: list[str],
+    *,
+    address_key: str,
+) -> bool:
+    raw_tokens = address_key.split()
+    if raw_tokens and raw_tokens[0] == "r":
+        has_street_name = any(
+            token.isalpha() and token not in RAW_PLACE_UNIT_PREFIX_TOKENS
+            for token in raw_tokens[1:]
+        )
+        if not has_street_name:
+            return True
+
+    route_indexes = [
+        index
+        for index, token in enumerate(tokens)
+        if token in {"hwy", "rte"}
+    ]
+    if not route_indexes:
+        return False
+    route_qualifiers = {"i", "interstate", "m", "state", "us"}
+    for index, token in enumerate(tokens[: route_indexes[0]]):
+        compact = re.sub(r"[^a-z0-9]", "", token)
+        if not compact or not compact[0].isdigit():
+            continue
+        previous_token = tokens[index - 1] if index > 0 else None
+        if previous_token in route_qualifiers | RAW_PLACE_UNIT_PREFIX_TOKENS:
+            continue
+        if (
+            previous_token in RAW_PLACE_UNIT_NUMBER_LABEL_TOKENS
+            and index > 1
+            and tokens[index - 2] in RAW_PLACE_UNIT_PREFIX_TOKENS
+        ):
+            continue
+        return False
+    return True
+
+
+def raw_place_coordinate_infer_country_from_subdivision_postal(
+    address: str,
+) -> str | None:
+    normalized_address = unicodedata.normalize("NFKC", address)
+    country_patterns = (
+        ("US", r"\b(?P<code>[A-Z]{2})\s*,?\s*\d{5}(?:-\d{4})?\b"),
+        ("CA", r"\b(?P<code>[A-Z]{2})\s*,?\s*[A-Z]\d[A-Z]\s*\d[A-Z]\d\b"),
+        ("AU", r"\b(?P<code>[A-Z]{2,3})\s*,?\s*\d{4}\b"),
+    )
+    for country_code, pattern in country_patterns:
+        subdivision_codes = raw_place_coordinate_subdivision_code_token_identities(
+            country_code
+        )
+        for match in re.finditer(pattern, normalized_address):
+            code_key = raw_place_coordinate_address_key(match.group("code"))
+            if not code_key:
+                continue
+            code_tokens = tuple(raw_place_coordinate_address_token_list(code_key))
+            if code_tokens in subdivision_codes:
+                return country_code
+    return None
+
+
+def raw_place_coordinate_postal_evidence_is_valid_for_country(
+    tokens: Sequence[str],
+    postal_token_indexes: set[int],
+    country_code: str | None,
+) -> bool:
+    if not postal_token_indexes:
+        return False
+    compact_postal = "".join(
+        re.sub(r"[^a-z0-9]", "", tokens[index])
+        for index in sorted(postal_token_indexes)
+    )
+    if country_code == "US":
+        return bool(re.fullmatch(r"\d{5}(?:\d{4})?", compact_postal))
+    if country_code == "CA":
+        return bool(re.fullmatch(r"[a-z]\d[a-z]\d[a-z]\d", compact_postal))
+    if country_code == "AU":
+        return bool(re.fullmatch(r"\d{4}", compact_postal))
+    if country_code == "IT":
+        return bool(re.fullmatch(r"\d{5}", compact_postal))
+    if country_code == "GE":
+        return bool(re.fullmatch(r"\d{4}", compact_postal))
+    if country_code == "TW":
+        return bool(re.fullmatch(r"\d{3,6}", compact_postal))
+    if country_code == "GB":
+        return bool(
+            re.fullmatch(
+                r"(?:gir0aa|[a-z]{1,2}\d[a-z\d]?\d[a-z]{2})",
+                compact_postal,
+            )
+        )
+    return False
+
+
+def raw_place_coordinate_country_span(
+    tokens: Sequence[str],
+    *,
+    expected_country: str | None = None,
+) -> tuple[int, int, str] | None:
+    if expected_country == "GE":
+        for start in range(len(tokens) - 1, -1, -1):
+            if tokens[start] != "georgia":
+                continue
+            end = start + 1
+            trailing_indexes = set(range(end, len(tokens)))
+            if trailing_indexes and not (
+                raw_place_coordinate_postal_evidence_is_valid_for_country(
+                    tokens,
+                    trailing_indexes,
+                    "GE",
+                )
+            ):
+                continue
+            return start, end, "GE"
+    for country_tokens, country_code in raw_place_coordinate_country_token_identities():
+        if expected_country is not None and country_code != expected_country:
+            continue
+        country_length = len(country_tokens)
+        for start in range(len(tokens) - country_length, -1, -1):
+            end = start + country_length
+            if tuple(tokens[start:end]) != country_tokens:
+                continue
+            trailing_indexes = set(range(end, len(tokens)))
+            if trailing_indexes and not (
+                raw_place_coordinate_postal_evidence_is_valid_for_country(
+                    tokens,
+                    trailing_indexes,
+                    country_code,
+                )
+            ):
+                continue
+            return start, end, country_code
+    return None
+
+
+def raw_place_coordinate_infer_georgia_country(raw_parts: Sequence[str]) -> str | None:
+    has_georgia_component = any(
+        raw_place_coordinate_address_key(part) == "georgia"
+        for part in raw_parts
+    )
+    if not has_georgia_component:
+        return None
+
+    subdivision_identities = raw_place_coordinate_subdivision_token_identities(None)
+    for part in raw_parts:
+        part_key = raw_place_coordinate_address_key(part)
+        if part_key is None or part_key == "georgia":
+            continue
+        identity = subdivision_identities.get(
+            tuple(raw_place_coordinate_address_token_list(part_key))
+        )
+        if identity is not None and identity[0] == "subdivision" and identity[1].startswith("ge-"):
+            return "GE"
+    return None
+
+
+def raw_place_coordinate_address_comparison_key(
+    address: str,
+    *,
+    country_hint: str | None = None,
+) -> tuple[tuple[tuple[str, ...], ...], str | None]:
+    comparison_parts: list[tuple[str, ...]] = []
+    embedded_subdivision_code_suffixes: list[tuple[str, ...] | None] = []
+    street_numbers = raw_place_coordinate_street_numbers(address)
+    country: str | None = None
+    normalized_address = raw_place_coordinate_strip_japanese_postal_prefix(address)
+    raw_parts = [
+        part
+        for part in re.split(r"[,、]", normalized_address)
+        if raw_place_coordinate_address_key(part) is not None
+    ]
+    if raw_parts:
+        for raw_part_index in dict.fromkeys((len(raw_parts) - 1, 0)):
+            part_key = raw_place_coordinate_address_key(raw_parts[raw_part_index])
+            part_tokens = (
+                raw_place_coordinate_address_token_list(part_key)
+                if part_key
+                else []
+            )
+            country_span = raw_place_coordinate_country_span(part_tokens)
+            if country_span is not None:
+                country = country_span[2]
+                break
+    if country is None:
+        country = raw_place_coordinate_infer_georgia_country(raw_parts)
+    if country is None:
+        country = raw_place_coordinate_infer_country_from_subdivision_postal(
+            normalized_address
+        )
+    known_subdivision_code_identities = (
+        raw_place_coordinate_subdivision_code_token_identities(
+            country or country_hint
+        )
+    )
+    for raw_part_index, raw_part in enumerate(raw_parts):
+        part = raw_place_coordinate_normalize_street_prefix(
+            raw_part,
+            country or country_hint,
+        )
+        part = re.sub(
+            r"^\s*(?:unit\s+)?[^/\s,]+\s*/\s*",
+            "",
+            part,
+            flags=re.IGNORECASE,
+        )
+        part = re.sub(r"#\s*[\w-]+", "", part)
+        address_key = raw_place_coordinate_address_key(part)
+        if address_key is None:
+            continue
+        part_tokens = raw_place_coordinate_address_token_list(address_key)
+        if raw_place_coordinate_part_has_street_intersection(
+            part_tokens,
+            part=raw_part,
+        ):
+            part_tokens = [
+                token for token in part_tokens if token not in {"and", "at"}
+            ]
+        uppercase_word_suffixes = {
+            tuple(raw_place_coordinate_address_token_list(word_key))
+            for word in re.findall(
+                r"[^\W_]+",
+                unicodedata.normalize("NFKC", raw_part),
+            )
+            if word == word.upper()
+            and any(character.isalpha() for character in word)
+            and (word_key := raw_place_coordinate_address_key(word))
+        }
+        raw_postal_token_indexes = {
+            index
+            for index in range(len(part_tokens))
+            if raw_place_coordinate_token_is_postal(
+                part_tokens,
+                index,
+                street_numbers,
+                country_code=country or country_hint,
+            )
+        }
+        current_part_has_valid_postal = (
+            raw_place_coordinate_postal_evidence_is_valid_for_country(
+                part_tokens,
+                raw_postal_token_indexes,
+                country or country_hint,
+            )
+        )
+        next_part_is_postal_only = False
+        if raw_part_index + 1 < len(raw_parts):
+            next_part_key = raw_place_coordinate_address_key(
+                raw_parts[raw_part_index + 1]
+            )
+            next_part_tokens = (
+                raw_place_coordinate_address_token_list(next_part_key)
+                if next_part_key
+                else []
+            )
+            next_part_postal_token_indexes = {
+                index
+                for index in range(len(next_part_tokens))
+                if raw_place_coordinate_token_is_postal(
+                    next_part_tokens,
+                    index,
+                    street_numbers,
+                    country_code=country or country_hint,
+                )
+            }
+            next_part_is_postal_only = (
+                bool(next_part_tokens)
+                and len(next_part_postal_token_indexes) == len(next_part_tokens)
+                and raw_place_coordinate_postal_evidence_is_valid_for_country(
+                    next_part_tokens,
+                    next_part_postal_token_indexes,
+                    country or country_hint,
+                )
+            )
+        if (
+            len(part_tokens) >= 2
+            and part_tokens[-1] in RAW_PLACE_TRAILING_UNIT_TOKENS
+            and (
+                any(character.isdigit() for character in part_tokens[-2])
+                or part_tokens[-2] in {"basement", "ground", "mezzanine"}
+            )
+        ):
+            del part_tokens[-2:]
+        comparison_part_tokens: list[str] = []
+        index = 0
+        while index < len(part_tokens):
+            token = part_tokens[index]
+            unit_identifier_index = index + 1
+            if (
+                unit_identifier_index < len(part_tokens)
+                and part_tokens[unit_identifier_index]
+                in RAW_PLACE_UNIT_NUMBER_LABEL_TOKENS
+            ):
+                unit_identifier_index += 1
+            is_unit_designator = bool(
+                token in RAW_PLACE_UNIT_PREFIX_TOKENS
+                and unit_identifier_index < len(part_tokens)
+                and part_tokens[unit_identifier_index]
+                not in RAW_PLACE_STREET_SUFFIX_TOKENS
+                and (
+                    not comparison_part_tokens
+                    or comparison_part_tokens[-1] in RAW_PLACE_STREET_SUFFIX_TOKENS
+                )
+                and not (
+                    (token,) in known_subdivision_code_identities
+                    and (token,) in uppercase_word_suffixes
+                    and (
+                        next_part_is_postal_only
+                        or (
+                            current_part_has_valid_postal
+                            and any(
+                                postal_index > index
+                                for postal_index in raw_postal_token_indexes
+                            )
+                        )
+                    )
+                )
+            )
+            if not is_unit_designator:
+                comparison_part_tokens.append(token)
+                index += 1
+                continue
+
+            index = unit_identifier_index + 1
+        country_span = raw_place_coordinate_country_span(
+            comparison_part_tokens,
+            expected_country=country or country_hint,
+        )
+        if country_span is not None:
+            country_start, country_end, country_code = country_span
+            del comparison_part_tokens[country_start:country_end]
+            country = country or country_code
+
+        postal_token_indexes = {
+            index
+            for index in range(len(comparison_part_tokens))
+            if raw_place_coordinate_token_is_postal(
+                comparison_part_tokens,
+                index,
+                street_numbers,
+                country_code=country or country_hint,
+            )
+        }
+        comparison_part_tokens = [
+            token
+            for index, token in enumerate(comparison_part_tokens)
+            if index not in postal_token_indexes
+        ]
+        embedded_subdivision_code_suffix = None
+        if (
+            comparison_part_tokens
+            and (current_part_has_valid_postal or next_part_is_postal_only)
+        ):
+            candidate_suffix = (comparison_part_tokens[-1],)
+            if candidate_suffix in uppercase_word_suffixes:
+                embedded_subdivision_code_suffix = candidate_suffix
+        if comparison_part_tokens:
+            comparison_parts.append(tuple(comparison_part_tokens))
+            embedded_subdivision_code_suffixes.append(
+                embedded_subdivision_code_suffix
+            )
+    subdivision_country_code = country or country_hint
+    subdivision_identities = raw_place_coordinate_subdivision_token_identities(
+        subdivision_country_code
+    )
+    comparison_parts = raw_place_coordinate_normalize_subdivision_parts(
+        comparison_parts,
+        subdivision_identities,
+        raw_place_coordinate_subdivision_code_token_identities(
+            subdivision_country_code
+        ),
+        embedded_subdivision_code_suffixes,
+    )
+    return tuple(sorted(comparison_parts)), country
+
+
+def raw_place_coordinate_normalize_subdivision_parts(
+    comparison_parts: Sequence[tuple[str, ...]],
+    subdivision_identities: Mapping[tuple[str, ...], tuple[str, ...]],
+    subdivision_code_identities: Mapping[tuple[str, ...], tuple[str, ...]],
+    embedded_subdivision_code_suffixes: Sequence[tuple[str, ...] | None],
+) -> list[tuple[str, ...]]:
+    normalized_parts: list[tuple[str, ...]] = []
+    subdivision_suffixes = sorted(
+        subdivision_code_identities.items(),
+        key=lambda item: (-len(item[0]), item[0]),
+    )
+    for part, allowed_suffix in zip(
+        comparison_parts,
+        embedded_subdivision_code_suffixes,
+        strict=True,
+    ):
+        exact_identity = subdivision_identities.get(part)
+        if exact_identity is not None:
+            normalized_parts.append(exact_identity)
+            continue
+
+        for suffix, identity in subdivision_suffixes:
+            suffix_length = len(suffix)
+            if (
+                suffix != allowed_suffix
+                or suffix_length >= len(part)
+                or part[-suffix_length:] != suffix
+            ):
+                continue
+            prefix = part[:-suffix_length]
+            if prefix:
+                normalized_parts.append(
+                    subdivision_identities.get(prefix, prefix)
+                )
+            normalized_parts.append(identity)
+            break
+        else:
+            normalized_parts.append(part)
+    return list(dict.fromkeys(normalized_parts))
+
+
+def raw_place_coordinate_collapse_street_number_range(
+    address: str,
+    endpoint_numbers: set[str],
+) -> str | None:
+    if len(endpoint_numbers) != 1:
+        return None
+    endpoint = next(iter(endpoint_numbers))
+    replaced = False
+
+    def collapse(match: re.Match[str]) -> str:
+        nonlocal replaced
+        if endpoint not in {match.group("start"), match.group("end")}:
+            return match.group(0)
+        replaced = True
+        return endpoint
+
+    collapsed = re.sub(
+        r"(?<!\d)(?P<start>\d+)\s*[-–—−]\s*(?P<end>\d+)(?!\d)",
+        collapse,
+        unicodedata.normalize("NFKC", address),
+    )
+    return collapsed if replaced else None
+
+
+def raw_place_coordinate_token_is_part_of_valid_alphanumeric_postal(
+    tokens: Sequence[str],
+    index: int,
+    country_code: str | None,
+) -> bool:
+    if country_code not in {"CA", "GB"}:
+        return False
+    for span_length in (1, 2):
+        first_start = max(0, index - span_length + 1)
+        last_start = min(index, len(tokens) - span_length)
+        for start in range(first_start, last_start + 1):
+            indexes = set(range(start, start + span_length))
+            if raw_place_coordinate_postal_evidence_is_valid_for_country(
+                tokens,
+                indexes,
+                country_code,
+            ):
+                return True
+    return False
+
+
+def raw_place_coordinate_token_is_postal(
+    tokens: list[str],
+    index: int,
+    street_numbers: set[str],
+    *,
+    country_code: str | None = None,
+) -> bool:
+    token = tokens[index]
+    numbers = set(re.findall(r"\d+", token))
+    if not numbers:
+        return False
+    compact = re.sub(r"[^a-z0-9]", "", token)
+    if numbers & street_numbers and not (
+        any(character.isalpha() for character in compact)
+        and any(character.isdigit() for character in compact)
+        and raw_place_coordinate_token_is_part_of_valid_alphanumeric_postal(
+            tokens,
+            index,
+            country_code,
+        )
+    ):
+        return False
+    previous_token = tokens[index - 1] if index > 0 else None
+    if previous_token in {"hwy", "rte"}:
+        return False
+
+    if compact.isdigit():
+        if country_code == "TW" and 3 <= len(compact) <= 6:
+            return True
+        if 4 <= len(compact) <= 6:
+            return True
+        if len(compact) == 3:
+            for neighbor_index in (index - 1, index + 1):
+                if not 0 <= neighbor_index < len(tokens):
+                    continue
+                neighbor = re.sub(r"[^0-9]", "", tokens[neighbor_index])
+                neighbor_numbers = set(re.findall(r"\d+", tokens[neighbor_index]))
+                if (
+                    4 <= len(neighbor) <= 6
+                    and neighbor_numbers
+                    and not neighbor_numbers & street_numbers
+                ):
+                    return True
+        return False
+    return (
+        3 <= len(compact) <= 7
+        and any(character.isalpha() for character in compact)
+        and any(character.isdigit() for character in compact)
+    )
+
+
+def raw_place_coordinate_strip_japanese_postal_prefix(address: str) -> str:
+    normalized = unicodedata.normalize("NFKC", address)
+    return re.sub(
+        r"\s*〒\s*\d{3}\s*-\s*\d{4}\s*(?:[,、]\s*)?",
+        " ",
+        normalized,
+    )
+
+
+@lru_cache(maxsize=1)
+def raw_place_coordinate_country_token_identities() -> tuple[
+    tuple[tuple[str, ...], str],
+    ...,
+]:
+    country_alias_codes = {
+        "England": "GB",
+        "Scotland": "GB",
+        "Wales": "GB",
+        "Northern Ireland": "GB",
+        "UK": "GB",
+        "UAE": "AE",
+        "US": "US",
+        "U.S.": "US",
+        "USA": "US",
+        "U.S.A.": "US",
+        "Korea": "KR",
+        "South Korea": "KR",
+        "韓国": "KR",
+        "Taiwan": "TW",
+        "台灣": "TW",
+        "台湾": "TW",
+        "Trinidad & Tobago": "TT",
+        "España": "ES",
+        "Espanya": "ES",
+        "スペイン": "ES",
+        "フランス": "FR",
+        "モナコ": "MC",
+        "イタリア": "IT",
+        "メキシコ": "MX",
+        "オーストラリア": "AU",
+        "日本": "JP",
+        "中国": "CN",
+        "Ivory Coast": "CI",
+    }
+    suffix_identities: dict[tuple[str, ...], str] = {}
+    for country in pycountry.countries:
+        country_code = country.alpha_2
+        for attribute in ("name", "official_name", "common_name"):
+            country_name = getattr(country, attribute, None)
+            if country_name:
+                raw_place_coordinate_add_country_token_identity(
+                    suffix_identities,
+                    country_name,
+                    country_code,
+                )
+    for country_name, country_code in country_alias_codes.items():
+        raw_place_coordinate_add_country_token_identity(
+            suffix_identities,
+            country_name,
+            country_code,
+        )
+    return tuple(
+        sorted(
+            suffix_identities.items(),
+            key=lambda item: (-len(item[0]), item[0]),
+        )
+    )
+
+
+def raw_place_coordinate_add_country_token_identity(
+    identities: dict[tuple[str, ...], str],
+    country_name: str,
+    country_code: str,
+) -> None:
+    address_key = raw_place_coordinate_address_key(country_name)
+    if address_key is None:
+        return
+    if address_key == "georgia":
+        return
+    identities[tuple(raw_place_coordinate_address_token_list(address_key))] = country_code
+
+
+@lru_cache(maxsize=None)
+def raw_place_coordinate_subdivision_token_identities(
+    country_code: str | None,
+) -> dict[tuple[str, ...], tuple[str, ...]]:
+    candidates: dict[tuple[str, ...], set[str]] = {}
+    for subdivision in pycountry.subdivisions:
+        subdivision_code = as_string(getattr(subdivision, "code", None))
+        subdivision_name = as_string(getattr(subdivision, "name", None))
+        if not subdivision_code or not subdivision_name:
+            continue
+        subdivision_country_code = subdivision_code.split("-", 1)[0]
+        if country_code and subdivision_country_code != country_code:
+            continue
+
+        name_key = raw_place_coordinate_address_key(subdivision_name)
+        if name_key:
+            name_tokens = tuple(raw_place_coordinate_address_token_list(name_key))
+            candidates.setdefault(name_tokens, set()).add(subdivision_code)
+        if country_code and "-" in subdivision_code:
+            code_key = raw_place_coordinate_address_key(
+                subdivision_code.split("-", 1)[1]
+            )
+            if code_key:
+                code_tokens = tuple(raw_place_coordinate_address_token_list(code_key))
+                candidates.setdefault(code_tokens, set()).add(subdivision_code)
+
+    return {
+        tokens: ("subdivision", next(iter(subdivision_codes)).casefold())
+        for tokens, subdivision_codes in candidates.items()
+        if len(subdivision_codes) == 1
+    }
+
+
+@lru_cache(maxsize=None)
+def raw_place_coordinate_subdivision_code_token_identities(
+    country_code: str | None,
+) -> dict[tuple[str, ...], tuple[str, ...]]:
+    if country_code is None:
+        return {}
+
+    candidates: dict[tuple[str, ...], set[str]] = {}
+    for subdivision in pycountry.subdivisions:
+        subdivision_code = as_string(getattr(subdivision, "code", None))
+        if not subdivision_code or "-" not in subdivision_code:
+            continue
+        subdivision_country_code, local_code = subdivision_code.split("-", 1)
+        if subdivision_country_code != country_code:
+            continue
+        code_key = raw_place_coordinate_address_key(local_code)
+        if code_key:
+            code_tokens = tuple(raw_place_coordinate_address_token_list(code_key))
+            candidates.setdefault(code_tokens, set()).add(subdivision_code)
+
+    return {
+        tokens: ("subdivision", next(iter(subdivision_codes)).casefold())
+        for tokens, subdivision_codes in candidates.items()
+        if len(subdivision_codes) == 1
+    }
+
+
+def raw_place_coordinate_subdivision_country_codes(
+    comparison_parts: tuple[tuple[str, ...], ...],
+) -> set[str]:
+    return {
+        part[1].split("-", 1)[0].upper()
+        for part in comparison_parts
+        if len(part) == 2
+        and part[0] == "subdivision"
+        and "-" in part[1]
+    }
+
+
+def raw_place_coordinate_street_numbers(address: str) -> set[str]:
+    address = raw_place_coordinate_strip_japanese_postal_prefix(address)
+    parts = [part.strip() for part in re.split(r"[,、]", address) if part.strip()]
+    if not parts:
+        parts = [address]
+
+    parsed_parts: list[tuple[str, list[str]]] = []
+    for part in parts:
+        address_key = raw_place_coordinate_address_key(part)
+        if address_key is None:
+            continue
+        tokens = raw_place_coordinate_address_token_list(address_key)
+        if any(re.search(r"\d", token) for token in tokens):
+            parsed_parts.append((part, tokens))
+
+    for part, tokens in parsed_parts:
+        if set(tokens) & RAW_PLACE_STREET_SUFFIX_TOKENS:
+            return raw_place_coordinate_part_street_numbers(part, tokens)
+
+    for part, tokens in parsed_parts:
+        if part.lstrip().startswith("#") or set(tokens) & RAW_PLACE_UNIT_PREFIX_TOKENS:
+            continue
+        return {
+            number
+            for token in tokens
+            for number in re.findall(r"\d+", token)
+        }
+    return set()
+
+
+def raw_place_coordinate_part_street_numbers(
+    part: str,
+    tokens: list[str],
+) -> set[str]:
+    slash_unit_match = re.match(
+        r"\s*(?:unit\s+)?[^/\s,]+\s*/\s*(\d+(?:\s*-\s*\d+)?)",
+        part,
+        re.IGNORECASE,
+    )
+    if slash_unit_match is not None:
+        return set(re.findall(r"\d+", slash_unit_match.group(1)))
+
+    numeric_tokens = {
+        index: set(re.findall(r"\d+", token))
+        for index, token in enumerate(tokens)
+        if re.search(r"\d", token)
+        and not raw_place_coordinate_token_is_ordinal(token)
+    }
+    skipped_indexes: set[int] = set()
+    for index, token in enumerate(tokens):
+        if token not in RAW_PLACE_UNIT_PREFIX_TOKENS:
+            continue
+        candidate_index = index + 1
+        if (
+            candidate_index < len(tokens)
+            and tokens[candidate_index] in RAW_PLACE_UNIT_NUMBER_LABEL_TOKENS
+        ):
+            candidate_index += 1
+        if candidate_index in numeric_tokens:
+            skipped_indexes.add(candidate_index)
+    if part.lstrip().startswith("#") and numeric_tokens:
+        skipped_indexes.add(min(numeric_tokens))
+
+    candidate_indexes = [
+        index
+        for index in numeric_tokens
+        if index not in skipped_indexes
+    ]
+    if not candidate_indexes:
+        return set()
+
+    street_suffix_index = max(
+        index
+        for index, token in enumerate(tokens)
+        if token in RAW_PLACE_STREET_SUFFIX_TOKENS
+    )
+    before_suffix = [index for index in candidate_indexes if index < street_suffix_index]
+    selected_indexes = before_suffix or [
+        index
+        for index in candidate_indexes
+        if index > street_suffix_index
+    ][:1]
+    return {
+        number
+        for index in selected_indexes
+        for number in numeric_tokens[index]
+    }
+
+
+def raw_place_maps_url_should_be_preserved(
+    existing_place: RawPlace,
+    refreshed_place: RawPlace,
+) -> bool:
+    existing_url = as_string(existing_place.maps_url)
+    refreshed_url = as_string(refreshed_place.maps_url)
+    if not existing_url or existing_url == refreshed_url:
+        return False
+    if (
+        not raw_place_names_are_compatible(
+            as_string(existing_place.name),
+            as_string(refreshed_place.name),
+        )
+        and not raw_place_maps_url_has_embedded_identity(existing_url)
+    ):
+        return False
+    if google_maps_uri_strength(existing_url) < google_maps_uri_strength(refreshed_url):
+        return False
+    if raw_place_maps_url_has_embedded_identity(
+        refreshed_url,
+    ) and not raw_place_maps_url_has_embedded_identity(existing_url):
+        return False
+
+    existing_url_cid = extract_maps_cid(existing_url)
+    refreshed_cids = {
+        cid
+        for cid in [
+            as_string(refreshed_place.cid),
+            extract_maps_cid(refreshed_url),
+            *refreshed_place.cid_aliases,
+        ]
+        if cid
+    }
+    if existing_url_cid and refreshed_cids and existing_url_cid not in refreshed_cids:
+        return False
+
+    existing_query_place_id = extract_maps_query_place_id(existing_url)
+    refreshed_query_place_id = extract_maps_query_place_id(refreshed_url)
+    if (
+        existing_query_place_id
+        and refreshed_query_place_id
+        and existing_query_place_id != refreshed_query_place_id
+    ):
+        return False
+
+    existing_url_token = extract_maps_place_token(existing_url)
+    refreshed_tokens = {
+        token
+        for token in [
+            as_string(refreshed_place.maps_place_token),
+            extract_maps_place_token(refreshed_url),
+        ]
+        if token
+    }
+    if (
+        existing_url_token
+        and refreshed_tokens
+        and existing_url_token not in refreshed_tokens
+    ):
+        return False
+
+    existing_url_has_identity = raw_place_maps_url_has_embedded_identity(existing_url)
+    refreshed_url_has_identity = raw_place_maps_url_has_embedded_identity(refreshed_url)
+    has_compatible_identity = bool(
+        (existing_url_cid and existing_url_cid in refreshed_cids)
+        or (
+            existing_query_place_id
+            and existing_query_place_id == refreshed_query_place_id
+        )
+        or (existing_url_token and existing_url_token in refreshed_tokens)
+    )
+    return not (
+        existing_url_has_identity
+        and refreshed_url_has_identity
+        and not has_compatible_identity
+    )
+
+
+def raw_place_refreshed_url_identity_is_compatible(
+    existing_place: RawPlace,
+    refreshed_url: str | None,
+    *,
+    refreshed_cid: str | None = None,
+) -> bool:
+    if len(raw_place_google_places_identities(existing_place)) > 1:
+        return False
+
+    existing_cids = {
+        cid
+        for cid in [
+            as_string(existing_place.cid),
+            extract_maps_cid(existing_place.maps_url),
+            *existing_place.cid_aliases,
+        ]
+        if cid
+    }
+    if refreshed_cid and existing_cids and refreshed_cid not in existing_cids:
+        return False
+    matched_identity = bool(refreshed_cid and refreshed_cid in existing_cids)
+
+    url = as_string(refreshed_url)
+    if not url or not raw_place_maps_url_has_embedded_identity(url):
+        return True
+
+    refreshed_url_cid = extract_maps_cid(url)
+    if refreshed_url_cid:
+        if existing_cids and refreshed_url_cid not in existing_cids:
+            return False
+        matched_identity = matched_identity or refreshed_url_cid in existing_cids
+
+    refreshed_query_place_id = extract_maps_query_place_id(url)
+    if refreshed_query_place_id:
+        existing_query_place_ids = raw_place_google_places_identities(existing_place)
+        if (
+            len(existing_query_place_ids) > 1
+            or (
+                existing_query_place_ids
+                and refreshed_query_place_id not in existing_query_place_ids
+            )
+        ):
+            return False
+        matched_identity = matched_identity or (
+            refreshed_query_place_id in existing_query_place_ids
+        )
+
+    refreshed_token = extract_maps_place_token(url)
+    if refreshed_token:
+        existing_tokens = {
+            token
+            for token in [
+                as_string(existing_place.maps_place_token),
+                extract_maps_place_token(existing_place.maps_url),
+            ]
+            if token
+        }
+        if existing_tokens and refreshed_token not in existing_tokens:
+            return False
+        matched_identity = matched_identity or refreshed_token in existing_tokens
+    return matched_identity
+
+
+def raw_place_maps_url_has_embedded_identity(url: str) -> bool:
+    return bool(
+        extract_maps_cid(url)
+        or extract_maps_query_place_id(url)
+        or extract_maps_place_token(url)
+    )
+
+
 def raw_place_names_are_compatible(existing_name: str | None, refreshed_name: str | None) -> bool:
     if not existing_name or not refreshed_name:
         return True
 
+    existing_name_key = raw_place_coordinate_address_key(existing_name)
+    refreshed_name_key = raw_place_coordinate_address_key(refreshed_name)
+    if existing_name_key is not None and existing_name_key == refreshed_name_key:
+        return True
+
     existing_slug = slugify(existing_name)
     refreshed_slug = slugify(refreshed_name)
+    if existing_slug == "item" or refreshed_slug == "item":
+        return False
     if existing_slug == refreshed_slug:
         return True
 
@@ -6782,6 +8434,17 @@ def raw_place_cid_identity(place: RawPlace) -> str | None:
     return as_string(place.cid) or extract_maps_cid(place.maps_url)
 
 
+def raw_place_cid_identities(place: RawPlace) -> set[str]:
+    return {
+        identity
+        for identity in (
+            as_string(place.cid),
+            extract_maps_cid(place.maps_url),
+        )
+        if identity
+    }
+
+
 def raw_place_google_id_identity(place: RawPlace) -> str | None:
     google_id = as_string(place.google_id)
     if not google_id:
@@ -6789,8 +8452,48 @@ def raw_place_google_id_identity(place: RawPlace) -> str | None:
     return google_id.strip("/").replace("/", "-")
 
 
+def raw_place_legacy_google_id_identity(place: RawPlace) -> str | None:
+    google_id = as_string(place.google_id)
+    if not google_id or google_id.startswith("places/") or "/" not in google_id:
+        return None
+    return raw_place_google_id_identity(place)
+
+
+def raw_place_google_places_id_identity(place: RawPlace) -> str | None:
+    identities = raw_place_google_places_identities(place)
+    return next(iter(identities)) if len(identities) == 1 else None
+
+
+def raw_place_google_places_identities(place: RawPlace) -> set[str]:
+    identities = {
+        identity
+        for identity in (extract_maps_query_place_id(place.maps_url),)
+        if identity is not None
+    }
+    google_id = as_string(place.google_id)
+    if google_id:
+        if google_id.startswith("places/"):
+            google_id = google_id.removeprefix("places/")
+            if google_id:
+                identities.add(google_id)
+        elif "/" not in google_id:
+            identities.add(google_id)
+    return identities
+
+
 def raw_place_maps_place_token_identity(place: RawPlace) -> str | None:
     return as_string(place.maps_place_token) or extract_maps_place_token(place.maps_url)
+
+
+def raw_place_maps_place_token_identities(place: RawPlace) -> set[str]:
+    return {
+        identity
+        for identity in (
+            as_string(place.maps_place_token),
+            extract_maps_place_token(place.maps_url),
+        )
+        if identity
+    }
 
 
 def score_duplicate_raw_place_cid_candidate(
@@ -6849,6 +8552,24 @@ def score_duplicate_raw_place_cid_candidate(
     return score + best_prior_score
 
 
+def preserve_raw_place_url_cid(
+    updates: dict[str, Any],
+    place: RawPlace,
+    url_cid: str | None,
+    *,
+    replacing_cid: str | None = None,
+) -> None:
+    if url_cid is None:
+        return
+    primary_cid = as_string(place.cid)
+    if primary_cid is None or primary_cid == replacing_cid:
+        updates["cid"] = url_cid
+        return
+    if primary_cid == url_cid or url_cid in place.cid_aliases:
+        return
+    updates["cid_aliases"] = [*place.cid_aliases, url_cid]
+
+
 def strip_duplicate_raw_place_cid(
     place: RawPlace,
     *,
@@ -6860,47 +8581,74 @@ def strip_duplicate_raw_place_cid(
     protected_maps_place_tokens: set[str] | None = None,
 ) -> RawPlace:
     updates: dict[str, Any] = {}
+    maps_url = as_string(place.maps_url)
+    maps_url_cid = extract_maps_cid(maps_url)
+    maps_url_google_places_id = extract_maps_query_place_id(maps_url)
+    maps_url_place_token = extract_maps_place_token(maps_url)
     if as_string(place.cid) == cid:
         updates["cid"] = None
-    maps_url_place_token = extract_maps_place_token(place.maps_url)
     maps_place_token = raw_place_maps_place_token_identity(place)
-    if (
-        extract_maps_cid(place.maps_url) == cid
-        or (
-            maps_url_place_token is not None
-            and shared_maps_url_place_tokens is not None
-            and maps_url_place_token in shared_maps_url_place_tokens
+    maps_url_place_token_should_be_cleared = bool(
+        maps_url_place_token is not None
+        and (
+            (
+                shared_maps_url_place_tokens is not None
+                and maps_url_place_token in shared_maps_url_place_tokens
+            )
+            or (
+                protected_maps_place_tokens is not None
+                and maps_url_place_token in protected_maps_place_tokens
+            )
         )
-        or (
-            maps_url_place_token is not None
-            and protected_maps_place_tokens is not None
-            and maps_url_place_token in protected_maps_place_tokens
+    )
+    if maps_url_cid == cid or maps_url_place_token_should_be_cleared:
+        preserved_cid = maps_url_cid if maps_url_cid != cid else None
+        preserved_maps_place_token = (
+            None if maps_url_place_token_should_be_cleared else maps_url_place_token
         )
-    ):
-        updates["maps_url"] = build_public_google_maps_url(
-            name=place.name,
-            address=place.address,
-            lat=place.lat,
-            lng=place.lng,
-            raw_maps_url=None,
+        preserve_raw_place_url_cid(
+            updates,
+            place,
+            preserved_cid,
+            replacing_cid=cid,
         )
-    if not updates:
-        return place
+        updates["maps_url"] = build_raw_place_maps_url_preserving_identity(
+            place,
+            cid=preserved_cid,
+            google_places_id=maps_url_google_places_id,
+            maps_place_token=preserved_maps_place_token,
+        )
+    else:
+        preserved_maps_place_token = None
     google_id = raw_place_google_id_identity(place)
     if google_id and (
         (shared_google_ids is not None and google_id in shared_google_ids)
         or (protected_google_ids is not None and google_id in protected_google_ids)
     ):
         updates["google_id"] = None
-    if (
+    maps_place_token_should_be_cleared = bool(
         as_string(place.maps_place_token)
         and maps_place_token
         and (
-            (shared_maps_place_tokens is not None and maps_place_token in shared_maps_place_tokens)
-            or (protected_maps_place_tokens is not None and maps_place_token in protected_maps_place_tokens)
+            (
+                shared_maps_place_tokens is not None
+                and maps_place_token in shared_maps_place_tokens
+            )
+            or (
+                protected_maps_place_tokens is not None
+                and maps_place_token in protected_maps_place_tokens
+            )
         )
-    ):
+    )
+    if maps_place_token_should_be_cleared:
         updates["maps_place_token"] = None
+    if preserved_maps_place_token is not None and (
+        as_string(place.maps_place_token) is None
+        or maps_place_token_should_be_cleared
+    ):
+        updates["maps_place_token"] = preserved_maps_place_token
+    if not updates:
+        return place
     return place.model_copy(update=updates)
 
 
@@ -6910,102 +8658,141 @@ def clear_duplicate_raw_place_cids(
     payload: RawSavedList,
     existing_payload: RawSavedList | None,
 ) -> RawSavedList:
-    indexes_by_cid: dict[str, list[int]] = {}
-    for index, place in enumerate(payload.places):
-        cid = raw_place_cid_identity(place)
-        if cid:
-            indexes_by_cid.setdefault(cid, []).append(index)
-
-    duplicate_indexes_by_cid = {
-        cid: indexes for cid, indexes in indexes_by_cid.items() if len(indexes) > 1
-    }
-    if not duplicate_indexes_by_cid:
-        return payload
-
     prior_places_by_cid: dict[str, list[RawPlace]] = {}
     if existing_payload is not None:
         for prior_place in existing_payload.places:
-            cid = raw_place_cid_identity(prior_place)
-            if cid:
+            for cid in raw_place_cid_identities(prior_place):
                 prior_places_by_cid.setdefault(cid, []).append(prior_place)
 
     updated_places = list(payload.places)
-    for cid, indexes in duplicate_indexes_by_cid.items():
-        prior_places = prior_places_by_cid.get(cid, [])
-        google_id_counts = Counter(
-            google_id
-            for google_id in (raw_place_google_id_identity(updated_places[index]) for index in indexes)
-            if google_id is not None
-        )
-        shared_google_ids = {google_id for google_id, count in google_id_counts.items() if count > 1}
-        maps_place_token_counts = Counter(
-            token
-            for token in (raw_place_maps_place_token_identity(updated_places[index]) for index in indexes)
-            if token is not None
-        )
-        shared_maps_place_tokens = {
-            token for token, count in maps_place_token_counts.items() if count > 1
+    made_updates = False
+    while True:
+        indexes_by_cid: dict[str, list[int]] = {}
+        for index, place in enumerate(updated_places):
+            for cid in raw_place_cid_identities(place):
+                indexes_by_cid.setdefault(cid, []).append(index)
+
+        duplicate_indexes_by_cid = {
+            cid: indexes
+            for cid, indexes in indexes_by_cid.items()
+            if len(indexes) > 1
         }
-        maps_url_place_token_counts = Counter(
-            token
-            for token in (extract_maps_place_token(updated_places[index].maps_url) for index in indexes)
-            if token is not None
-        )
-        shared_maps_url_place_tokens = {
-            token for token, count in maps_url_place_token_counts.items() if count > 1
-        }
-        keep_index = max(
-            indexes,
-            key=lambda index: (
-                score_duplicate_raw_place_cid_candidate(
-                    updated_places[index],
-                    cid=cid,
-                    prior_places=prior_places,
+        if not duplicate_indexes_by_cid:
+            break
+
+        pass_made_updates = False
+        for cid, indexes in duplicate_indexes_by_cid.items():
+            prior_places = prior_places_by_cid.get(cid, [])
+            google_id_counts = Counter(
+                google_id
+                for google_id in (
+                    raw_place_google_id_identity(updated_places[index])
+                    for index in indexes
+                )
+                if google_id is not None
+            )
+            shared_google_ids = {
+                google_id
+                for google_id, count in google_id_counts.items()
+                if count > 1
+            }
+            maps_place_token_counts = Counter(
+                token
+                for token in (
+                    raw_place_maps_place_token_identity(updated_places[index])
+                    for index in indexes
+                )
+                if token is not None
+            )
+            shared_maps_place_tokens = {
+                token
+                for token, count in maps_place_token_counts.items()
+                if count > 1
+            }
+            maps_url_place_token_counts = Counter(
+                token
+                for token in (
+                    extract_maps_place_token(updated_places[index].maps_url)
+                    for index in indexes
+                )
+                if token is not None
+            )
+            shared_maps_url_place_tokens = {
+                token
+                for token, count in maps_url_place_token_counts.items()
+                if count > 1
+            }
+            keep_index = max(
+                indexes,
+                key=lambda index: (
+                    len(raw_place_cid_identities(updated_places[index])) <= 1,
+                    score_duplicate_raw_place_cid_candidate(
+                        updated_places[index],
+                        cid=cid,
+                        prior_places=prior_places,
+                    ),
+                    -index,
                 ),
-                -index,
-            ),
-        )
-        kept_place = updated_places[keep_index]
-        protected_google_ids = {
-            google_id
-            for prior_place in prior_places
-            if raw_place_names_are_compatible(as_string(prior_place.name), as_string(kept_place.name))
-            for google_id in [raw_place_google_id_identity(prior_place)]
-            if google_id is not None
-        }
-        protected_maps_place_tokens = {
-            token
-            for prior_place in prior_places
-            if raw_place_names_are_compatible(as_string(prior_place.name), as_string(kept_place.name))
-            for token in [raw_place_maps_place_token_identity(prior_place)]
-            if token is not None
-        }
-        cleared_names: list[str] = []
-        for index in indexes:
-            if index == keep_index:
-                continue
-            original_place = updated_places[index]
-            updated_place = strip_duplicate_raw_place_cid(
-                original_place,
-                cid=cid,
-                shared_google_ids=shared_google_ids,
-                shared_maps_place_tokens=shared_maps_place_tokens,
-                shared_maps_url_place_tokens=shared_maps_url_place_tokens,
-                protected_google_ids=protected_google_ids,
-                protected_maps_place_tokens=protected_maps_place_tokens,
             )
-            if updated_place != original_place:
-                updated_places[index] = updated_place
-                cleared_names.append(updated_place.name or f"place #{index + 1}")
+            kept_place = updated_places[keep_index]
+            protected_google_ids = {
+                google_id
+                for prior_place in prior_places
+                if raw_place_names_are_compatible(
+                    as_string(prior_place.name),
+                    as_string(kept_place.name),
+                )
+                for google_id in [raw_place_google_id_identity(prior_place)]
+                if google_id is not None
+            }
+            protected_maps_place_tokens = {
+                token
+                for prior_place in prior_places
+                if raw_place_names_are_compatible(
+                    as_string(prior_place.name),
+                    as_string(kept_place.name),
+                )
+                for token in [raw_place_maps_place_token_identity(prior_place)]
+                if token is not None
+            }
+            cleared_names: list[str] = []
+            for index in indexes:
+                if index == keep_index:
+                    continue
+                original_place = updated_places[index]
+                updated_place = strip_duplicate_raw_place_cid(
+                    original_place,
+                    cid=cid,
+                    shared_google_ids=shared_google_ids,
+                    shared_maps_place_tokens=shared_maps_place_tokens,
+                    shared_maps_url_place_tokens=shared_maps_url_place_tokens,
+                    protected_google_ids=protected_google_ids,
+                    protected_maps_place_tokens=protected_maps_place_tokens,
+                )
+                if updated_place != original_place:
+                    updated_places[index] = updated_place
+                    cleared_names.append(
+                        updated_place.name or f"place #{index + 1}"
+                    )
 
-        if cleared_names:
-            kept_name = updated_places[keep_index].name or f"place #{keep_index + 1}"
-            print(
-                f"WARNING: Clearing duplicate raw CID {cid} in {slug}: "
-                f"kept [{kept_name}], cleared [{', '.join(cleared_names)}].",
-                flush=True,
-            )
+            if cleared_names:
+                pass_made_updates = True
+                made_updates = True
+                kept_name = (
+                    updated_places[keep_index].name
+                    or f"place #{keep_index + 1}"
+                )
+                print(
+                    f"WARNING: Clearing duplicate raw CID {cid} in {slug}: "
+                    f"kept [{kept_name}], cleared "
+                    f"[{', '.join(cleared_names)}].",
+                    flush=True,
+                )
+        if not pass_made_updates:
+            break
 
+    if not made_updates:
+        return payload
     return payload.model_copy(update={"places": updated_places})
 
 
@@ -7014,7 +8801,7 @@ def score_duplicate_raw_place_google_identity_candidate(
     *,
     prior_places: Sequence[RawPlace],
 ) -> int:
-    score = 50 if raw_place_cid_identity(place) else 0
+    score = 0
     best_prior_score = 0
     for prior_place in prior_places:
         prior_score = 0
@@ -7053,29 +8840,103 @@ def score_duplicate_raw_place_google_identity_candidate(
     return score + best_prior_score
 
 
+def build_raw_place_maps_url_preserving_identity(
+    place: RawPlace,
+    *,
+    cid: str | None = None,
+    google_places_id: str | None = None,
+    maps_place_token: str | None = None,
+) -> str:
+    if google_places_id is not None:
+        query = build_maps_link_query(
+            name=place.name,
+            address=place.address,
+            lat=place.lat,
+            lng=place.lng,
+        ) or google_places_id
+        return build_google_maps_search_url(
+            query,
+            google_place_id=google_places_id,
+        )
+    if maps_place_token is not None:
+        return (
+            "https://www.google.com/maps/place/data=!4m2!3m1!1s"
+            f"{maps_place_token}"
+        )
+    if cid is not None:
+        return f"https://www.google.com/maps?cid={cid}"
+    return build_public_google_maps_url(
+        name=place.name,
+        address=place.address,
+        lat=place.lat,
+        lng=place.lng,
+        raw_maps_url=None,
+    )
+
+
 def strip_duplicate_raw_place_google_identity(
     place: RawPlace,
     *,
     google_id: str | None = None,
+    google_places_id: str | None = None,
     maps_place_token: str | None = None,
 ) -> RawPlace:
     updates: dict[str, Any] = {}
+    maps_url = as_string(place.maps_url)
+    maps_url_cid = extract_maps_cid(maps_url)
+    embedded_google_places_id = extract_maps_query_place_id(maps_url)
+    embedded_maps_place_token = extract_maps_place_token(maps_url)
     if google_id is not None and raw_place_google_id_identity(place) == google_id:
         updates["google_id"] = None
+    if google_places_id is not None:
+        raw_google_id = as_string(place.google_id)
+        stored_google_places_id = None
+        if raw_google_id:
+            if raw_google_id.startswith("places/"):
+                stored_google_places_id = raw_google_id.removeprefix("places/") or None
+            elif "/" not in raw_google_id:
+                stored_google_places_id = raw_google_id
+        if stored_google_places_id == google_places_id:
+            updates["google_id"] = None
+
+    if (
+        google_places_id is not None
+        and embedded_google_places_id == google_places_id
+    ):
+        preserve_raw_place_url_cid(updates, place, maps_url_cid)
+        if (
+            embedded_maps_place_token is not None
+            and as_string(place.maps_place_token) is None
+        ):
+            updates["maps_place_token"] = embedded_maps_place_token
+        updates["maps_url"] = build_raw_place_maps_url_preserving_identity(
+            place,
+            cid=maps_url_cid,
+            maps_place_token=embedded_maps_place_token,
+        )
     if maps_place_token is not None:
         if as_string(place.maps_place_token) == maps_place_token:
             updates["maps_place_token"] = None
         if extract_maps_place_token(place.maps_url) == maps_place_token:
-            updates["maps_url"] = build_public_google_maps_url(
-                name=place.name,
-                address=place.address,
-                lat=place.lat,
-                lng=place.lng,
-                raw_maps_url=None,
+            preserve_raw_place_url_cid(updates, place, maps_url_cid)
+            updates["maps_url"] = build_raw_place_maps_url_preserving_identity(
+                place,
+                cid=maps_url_cid,
+                google_places_id=embedded_google_places_id,
             )
     if not updates:
         return place
     return place.model_copy(update=updates)
+
+
+def raw_place_duplicate_identity_candidate_is_consistent(
+    place: RawPlace,
+    *,
+    identity_name: str,
+) -> bool:
+    if identity_name in {"google_id", "google_places_id"}:
+        return len(raw_place_google_places_identities(place)) <= 1
+    return len(raw_place_maps_place_token_identities(place)) <= 1
 
 
 def clear_duplicate_raw_place_google_identities(
@@ -7085,78 +8946,119 @@ def clear_duplicate_raw_place_google_identities(
     existing_payload: RawSavedList | None,
 ) -> RawSavedList:
     updated_places = list(payload.places)
-    duplicate_groups: list[tuple[str, str, list[int]]] = []
-    for identity_name, identity_getter in (
-        ("google_id", raw_place_google_id_identity),
-        ("maps_place_token", raw_place_maps_place_token_identity),
-    ):
-        indexes_by_identity: dict[str, list[int]] = {}
-        for index, place in enumerate(updated_places):
-            identity = identity_getter(place)
-            if identity:
-                indexes_by_identity.setdefault(identity, []).append(index)
-        duplicate_groups.extend(
-            (identity_name, identity, indexes)
-            for identity, indexes in indexes_by_identity.items()
-            if len(indexes) > 1
-        )
-
-    if not duplicate_groups:
-        return payload
+    identity_getters = (
+        (
+            "google_id",
+            lambda place: {
+                identity
+                for identity in (raw_place_google_id_identity(place),)
+                if identity
+            },
+        ),
+        ("google_places_id", raw_place_google_places_identities),
+        ("maps_place_token", raw_place_maps_place_token_identities),
+    )
 
     prior_places_by_google_id: dict[str, list[RawPlace]] = {}
+    prior_places_by_google_places_id: dict[str, list[RawPlace]] = {}
     prior_places_by_maps_place_token: dict[str, list[RawPlace]] = {}
     if existing_payload is not None:
         for prior_place in existing_payload.places:
             google_id = raw_place_google_id_identity(prior_place)
             if google_id:
                 prior_places_by_google_id.setdefault(google_id, []).append(prior_place)
-            maps_place_token = raw_place_maps_place_token_identity(prior_place)
-            if maps_place_token:
-                prior_places_by_maps_place_token.setdefault(maps_place_token, []).append(prior_place)
+            for google_places_id in raw_place_google_places_identities(
+                prior_place
+            ):
+                prior_places_by_google_places_id.setdefault(
+                    google_places_id,
+                    [],
+                ).append(prior_place)
+            for maps_place_token in raw_place_maps_place_token_identities(
+                prior_place
+            ):
+                prior_places_by_maps_place_token.setdefault(
+                    maps_place_token,
+                    [],
+                ).append(prior_place)
 
-    for identity_name, identity, indexes in duplicate_groups:
-        prior_places = (
-            prior_places_by_google_id.get(identity, [])
-            if identity_name == "google_id"
-            else prior_places_by_maps_place_token.get(identity, [])
-        )
-        keep_index = max(
-            indexes,
-            key=lambda index: (
-                score_duplicate_raw_place_google_identity_candidate(
-                    updated_places[index],
-                    prior_places=prior_places,
-                ),
-                -index,
-            ),
-        )
-        cleared_names: list[str] = []
-        for index in indexes:
-            if index == keep_index:
-                continue
-            original_place = updated_places[index]
-            updated_place = strip_duplicate_raw_place_google_identity(
-                original_place,
-                google_id=identity if identity_name == "google_id" else None,
-                maps_place_token=(
-                    identity
-                    if identity_name == "maps_place_token"
-                    else raw_place_maps_place_token_identity(updated_places[keep_index])
-                ),
-            )
-            if updated_place != original_place:
-                updated_places[index] = updated_place
-                cleared_names.append(updated_place.name or f"place #{index + 1}")
+    made_updates = False
+    while True:
+        pass_made_updates = False
+        for identity_name, identity_getter in identity_getters:
+            indexes_by_identity: dict[str, list[int]] = {}
+            for index, place in enumerate(updated_places):
+                for identity in identity_getter(place):
+                    indexes_by_identity.setdefault(identity, []).append(index)
 
-        if cleared_names:
-            kept_name = updated_places[keep_index].name or f"place #{keep_index + 1}"
-            print(
-                f"WARNING: Clearing duplicate raw {identity_name} {identity} in {slug}: "
-                f"kept [{kept_name}], cleared [{', '.join(cleared_names)}].",
-                flush=True,
-            )
+            for identity, indexes in indexes_by_identity.items():
+                if len(indexes) <= 1:
+                    continue
+                if identity_name == "google_id":
+                    prior_places = prior_places_by_google_id.get(identity, [])
+                elif identity_name == "google_places_id":
+                    prior_places = prior_places_by_google_places_id.get(identity, [])
+                else:
+                    prior_places = prior_places_by_maps_place_token.get(identity, [])
+                keep_index = max(
+                    indexes,
+                    key=lambda index: (
+                        raw_place_duplicate_identity_candidate_is_consistent(
+                            updated_places[index],
+                            identity_name=identity_name,
+                        ),
+                        score_duplicate_raw_place_google_identity_candidate(
+                            updated_places[index],
+                            prior_places=prior_places,
+                        ),
+                        -index,
+                    ),
+                )
+                cleared_names: list[str] = []
+                for index in indexes:
+                    if index == keep_index:
+                        continue
+                    original_place = updated_places[index]
+                    updated_place = strip_duplicate_raw_place_google_identity(
+                        original_place,
+                        google_id=(
+                            identity if identity_name == "google_id" else None
+                        ),
+                        google_places_id=(
+                            identity
+                            if identity_name == "google_places_id"
+                            else None
+                        ),
+                        maps_place_token=(
+                            identity
+                            if identity_name == "maps_place_token"
+                            else None
+                        ),
+                    )
+                    if updated_place != original_place:
+                        updated_places[index] = updated_place
+                        cleared_names.append(
+                            updated_place.name or f"place #{index + 1}"
+                        )
 
+                if cleared_names:
+                    pass_made_updates = True
+                    made_updates = True
+                    kept_name = (
+                        updated_places[keep_index].name
+                        or f"place #{keep_index + 1}"
+                    )
+                    print(
+                        f"WARNING: Clearing duplicate raw {identity_name} "
+                        f"{identity} in {slug}: kept [{kept_name}], "
+                        f"cleared [{', '.join(cleared_names)}].",
+                        flush=True,
+                    )
+        if not pass_made_updates:
+            break
+
+    if not made_updates:
+        return payload
     return payload.model_copy(update={"places": updated_places})
 
 
@@ -7208,6 +9110,16 @@ def preserve_existing_raw_saved_list(
         )
 
     source_type = refreshed_payload.configured_source_type or existing_payload.configured_source_type
+    refreshed_payload = clear_duplicate_raw_place_cids(
+        slug=slug,
+        payload=refreshed_payload,
+        existing_payload=existing_payload,
+    )
+    refreshed_payload = clear_duplicate_raw_place_google_identities(
+        slug=slug,
+        payload=refreshed_payload,
+        existing_payload=existing_payload,
+    )
     if not allow_suspicious_identity_loss and raw_saved_list_refresh_has_suspicious_identity_loss(
         existing_payload,
         refreshed_payload,
@@ -7220,11 +9132,6 @@ def preserve_existing_raw_saved_list(
         )
         return existing_payload
 
-    refreshed_payload = clear_duplicate_raw_place_cids(
-        slug=slug,
-        payload=refreshed_payload,
-        existing_payload=existing_payload,
-    )
     existing_index = build_raw_place_preservation_index(existing_payload, source_type=source_type)
     updated_places: list[RawPlace] = []
 
@@ -7243,6 +9150,13 @@ def preserve_existing_raw_saved_list(
                 if raw_place_names_are_compatible(as_string(candidate.name), refreshed_name):
                     existing_place = candidate
                     break
+
+        if existing_place is None:
+            existing_place = raw_place_identity_loss_fallback_candidate(
+                existing_payload=existing_payload,
+                refreshed_payload=refreshed_payload,
+                refreshed_place=refreshed_place,
+            )
 
         if existing_place is None:
             updated_places.append(refreshed_place)
@@ -13336,6 +15250,10 @@ def place_selector_matches(
         ("cid", place.cid),
         ("cid", extract_maps_cid(place.maps_url)),
         *((("cid", cid_alias) for cid_alias in cid_aliases)),
+        *(
+            ("gpid", google_places_id)
+            for google_places_id in sorted(raw_place_google_places_identities(place))
+        ),
         ("gms", place.maps_place_token),
         ("gms", extract_maps_place_token(place.maps_url)),
     ):
