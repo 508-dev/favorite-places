@@ -6906,27 +6906,42 @@ def raw_place_coordinate_address_is_stable(
 
     existing_street_numbers = raw_place_coordinate_street_numbers(existing_address)
     refreshed_street_numbers = raw_place_coordinate_street_numbers(refreshed_address)
+    existing_comparison_address = existing_address
+    refreshed_comparison_address = refreshed_address
     if (
         existing_street_numbers
         and refreshed_street_numbers
         and existing_street_numbers != refreshed_street_numbers
     ):
-        return False
+        collapsed_existing_address = raw_place_coordinate_collapse_street_number_range(
+            existing_address,
+            refreshed_street_numbers,
+        )
+        collapsed_refreshed_address = raw_place_coordinate_collapse_street_number_range(
+            refreshed_address,
+            existing_street_numbers,
+        )
+        if collapsed_existing_address is not None:
+            existing_comparison_address = collapsed_existing_address
+        elif collapsed_refreshed_address is not None:
+            refreshed_comparison_address = collapsed_refreshed_address
+        else:
+            return False
 
     existing_parts, existing_country = raw_place_coordinate_address_comparison_key(
-        existing_address
+        existing_comparison_address
     )
     refreshed_parts, refreshed_country = raw_place_coordinate_address_comparison_key(
-        refreshed_address
+        refreshed_comparison_address
     )
     if existing_country and not refreshed_country:
         refreshed_parts, _ = raw_place_coordinate_address_comparison_key(
-            refreshed_address,
+            refreshed_comparison_address,
             country_hint=existing_country,
         )
     elif refreshed_country and not existing_country:
         existing_parts, _ = raw_place_coordinate_address_comparison_key(
-            existing_address,
+            existing_comparison_address,
             country_hint=refreshed_country,
         )
     if not existing_parts or existing_parts != refreshed_parts:
@@ -7018,6 +7033,8 @@ def raw_place_coordinate_part_has_street_marker(
         address_key,
     ):
         return True
+    if re.search(r"(?:strasse|straße)\b", address_key):
+        return True
     return bool(re.search(r"(?:丁目|番地|號|号|路|街|道|巷|弄)", part))
 
 
@@ -7069,7 +7086,12 @@ def raw_place_coordinate_address_comparison_key(
     street_numbers = raw_place_coordinate_street_numbers(address)
     country: str | None = None
     normalized_address = raw_place_coordinate_strip_japanese_postal_prefix(address)
-    for raw_part in re.split(r"[,、]", normalized_address):
+    raw_parts = [
+        part
+        for part in re.split(r"[,、]", normalized_address)
+        if raw_place_coordinate_address_key(part) is not None
+    ]
+    for raw_part_index, raw_part in enumerate(raw_parts):
         part = re.sub(
             r"^\s*(?:unit\s+)?[^/\s,]+\s*/\s*",
             "",
@@ -7109,10 +7131,16 @@ def raw_place_coordinate_address_comparison_key(
 
             index = unit_identifier_index + 1
         for country_suffix, country_code in raw_place_coordinate_country_token_identities():
+            if (
+                raw_part_index != len(raw_parts) - 1
+                and country_code != country_hint
+            ):
+                continue
             suffix_length = len(country_suffix)
             if tuple(comparison_part_tokens[-suffix_length:]) == country_suffix:
                 del comparison_part_tokens[-suffix_length:]
-                country = country_code
+                if raw_part_index == len(raw_parts) - 1:
+                    country = country_code
                 break
 
         comparison_part_tokens = [
@@ -7134,6 +7162,30 @@ def raw_place_coordinate_address_comparison_key(
         for part in comparison_parts
     ]
     return tuple(sorted(comparison_parts)), country
+
+
+def raw_place_coordinate_collapse_street_number_range(
+    address: str,
+    endpoint_numbers: set[str],
+) -> str | None:
+    if len(endpoint_numbers) != 1:
+        return None
+    endpoint = next(iter(endpoint_numbers))
+    replaced = False
+
+    def collapse(match: re.Match[str]) -> str:
+        nonlocal replaced
+        if endpoint not in {match.group("start"), match.group("end")}:
+            return match.group(0)
+        replaced = True
+        return endpoint
+
+    collapsed = re.sub(
+        r"(?<!\d)(?P<start>\d+)\s*[-–—]\s*(?P<end>\d+)(?!\d)",
+        collapse,
+        address,
+    )
+    return collapsed if replaced else None
 
 
 def raw_place_coordinate_token_is_postal(
@@ -7175,7 +7227,11 @@ def raw_place_coordinate_token_is_postal(
 
 def raw_place_coordinate_strip_japanese_postal_prefix(address: str) -> str:
     normalized = unicodedata.normalize("NFKC", address)
-    return re.sub(r"^\s*〒\s*\d{3}\s*-\s*\d{4}\s*", "", normalized)
+    return re.sub(
+        r"\s*〒\s*\d{3}\s*-\s*\d{4}\s*(?:[,、]\s*)?",
+        " ",
+        normalized,
+    )
 
 
 @lru_cache(maxsize=1)
