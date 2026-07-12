@@ -160,6 +160,21 @@ PHOTOLESS_REAL_PLACE_CACHE_TTL = timedelta(days=1)
 RAW_SOURCE_CACHE_TTL = timedelta(days=14)
 RAW_SOURCE_REFRESH_JITTER = timedelta(days=3)
 RAW_PLACE_SUSPICIOUS_COORDINATE_SHIFT_METERS = 1_000.0
+RAW_PLACE_ADDRESS_TOKEN_ALIASES = {
+    "avenue": "ave",
+    "boulevard": "blvd",
+    "circle": "cir",
+    "court": "ct",
+    "drive": "dr",
+    "highway": "hwy",
+    "lane": "ln",
+    "parkway": "pkwy",
+    "place": "pl",
+    "road": "rd",
+    "square": "sq",
+    "street": "st",
+    "terrace": "ter",
+}
 SOURCE_HTTP_TIMEOUT_SECONDS = 30
 SOURCE_HTTP_USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
@@ -6682,9 +6697,13 @@ def preserve_existing_raw_place(
     refreshed_name = as_string(refreshed_place.name)
     names_compatible = raw_place_names_are_compatible(existing_name, refreshed_name)
     strong_identity_compatible = raw_place_strong_google_identity_matches(existing_place, refreshed_place)
+    preserve_coordinates = raw_place_coordinates_should_be_preserved(
+        existing_place,
+        refreshed_place,
+    )
 
     if (
-        names_compatible
+        (names_compatible or preserve_coordinates)
         and not refreshed_place.address
         and raw_place_address_is_preservable(existing_place, refreshed_place)
     ):
@@ -6716,10 +6735,7 @@ def preserve_existing_raw_place(
     if names_compatible and refreshed_place.added_by is None and existing_place.added_by is not None:
         updates["added_by"] = existing_place.added_by
         preserved_fields.append("added_by")
-    if raw_place_coordinates_should_be_preserved(
-        existing_place,
-        refreshed_place,
-    ):
+    if preserve_coordinates:
         updates["lat"] = existing_place.lat
         updates["lng"] = existing_place.lng
         preserved_fields.append("coordinates")
@@ -6807,7 +6823,38 @@ def raw_place_coordinate_address_is_stable(
 
     existing_address_key = raw_place_coordinate_address_key(existing_address)
     refreshed_address_key = raw_place_coordinate_address_key(refreshed_address)
-    return existing_address_key is not None and existing_address_key == refreshed_address_key
+    if existing_address_key is None or refreshed_address_key is None:
+        return False
+    if existing_address_key == refreshed_address_key:
+        return True
+
+    existing_street_numbers = address_street_numbers(existing_address)
+    refreshed_street_numbers = address_street_numbers(refreshed_address)
+    if (
+        existing_street_numbers
+        and refreshed_street_numbers
+        and not existing_street_numbers & refreshed_street_numbers
+    ):
+        return False
+
+    existing_tokens = raw_place_coordinate_address_tokens(existing_address_key)
+    refreshed_tokens = raw_place_coordinate_address_tokens(refreshed_address_key)
+    for shorter_tokens, longer_tokens in (
+        (existing_tokens, refreshed_tokens),
+        (refreshed_tokens, existing_tokens),
+    ):
+        numeric_tokens = {
+            token
+            for token in shorter_tokens
+            if any(character.isdigit() for character in token)
+        }
+        if (
+            len(shorter_tokens) >= 3
+            and numeric_tokens
+            and shorter_tokens <= longer_tokens
+        ):
+            return True
+    return False
 
 
 def raw_place_coordinate_address_key(address: str) -> str | None:
@@ -6818,6 +6865,13 @@ def raw_place_coordinate_address_key(address: str) -> str | None:
     ]
     compact = re.sub(r"\s+", " ", "".join(normalized_characters)).strip()
     return compact or None
+
+
+def raw_place_coordinate_address_tokens(address_key: str) -> set[str]:
+    return {
+        RAW_PLACE_ADDRESS_TOKEN_ALIASES.get(token, token)
+        for token in address_key.split()
+    }
 
 
 def raw_place_maps_url_should_be_preserved(

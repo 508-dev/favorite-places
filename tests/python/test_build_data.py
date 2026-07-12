@@ -1708,6 +1708,7 @@ class BuildDataTests(unittest.TestCase):
         refreshed_place = existing_place.model_copy(
             update={
                 "name": "Completely New Concept",
+                "address": None,
                 "lat": 36.0,
                 "lng": 140.0,
             }
@@ -1719,8 +1720,62 @@ class BuildDataTests(unittest.TestCase):
         )
 
         self.assertEqual(merged.name, "Completely New Concept")
+        self.assertEqual(merged.address, "1 Example St, Example City")
         self.assertEqual((merged.lat, merged.lng), (35.0, 139.0))
+        self.assertIn("address", preserved_fields)
         self.assertIn("coordinates", preserved_fields)
+
+    def test_preserve_existing_raw_place_handles_cosmetic_address_suffix_change(self) -> None:
+        existing_place = RawPlace(
+            name="Wooden Spoon",
+            address="2172 Market St, San Francisco, CA 94114, United States",
+            lat=37.7666529,
+            lng=-122.4303822,
+            maps_url="https://www.google.com/maps?cid=740708305128434099",
+            cid="740708305128434099",
+        )
+        refreshed_place = existing_place.model_copy(
+            update={
+                "address": "2172 Market Street, San Francisco, CA 94114",
+                "lat": 37.7818711,
+                "lng": -122.3740949,
+            }
+        )
+
+        merged, preserved_fields = build_data.preserve_existing_raw_place(
+            existing_place=existing_place,
+            refreshed_place=refreshed_place,
+        )
+
+        self.assertEqual(merged.address, "2172 Market Street, San Francisco, CA 94114")
+        self.assertEqual((merged.lat, merged.lng), (37.7666529, -122.4303822))
+        self.assertIn("coordinates", preserved_fields)
+
+    def test_preserve_existing_raw_place_accepts_changed_street_number(self) -> None:
+        existing_place = RawPlace(
+            name="Example Cafe",
+            address="12 Main St, Boston, MA 02101",
+            lat=42.36,
+            lng=-71.06,
+            maps_url="https://www.google.com/maps?cid=111",
+            cid="111",
+        )
+        refreshed_place = existing_place.model_copy(
+            update={
+                "address": "312 Main St, Boston, MA 02101, Unit 12",
+                "lat": 42.38,
+                "lng": -71.08,
+            }
+        )
+
+        merged, preserved_fields = build_data.preserve_existing_raw_place(
+            existing_place=existing_place,
+            refreshed_place=refreshed_place,
+        )
+
+        self.assertEqual(merged.address, "312 Main St, Boston, MA 02101, Unit 12")
+        self.assertEqual((merged.lat, merged.lng), (42.38, -71.08))
+        self.assertNotIn("coordinates", preserved_fields)
 
     def test_preserve_existing_raw_place_accepts_changed_non_latin_address(self) -> None:
         existing_place = RawPlace(
