@@ -6848,6 +6848,7 @@ def preserve_existing_raw_place(
             existing_place,
             refreshed_place.maps_url,
             refreshed_cid=as_string(refreshed_place.cid),
+            refreshed_maps_place_token=as_string(refreshed_place.maps_place_token),
         )
     ):
         updates["google_id"] = existing_place.google_id
@@ -6860,6 +6861,7 @@ def preserve_existing_raw_place(
             existing_place,
             refreshed_place.maps_url,
             refreshed_cid=as_string(refreshed_place.cid),
+            refreshed_maps_place_token=as_string(refreshed_place.maps_place_token),
         )
     ):
         updates["cid"] = existing_place.cid
@@ -6883,6 +6885,7 @@ def preserve_existing_raw_place(
             existing_place,
             refreshed_place.maps_url,
             refreshed_cid=as_string(refreshed_place.cid),
+            refreshed_maps_place_token=as_string(refreshed_place.maps_place_token),
         )
     ):
         updates["maps_place_token"] = existing_place.maps_place_token
@@ -7061,11 +7064,13 @@ def raw_place_coordinate_address_is_stable(
     refreshed_address = as_string(refreshed_place.address)
     if not refreshed_address:
         return raw_place_address_is_preservable(existing_place, refreshed_place)
+    if raw_place_coordinate_address_precision_regressed(
+        existing_place,
+        refreshed_place,
+    ):
+        return True
     if not raw_place_coordinate_address_has_street_level_evidence(refreshed_address):
-        return raw_place_coordinate_address_precision_regressed(
-            existing_place,
-            refreshed_place,
-        )
+        return False
 
     existing_address_key = raw_place_coordinate_address_key(existing_address)
     refreshed_address_key = raw_place_coordinate_address_key(refreshed_address)
@@ -7148,8 +7153,6 @@ def raw_place_coordinate_address_precision_regressed(
         return False
     if not raw_place_coordinate_address_has_street_level_evidence(existing_address):
         return False
-    if raw_place_coordinate_address_has_street_level_evidence(refreshed_address):
-        return False
     if not raw_place_address_is_preservable(existing_place, refreshed_place):
         return False
 
@@ -7164,6 +7167,21 @@ def raw_place_coordinate_address_precision_regressed(
         existing_country is not None
         and refreshed_country is not None
         and existing_country != refreshed_country
+    ):
+        return False
+    is_strict_precision_subset = len(refreshed_parts) < len(existing_parts) or any(
+        all(refreshed_part != existing_part for existing_part in existing_parts)
+        for refreshed_part in refreshed_parts
+    )
+    if not is_strict_precision_subset:
+        return False
+    country_name_parts = {
+        country_tokens
+        for country_tokens, _ in raw_place_coordinate_country_token_identities()
+    }
+    if any(
+        existing_part in country_name_parts
+        for existing_part in set(existing_parts) - set(refreshed_parts)
     ):
         return False
     return bool(
@@ -7319,6 +7337,7 @@ def raw_place_coordinate_part_has_street_intersection(
 
 def raw_place_coordinate_address_has_street_level_evidence(address: str) -> bool:
     normalized_address = raw_place_coordinate_strip_japanese_postal_prefix(address)
+    _, country_code = raw_place_coordinate_address_comparison_key(normalized_address)
     parsed_parts: list[tuple[str, str, list[str]]] = []
     for part in re.split(r"[,、]", normalized_address):
         address_key = raw_place_coordinate_address_key(part)
@@ -7339,6 +7358,11 @@ def raw_place_coordinate_address_has_street_level_evidence(address: str) -> bool
             and not raw_place_coordinate_token_is_ordinal(token)
             and index not in hash_unit_token_indexes
         }
+        if not numeric_indexes and country_code == "MX":
+            numeric_indexes = raw_place_coordinate_hash_premise_token_indexes(
+                part,
+                tokens,
+            )
         if not numeric_indexes:
             continue
         if raw_place_coordinate_part_is_route_only(tokens, address_key=address_key):
@@ -7368,13 +7392,11 @@ def raw_place_coordinate_address_has_street_level_evidence(address: str) -> bool
             continue
         if set(tokens) & {"hwy", "rte"}:
             continue
-        for neighbor_index in (index - 1, index + 1):
-            if not 0 <= neighbor_index < len(parsed_parts):
-                continue
-            if raw_place_coordinate_part_is_premise_number(
-                parsed_parts[neighbor_index][2]
-            ):
-                return True
+        if raw_place_coordinate_street_part_has_nearby_premise(
+            parsed_parts,
+            index,
+        ):
+            return True
     return False
 
 
@@ -7451,6 +7473,53 @@ def raw_place_coordinate_hash_unit_token_indexes(
             search_end = start
             break
     return matched_indexes
+
+
+def raw_place_coordinate_hash_premise_token_indexes(
+    part: str,
+    tokens: Sequence[str],
+) -> set[int]:
+    matched_indexes: set[int] = set()
+    search_end = len(tokens)
+    hash_premises = re.findall(
+        r"#\s*(\d+(?:\s*-\s*[A-Za-z]{1,3})?)\b",
+        unicodedata.normalize("NFKC", part),
+    )
+    for hash_premise in reversed(hash_premises):
+        address_key = raw_place_coordinate_address_key(hash_premise)
+        if address_key is None:
+            continue
+        premise_tokens = raw_place_coordinate_address_token_list(address_key)
+        if not premise_tokens:
+            continue
+        for start in range(search_end - len(premise_tokens), -1, -1):
+            end = start + len(premise_tokens)
+            if list(tokens[start:end]) != premise_tokens:
+                continue
+            matched_indexes.update(range(start, end))
+            search_end = start
+            break
+    return matched_indexes
+
+
+def raw_place_coordinate_street_part_has_nearby_premise(
+    parsed_parts: Sequence[tuple[str, str, list[str]]],
+    street_part_index: int,
+) -> bool:
+    for direction in (-1, 1):
+        candidate_index = street_part_index + direction
+        while 0 <= candidate_index < len(parsed_parts):
+            candidate_tokens = parsed_parts[candidate_index][2]
+            if raw_place_coordinate_part_is_premise_number(candidate_tokens):
+                return True
+            if not raw_place_coordinate_part_is_section_component(candidate_tokens):
+                break
+            candidate_index += direction
+    return False
+
+
+def raw_place_coordinate_part_is_section_component(tokens: Sequence[str]) -> bool:
+    return bool(tokens) and tokens[0] in {"sec", "section"}
 
 
 def raw_place_coordinate_numeric_indexes_include_premise(
@@ -7896,6 +7965,9 @@ def raw_place_coordinate_collapse_street_number_range(
     if len(endpoint_numbers) != 1:
         return None
     endpoint = next(iter(endpoint_numbers))
+    normalized_address = unicodedata.normalize("NFKC", address)
+    if re.search(r"[\u3040-\u30ff\u3400-\u9fff]", normalized_address):
+        return None
     replaced = False
 
     def collapse(match: re.Match[str]) -> str:
@@ -7908,7 +7980,7 @@ def raw_place_coordinate_collapse_street_number_range(
     collapsed = re.sub(
         r"(?<!\d)(?P<start>\d+)\s*[-–—−]\s*(?P<end>\d+)(?!\d)",
         collapse,
-        unicodedata.normalize("NFKC", address),
+        normalized_address,
     )
     return collapsed if replaced else None
 
@@ -8311,6 +8383,7 @@ def raw_place_refreshed_url_identity_is_compatible(
     refreshed_url: str | None,
     *,
     refreshed_cid: str | None = None,
+    refreshed_maps_place_token: str | None = None,
 ) -> bool:
     if len(raw_place_google_places_identities(existing_place)) > 1:
         return False
@@ -8327,6 +8400,19 @@ def raw_place_refreshed_url_identity_is_compatible(
     if refreshed_cid and existing_cids and refreshed_cid not in existing_cids:
         return False
     matched_identity = bool(refreshed_cid and refreshed_cid in existing_cids)
+
+    existing_tokens = {
+        token
+        for token in [
+            as_string(existing_place.maps_place_token),
+            extract_maps_place_token(existing_place.maps_url),
+        ]
+        if token
+    }
+    if refreshed_maps_place_token and existing_tokens:
+        if refreshed_maps_place_token in existing_tokens:
+            return True
+        return False
 
     url = as_string(refreshed_url)
     if not url or not raw_place_maps_url_has_embedded_identity(url):
@@ -8355,14 +8441,6 @@ def raw_place_refreshed_url_identity_is_compatible(
 
     refreshed_token = extract_maps_place_token(url)
     if refreshed_token:
-        existing_tokens = {
-            token
-            for token in [
-                as_string(existing_place.maps_place_token),
-                extract_maps_place_token(existing_place.maps_url),
-            ]
-            if token
-        }
         if existing_tokens and refreshed_token not in existing_tokens:
             return False
         matched_identity = matched_identity or refreshed_token in existing_tokens
