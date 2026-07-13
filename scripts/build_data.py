@@ -7175,12 +7175,14 @@ def raw_place_coordinate_address_precision_regressed(
     )
     if not is_strict_precision_subset:
         return False
-    country_name_parts = {
-        country_tokens
-        for country_tokens, _ in raw_place_coordinate_country_token_identities()
+    country_name_parts = dict(raw_place_coordinate_country_token_identities())
+    address_country_codes = {
+        country_code
+        for country_code in (existing_country, refreshed_country)
+        if country_code is not None
     }
     if any(
-        existing_part in country_name_parts
+        country_name_parts.get(existing_part) in address_country_codes
         for existing_part in set(existing_parts) - set(refreshed_parts)
     ):
         return False
@@ -7966,12 +7968,13 @@ def raw_place_coordinate_collapse_street_number_range(
         return None
     endpoint = next(iter(endpoint_numbers))
     normalized_address = unicodedata.normalize("NFKC", address)
-    if re.search(r"[\u3040-\u30ff\u3400-\u9fff]", normalized_address):
-        return None
+    contains_cjk = bool(re.search(r"[\u3040-\u30ff\u3400-\u9fff]", normalized_address))
     replaced = False
 
     def collapse(match: re.Match[str]) -> str:
         nonlocal replaced
+        if contains_cjk and not re.match(r"\s*[号號]", normalized_address[match.end() :]):
+            return match.group(0)
         if endpoint not in {match.group("start"), match.group("end")}:
             return match.group(0)
         replaced = True
@@ -8410,9 +8413,9 @@ def raw_place_refreshed_url_identity_is_compatible(
         if token
     }
     if refreshed_maps_place_token and existing_tokens:
-        if refreshed_maps_place_token in existing_tokens:
-            return True
-        return False
+        if refreshed_maps_place_token not in existing_tokens:
+            return False
+        matched_identity = True
 
     url = as_string(refreshed_url)
     if not url or not raw_place_maps_url_has_embedded_identity(url):
