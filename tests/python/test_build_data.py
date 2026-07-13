@@ -2884,6 +2884,58 @@ class BuildDataTests(unittest.TestCase):
         self.assertEqual((merged.lat, merged.lng), (42.2, -72.7))
         self.assertNotIn("coordinates", preserved_fields)
 
+    def test_preserve_existing_raw_place_keeps_saint_street_tokens(self) -> None:
+        existing_place = RawPlace(
+            name="Example Cafe",
+            address="123 St John St, Springfield, MA, United States",
+            lat=42.1,
+            lng=-72.6,
+            maps_url="https://www.google.com/maps?cid=111",
+            cid="111",
+        )
+        refreshed_place = existing_place.model_copy(
+            update={
+                "address": "123 John St, Springfield, MA, United States",
+                "lat": 42.2,
+                "lng": -72.7,
+            }
+        )
+
+        merged, preserved_fields = build_data.preserve_existing_raw_place(
+            existing_place=existing_place,
+            refreshed_place=refreshed_place,
+        )
+
+        self.assertEqual((merged.lat, merged.lng), (42.2, -72.7))
+        self.assertNotIn("coordinates", preserved_fields)
+
+    def test_preserve_existing_raw_place_rejects_directional_locality_change(
+        self,
+    ) -> None:
+        existing_place = RawPlace(
+            name="Example Cafe",
+            address="123 Main St, East Palo Alto, CA, United States",
+            lat=37.47,
+            lng=-122.14,
+            maps_url="https://www.google.com/maps?cid=111",
+            cid="111",
+        )
+        refreshed_place = existing_place.model_copy(
+            update={
+                "address": "123 Main St, Palo Alto, CA, United States",
+                "lat": 37.44,
+                "lng": -122.15,
+            }
+        )
+
+        merged, preserved_fields = build_data.preserve_existing_raw_place(
+            existing_place=existing_place,
+            refreshed_place=refreshed_place,
+        )
+
+        self.assertEqual((merged.lat, merged.lng), (37.44, -122.15))
+        self.assertNotIn("coordinates", preserved_fields)
+
     def test_preserve_existing_raw_place_keeps_country_named_locality_on_precision_loss(
         self,
     ) -> None:
@@ -2960,6 +3012,40 @@ class BuildDataTests(unittest.TestCase):
         )
 
         self.assertEqual((merged.lat, merged.lng), (17.06, -96.72))
+        self.assertIn("coordinates", preserved_fields)
+
+    def test_raw_place_coordinate_ignores_hash_suite_as_mexican_premise(self) -> None:
+        self.assertFalse(
+            build_data.raw_place_coordinate_address_has_street_level_evidence(
+                "C. Morelos Suite #5, Oaxaca, Mexico"
+            )
+        )
+
+    def test_preserve_existing_raw_place_normalizes_countryless_subdivision_precision_loss(
+        self,
+    ) -> None:
+        existing_place = RawPlace(
+            name="Example Cafe",
+            address="123 Main St, Springfield, MA",
+            lat=42.1,
+            lng=-72.6,
+            maps_url="https://www.google.com/maps?cid=111",
+            cid="111",
+        )
+        refreshed_place = existing_place.model_copy(
+            update={
+                "address": "123 Main St, MA, United States",
+                "lat": 42.2,
+                "lng": -72.7,
+            }
+        )
+
+        merged, preserved_fields = build_data.preserve_existing_raw_place(
+            existing_place=existing_place,
+            refreshed_place=refreshed_place,
+        )
+
+        self.assertEqual((merged.lat, merged.lng), (42.1, -72.6))
         self.assertIn("coordinates", preserved_fields)
 
     def test_preserve_existing_raw_place_handles_compound_german_street_suffix(
