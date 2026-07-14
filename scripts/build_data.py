@@ -11120,14 +11120,14 @@ def sync_place_photo(
     if optimized_content is None:
         return None
 
-    place_prefix = canonical_place_photo_stem(place_id, photo_url)
+    place_prefix = f"{safe_place_photo_stem(place_id)}-"
     filename = canonical_place_photo_filename(place_id, photo_url, extension=extension)
     output_path = photo_dir / filename
     temp_path = photo_dir / f".{filename}.tmp"
     temp_path.write_bytes(optimized_content)
     temp_path.replace(output_path)
 
-    for stale_path in photo_dir.glob(f"{place_prefix}-*"):
+    for stale_path in photo_dir.glob(f"{place_prefix}*"):
         if stale_path.name == filename or stale_path.name.startswith("."):
             continue
         stale_path.unlink(missing_ok=True)

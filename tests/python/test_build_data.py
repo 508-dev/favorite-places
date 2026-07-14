@@ -9626,6 +9626,45 @@ class BuildDataTests(unittest.TestCase):
         self.assertFalse(legacy_path.exists())
         self.assertFalse(legacy_path.parent.exists())
 
+    def test_sync_place_photo_removes_stale_hashed_variants(self) -> None:
+        class FakeHeaders:
+            def get_content_type(self) -> str:
+                return "image/png"
+
+        class FakeResponse:
+            headers = FakeHeaders()
+
+            def read(self) -> bytes:
+                return b"source-image"
+
+            def __enter__(self) -> "FakeResponse":
+                return self
+
+            def __exit__(self, exc_type, exc, tb) -> bool:
+                return False
+
+        photo_url = "https://lh3.googleusercontent.com/p/current=s680-w680-h510"
+        stale_photo_url = "https://lh3.googleusercontent.com/p/stale=s680-w680-h510"
+        current_hash = hashlib.sha256(photo_url.encode("utf-8")).hexdigest()[:12]
+        stale_hash = hashlib.sha256(stale_photo_url.encode("utf-8")).hexdigest()[:12]
+
+        with TemporaryDirectory() as tmpdir:
+            photo_dir = Path(tmpdir)
+            stale_path = photo_dir / f"cid-123-{stale_hash}.jpg"
+            stale_path.write_bytes(b"stale-image")
+
+            with (
+                patch.object(build_data, "PLACE_PHOTOS_DIR", photo_dir),
+                patch.object(build_data, "urlopen", return_value=FakeResponse()),
+                patch.object(build_data, "optimize_place_photo_asset", return_value=(b"optimized", ".jpg")),
+            ):
+                result = build_data.sync_place_photo("tokyo-japan", "cid:123", photo_url=photo_url)
+
+            current_path = photo_dir / f"cid-123-{current_hash}.jpg"
+            self.assertEqual(result, f"/place-photos/{current_path.name}")
+            self.assertEqual(current_path.read_bytes(), b"optimized")
+            self.assertFalse(stale_path.exists())
+
     def test_sync_place_photo_migrates_legacy_guide_scoped_file_to_flat_storage(self) -> None:
         photo_url = "https://lh3.googleusercontent.com/p/example=s680-w680-h510"
         photo_hash = hashlib.sha256(photo_url.encode("utf-8")).hexdigest()[:12]
