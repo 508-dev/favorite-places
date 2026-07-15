@@ -190,6 +190,57 @@ RAW_PLACE_DIRECTION_TOKEN_ALIASES = {
     "southwest": "sw",
     "west": "w",
 }
+RAW_PLACE_JAPANESE_PREFECTURE_MARKERS = frozenset(
+    {
+        "北海道",
+        "青森県",
+        "岩手県",
+        "宮城県",
+        "秋田県",
+        "山形県",
+        "福島県",
+        "茨城県",
+        "栃木県",
+        "群馬県",
+        "埼玉県",
+        "千葉県",
+        "東京都",
+        "神奈川県",
+        "新潟県",
+        "富山県",
+        "石川県",
+        "福井県",
+        "山梨県",
+        "長野県",
+        "岐阜県",
+        "静岡県",
+        "愛知県",
+        "三重県",
+        "滋賀県",
+        "京都府",
+        "大阪府",
+        "兵庫県",
+        "奈良県",
+        "和歌山県",
+        "鳥取県",
+        "島根県",
+        "岡山県",
+        "広島県",
+        "山口県",
+        "徳島県",
+        "香川県",
+        "愛媛県",
+        "高知県",
+        "福岡県",
+        "佐賀県",
+        "長崎県",
+        "熊本県",
+        "大分県",
+        "宮崎県",
+        "鹿児島県",
+        "沖縄県",
+    }
+)
 RAW_PLACE_ORDINAL_WORD_VALUES = {
     "first": 1,
     "second": 2,
@@ -7257,7 +7308,24 @@ def raw_place_coordinate_address_precision_regressed(
         for existing_part in set(existing_parts) - set(refreshed_parts)
     ):
         return False
-    directional_tokens = {"e", "east", "n", "north", "s", "south", "w", "west"}
+    directional_tokens = {
+        "e",
+        "east",
+        "n",
+        "north",
+        "ne",
+        "northeast",
+        "nw",
+        "northwest",
+        "s",
+        "south",
+        "se",
+        "southeast",
+        "sw",
+        "southwest",
+        "w",
+        "west",
+    }
     if any(
         set(existing_part).difference(refreshed_part) & directional_tokens
         for existing_part in existing_parts
@@ -7575,8 +7643,12 @@ def raw_place_coordinate_hash_premise_token_indexes(
         re.finditer(r"#\s*(\d+(?:\s*-\s*[A-Za-z]{1,3})?)\b", normalized_part)
     )
     for match in reversed(hash_premises):
+        unit_prefix_pattern = "|".join(
+            re.escape(token)
+            for token in sorted(RAW_PLACE_UNIT_PREFIX_TOKENS, key=len, reverse=True)
+        )
         if re.search(
-            r"\b(?:apt|apartment|suite|ste|unit)\s*$",
+            rf"\b(?:{unit_prefix_pattern})\s*$",
             normalized_part[: match.start()],
             flags=re.IGNORECASE,
         ):
@@ -8065,16 +8137,17 @@ def raw_place_coordinate_collapse_street_number_range(
     _comparison_parts, country_code = raw_place_coordinate_address_comparison_key(
         normalized_address
     )
+    is_japanese_address = raw_place_coordinate_address_is_japanese(
+        normalized_address,
+        country_code=country_code,
+    )
     replaced = False
 
     def collapse(match: re.Match[str]) -> str:
         nonlocal replaced
-        if (
-            contains_cjk
-            and (
-                country_code == "JP"
-                or not re.match(r"\s*[號号]", normalized_address[match.end() :])
-            )
+        if contains_cjk and (
+            is_japanese_address
+            or not re.match(r"\s*[號号]", normalized_address[match.end() :])
         ):
             return match.group(0)
         if endpoint not in {match.group("start"), match.group("end")}:
@@ -8088,6 +8161,20 @@ def raw_place_coordinate_collapse_street_number_range(
         normalized_address,
     )
     return collapsed if replaced else None
+
+
+def raw_place_coordinate_address_is_japanese(
+    address: str,
+    *,
+    country_code: str | None,
+) -> bool:
+    if country_code == "JP":
+        return True
+    if country_code is not None:
+        return False
+    if re.search(r"[\u3040-\u30ff]", address):
+        return True
+    return any(marker in address for marker in RAW_PLACE_JAPANESE_PREFECTURE_MARKERS)
 
 
 def raw_place_coordinate_token_is_part_of_valid_alphanumeric_postal(

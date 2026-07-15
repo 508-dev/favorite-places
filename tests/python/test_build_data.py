@@ -2779,6 +2779,33 @@ class BuildDataTests(unittest.TestCase):
         self.assertEqual((merged.lat, merged.lng), (41.85, 140.8))
         self.assertNotIn("coordinates", preserved_fields)
 
+    def test_preserve_existing_raw_place_does_not_collapse_countryless_japanese_block_lot_numbers(
+        self,
+    ) -> None:
+        existing_place = RawPlace(
+            name="Example Cafe",
+            address="北海道函館市大手町２２−１号",
+            lat=41.77,
+            lng=140.72,
+            maps_url="https://www.google.com/maps?cid=111",
+            cid="111",
+        )
+        refreshed_place = existing_place.model_copy(
+            update={
+                "address": "北海道函館市大手町１号",
+                "lat": 41.85,
+                "lng": 140.8,
+            }
+        )
+
+        merged, preserved_fields = build_data.preserve_existing_raw_place(
+            existing_place=existing_place,
+            refreshed_place=refreshed_place,
+        )
+
+        self.assertEqual((merged.lat, merged.lng), (41.85, 140.8))
+        self.assertNotIn("coordinates", preserved_fields)
+
     def test_preserve_existing_raw_place_collapses_cjk_house_number_ranges(
         self,
     ) -> None:
@@ -3015,6 +3042,33 @@ class BuildDataTests(unittest.TestCase):
         self.assertEqual((merged.lat, merged.lng), (37.44, -122.15))
         self.assertNotIn("coordinates", preserved_fields)
 
+    def test_preserve_existing_raw_place_rejects_diagonal_directional_locality_change(
+        self,
+    ) -> None:
+        existing_place = RawPlace(
+            name="Example Cafe",
+            address="123 Main St, Northeast Harbor, ME, United States",
+            lat=44.29,
+            lng=-68.29,
+            maps_url="https://www.google.com/maps?cid=111",
+            cid="111",
+        )
+        refreshed_place = existing_place.model_copy(
+            update={
+                "address": "123 Main St, Harbor, ME, United States",
+                "lat": 44.3,
+                "lng": -68.2,
+            }
+        )
+
+        merged, preserved_fields = build_data.preserve_existing_raw_place(
+            existing_place=existing_place,
+            refreshed_place=refreshed_place,
+        )
+
+        self.assertEqual((merged.lat, merged.lng), (44.3, -68.2))
+        self.assertNotIn("coordinates", preserved_fields)
+
     def test_preserve_existing_raw_place_keeps_country_named_locality_on_precision_loss(
         self,
     ) -> None:
@@ -3153,6 +3207,15 @@ class BuildDataTests(unittest.TestCase):
                 "C. Morelos Suite #5, Oaxaca, Mexico"
             )
         )
+
+    def test_raw_place_coordinate_ignores_hash_unit_labels_as_mexican_premises(self) -> None:
+        for unit_label in ("Room", "rm", "floor", "fl", "level", "building"):
+            with self.subTest(unit_label=unit_label):
+                self.assertFalse(
+                    build_data.raw_place_coordinate_address_has_street_level_evidence(
+                        f"C. Morelos {unit_label} #5, Oaxaca, Mexico"
+                    )
+                )
 
     def test_preserve_existing_raw_place_normalizes_countryless_subdivision_precision_loss(
         self,
