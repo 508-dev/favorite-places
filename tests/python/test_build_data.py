@@ -6,6 +6,7 @@ import os
 import sqlite3
 import sys
 import unittest
+from collections.abc import Sequence
 from contextlib import redirect_stderr, redirect_stdout
 from datetime import UTC, datetime, timedelta
 from io import BytesIO, StringIO
@@ -9887,6 +9888,62 @@ class BuildDataTests(unittest.TestCase):
                 "[photos 2/2] downloaded: tokyo-japan / Second Place",
             ],
         )
+
+    def test_populate_place_photos_for_guides_does_not_protect_replaced_variant(self) -> None:
+        guide = Guide(
+            slug="tokyo-japan",
+            title="Tokyo, Japan",
+            country_name="Japan",
+            city_name="Tokyo",
+            generated_at="2026-04-20T00:00:00+00:00",
+            place_count=1,
+            places=[
+                NormalizedPlace(
+                    id="cid:123",
+                    name="Example Place",
+                    maps_url="https://maps.google.com/?cid=123",
+                    main_photo_path="/place-photos/cid-123-old.jpg",
+                    status="active",
+                )
+            ],
+        )
+        protected_paths: list[tuple[str, ...]] = []
+
+        def fake_sync_place_photo(
+            slug: str,
+            place_id: str,
+            *,
+            photo_url: str | None,
+            startup_jitter_seconds: float = 0,
+            protected_photo_paths: Sequence[str] = (),
+        ) -> str:
+            protected_paths.append(tuple(protected_photo_paths))
+            return "/place-photos/cid-123-new.jpg"
+
+        with (
+            patch.object(build_data, "sync_place_photo", side_effect=fake_sync_place_photo),
+            patch("builtins.print"),
+        ):
+            build_data.populate_place_photos_for_guides(
+                [guide],
+                enrichment_caches={
+                    "tokyo-japan": {
+                        "cid:123": EnrichmentCacheEntry(
+                            fetched_at="2026-04-20T00:00:00+00:00",
+                            query="Example Place",
+                            matched=True,
+                            place=EnrichmentPlace(
+                                main_photo_url="https://example.com/new.jpg"
+                            ),
+                        )
+                    }
+                },
+                refresh_photos=True,
+                photo_workers=1,
+                startup_jitter_seconds=8,
+            )
+
+        self.assertEqual(protected_paths, [()])
 
     def test_populate_place_photos_for_guides_uses_existing_local_files_without_refresh(self) -> None:
         guide = Guide(

@@ -10844,13 +10844,18 @@ def populate_place_photos_for_guides(
                     )
         return
 
-    protected_photo_paths = {
-        Path(place.main_photo_path).name
-        for guide in guides
-        for place in guide.places
-        if place.main_photo_path
-        and place.main_photo_path.startswith("/place-photos/")
-    }
+    photo_path_references: Counter[str] = Counter()
+    for guide in guides:
+        if guide.place_photo_mode == "remote_url":
+            continue
+        for place in guide.places:
+            if place.main_photo_path and place.main_photo_path.startswith("/place-photos/"):
+                photo_path_references[Path(place.main_photo_path).name] += 1
+
+    def unreference_current_photo(place: NormalizedPlace) -> None:
+        if place.main_photo_path and place.main_photo_path.startswith("/place-photos/"):
+            photo_path_references[Path(place.main_photo_path).name] -= 1
+
     pending_jobs: list[PendingPhotoJob] = []
     reused_count = 0
     missing_photo_url_count = 0
@@ -10863,6 +10868,7 @@ def populate_place_photos_for_guides(
         for place in guide.places:
             photo_url = cached_place_photo_url(enrichment_cache.get(place.id))
             if not photo_url:
+                unreference_current_photo(place)
                 place.main_photo_path = None
                 missing_photo_url_count += 1
                 continue
@@ -10874,10 +10880,21 @@ def populate_place_photos_for_guides(
                 flat_index=flat_index,
             )
             if existing_path is not None:
+                previous_filename = (
+                    Path(place.main_photo_path).name
+                    if place.main_photo_path
+                    and place.main_photo_path.startswith("/place-photos/")
+                    else None
+                )
+                existing_filename = Path(existing_path).name
+                if previous_filename != existing_filename:
+                    unreference_current_photo(place)
+                    photo_path_references[existing_filename] += 1
                 place.main_photo_path = existing_path
                 reused_count += 1
                 continue
 
+            unreference_current_photo(place)
             pending_jobs.append(
                 PendingPhotoJob(
                     guide_slug=guide.slug,
@@ -10886,6 +10903,12 @@ def populate_place_photos_for_guides(
                     photo_url=photo_url,
                 )
             )
+
+    protected_photo_paths = {
+        filename
+        for filename, reference_count in photo_path_references.items()
+        if reference_count > 0
+    }
 
     if not pending_jobs:
         print(
