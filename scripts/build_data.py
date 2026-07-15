@@ -7208,11 +7208,23 @@ def raw_place_coordinate_street_name_tokens(address: str) -> tuple[str, ...]:
             tokens,
         ):
             continue
+        street_suffix_indexes = {
+            index
+            for index, token in enumerate(tokens)
+            if index > 0 and token in RAW_PLACE_STREET_SUFFIX_TOKENS
+        }
+        first_street_suffix_index = min(street_suffix_indexes, default=len(tokens))
         return tuple(
             token
             for index, token in enumerate(tokens)
-            if not any(character.isdigit() for character in token)
-            and not raw_place_coordinate_token_is_ordinal(token)
+            if (
+                raw_place_coordinate_token_is_ordinal(token)
+                or not any(character.isdigit() for character in token)
+            )
+            and (
+                not raw_place_coordinate_token_is_ordinal(token)
+                or index < first_street_suffix_index
+            )
             and (
                 token not in RAW_PLACE_STREET_SUFFIX_TOKENS
                 or index == 0
@@ -7221,7 +7233,10 @@ def raw_place_coordinate_street_name_tokens(address: str) -> tuple[str, ...]:
                     and tokens[index + 1] not in RAW_PLACE_UNIT_PREFIX_TOKENS
                 )
             )
-            and token not in RAW_PLACE_UNIT_PREFIX_TOKENS
+            and (
+                token not in RAW_PLACE_UNIT_PREFIX_TOKENS
+                or index < first_street_suffix_index
+            )
         )
     return ()
 
@@ -7239,6 +7254,15 @@ def raw_place_coordinate_address_precision_regressed(
     if not raw_place_address_is_preservable(existing_place, refreshed_place):
         return False
 
+    existing_street_numbers = raw_place_coordinate_street_numbers(existing_address)
+    refreshed_street_numbers = raw_place_coordinate_street_numbers(refreshed_address)
+    if (
+        existing_street_numbers
+        and refreshed_street_numbers
+        and existing_street_numbers != refreshed_street_numbers
+    ):
+        return False
+
     existing_street_name_tokens = raw_place_coordinate_street_name_tokens(
         existing_address
     )
@@ -7246,8 +7270,8 @@ def raw_place_coordinate_address_precision_regressed(
         refreshed_address
     )
     if (
-        existing_street_name_tokens
-        and refreshed_street_name_tokens
+        raw_place_coordinate_address_has_street_level_evidence(refreshed_address)
+        and (existing_street_name_tokens or refreshed_street_name_tokens)
         and existing_street_name_tokens != refreshed_street_name_tokens
     ):
         return False
@@ -7648,7 +7672,7 @@ def raw_place_coordinate_hash_premise_token_indexes(
             for token in sorted(RAW_PLACE_UNIT_PREFIX_TOKENS, key=len, reverse=True)
         )
         if re.search(
-            rf"\b(?:{unit_prefix_pattern})\s*$",
+            rf"\b(?:{unit_prefix_pattern})(?:\s+(?:no|number)\.?)?\s*$",
             normalized_part[: match.start()],
             flags=re.IGNORECASE,
         ):

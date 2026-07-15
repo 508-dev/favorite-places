@@ -3174,6 +3174,33 @@ class BuildDataTests(unittest.TestCase):
         self.assertEqual((merged.lat, merged.lng), (17.06, -96.72))
         self.assertIn("coordinates", preserved_fields)
 
+    def test_preserve_existing_raw_place_rejects_changed_mexican_hash_premise(
+        self,
+    ) -> None:
+        existing_place = RawPlace(
+            name="Example Cafe",
+            address="C. Morelos #191, Oaxaca, Mexico",
+            lat=17.06,
+            lng=-96.72,
+            maps_url="https://www.google.com/maps?cid=111",
+            cid="111",
+        )
+        refreshed_place = existing_place.model_copy(
+            update={
+                "address": "C. Morelos #192, Mexico",
+                "lat": 17.15,
+                "lng": -96.81,
+            }
+        )
+
+        merged, preserved_fields = build_data.preserve_existing_raw_place(
+            existing_place=existing_place,
+            refreshed_place=refreshed_place,
+        )
+
+        self.assertEqual((merged.lat, merged.lng), (17.15, -96.81))
+        self.assertNotIn("coordinates", preserved_fields)
+
     def test_preserve_existing_raw_place_normalizes_street_prefix_before_precision_check(
         self,
     ) -> None:
@@ -3210,6 +3237,17 @@ class BuildDataTests(unittest.TestCase):
 
     def test_raw_place_coordinate_ignores_hash_unit_labels_as_mexican_premises(self) -> None:
         for unit_label in ("Room", "rm", "floor", "fl", "level", "building"):
+            with self.subTest(unit_label=unit_label):
+                self.assertFalse(
+                    build_data.raw_place_coordinate_address_has_street_level_evidence(
+                        f"C. Morelos {unit_label} #5, Oaxaca, Mexico"
+                    )
+                )
+
+    def test_raw_place_coordinate_ignores_hash_unit_number_labels_as_mexican_premises(
+        self,
+    ) -> None:
+        for unit_label in ("Room No.", "Suite Number"):
             with self.subTest(unit_label=unit_label):
                 self.assertFalse(
                     build_data.raw_place_coordinate_address_has_street_level_evidence(
@@ -4688,6 +4726,56 @@ class BuildDataTests(unittest.TestCase):
         )
 
         self.assertEqual((merged.lat, merged.lng), (42.3736, -71.1097))
+        self.assertNotIn("coordinates", preserved_fields)
+
+    def test_preserve_existing_raw_place_rejects_lost_unit_word_street_name(self) -> None:
+        existing_place = RawPlace(
+            name="Example Cafe",
+            address="1 Tower Rd, Boston, MA, United States",
+            lat=42.3601,
+            lng=-71.0589,
+            maps_url="https://www.google.com/maps?cid=111",
+            cid="111",
+        )
+        refreshed_place = existing_place.model_copy(
+            update={
+                "address": "1 Rd, Boston, MA, United States",
+                "lat": 42.3736,
+                "lng": -71.1097,
+            }
+        )
+
+        merged, preserved_fields = build_data.preserve_existing_raw_place(
+            existing_place=existing_place,
+            refreshed_place=refreshed_place,
+        )
+
+        self.assertEqual((merged.lat, merged.lng), (42.3736, -71.1097))
+        self.assertNotIn("coordinates", preserved_fields)
+
+    def test_preserve_existing_raw_place_rejects_lost_ordinal_street_name(self) -> None:
+        existing_place = RawPlace(
+            name="Example Cafe",
+            address="1200 5th Ave, Seattle, WA, United States",
+            lat=47.61,
+            lng=-122.33,
+            maps_url="https://www.google.com/maps?cid=111",
+            cid="111",
+        )
+        refreshed_place = existing_place.model_copy(
+            update={
+                "address": "1200 Ave, WA, United States",
+                "lat": 47.62,
+                "lng": -122.32,
+            }
+        )
+
+        merged, preserved_fields = build_data.preserve_existing_raw_place(
+            existing_place=existing_place,
+            refreshed_place=refreshed_place,
+        )
+
+        self.assertEqual((merged.lat, merged.lng), (47.62, -122.32))
         self.assertNotIn("coordinates", preserved_fields)
 
     def test_preserve_existing_raw_place_handles_japanese_postal_expansion(self) -> None:
