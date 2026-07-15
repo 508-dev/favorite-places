@@ -6,6 +6,7 @@ import os
 import sqlite3
 import sys
 import unittest
+from collections.abc import Sequence
 from contextlib import redirect_stderr, redirect_stdout
 from datetime import UTC, datetime, timedelta
 from io import BytesIO, StringIO
@@ -9626,6 +9627,147 @@ class BuildDataTests(unittest.TestCase):
         self.assertFalse(legacy_path.exists())
         self.assertFalse(legacy_path.parent.exists())
 
+    def test_sync_place_photo_removes_stale_hashed_variants(self) -> None:
+        class FakeHeaders:
+            def get_content_type(self) -> str:
+                return "image/png"
+
+        class FakeResponse:
+            headers = FakeHeaders()
+
+            def read(self) -> bytes:
+                return b"source-image"
+
+            def __enter__(self) -> "FakeResponse":
+                return self
+
+            def __exit__(self, exc_type, exc, tb) -> bool:
+                return False
+
+        photo_url = "https://lh3.googleusercontent.com/p/current=s680-w680-h510"
+        stale_photo_url = "https://lh3.googleusercontent.com/p/stale=s680-w680-h510"
+        current_hash = hashlib.sha256(photo_url.encode("utf-8")).hexdigest()[:12]
+        stale_hash = hashlib.sha256(stale_photo_url.encode("utf-8")).hexdigest()[:12]
+
+        with TemporaryDirectory() as tmpdir:
+            photo_dir = Path(tmpdir)
+            stale_path = photo_dir / f"cid-123-{stale_hash}.jpg"
+            stale_path.write_bytes(b"stale-image")
+
+            with (
+                patch.object(build_data, "PLACE_PHOTOS_DIR", photo_dir),
+                patch.object(build_data, "urlopen", return_value=FakeResponse()),
+                patch.object(build_data, "optimize_place_photo_asset", return_value=(b"optimized", ".jpg")),
+            ):
+                result = build_data.sync_place_photo("tokyo-japan", "cid:123", photo_url=photo_url)
+
+            current_path = photo_dir / f"cid-123-{current_hash}.jpg"
+            self.assertEqual(result, f"/place-photos/{current_path.name}")
+            self.assertEqual(current_path.read_bytes(), b"optimized")
+            self.assertFalse(stale_path.exists())
+
+    def test_sync_place_photo_preserves_referenced_and_prefix_similar_variants(self) -> None:
+        class FakeHeaders:
+            def get_content_type(self) -> str:
+                return "image/png"
+
+        class FakeResponse:
+            headers = FakeHeaders()
+
+            def read(self) -> bytes:
+                return b"source-image"
+
+            def __enter__(self) -> "FakeResponse":
+                return self
+
+            def __exit__(self, exc_type, exc, tb) -> bool:
+                return False
+
+        photo_url = "https://lh3.googleusercontent.com/p/current=s680-w680-h510"
+        stale_photo_url = "https://lh3.googleusercontent.com/p/stale=s680-w680-h510"
+        other_photo_url = "https://lh3.googleusercontent.com/p/other=s680-w680-h510"
+        current_hash = hashlib.sha256(photo_url.encode("utf-8")).hexdigest()[:12]
+        stale_hash = hashlib.sha256(stale_photo_url.encode("utf-8")).hexdigest()[:12]
+        other_hash = hashlib.sha256(other_photo_url.encode("utf-8")).hexdigest()[:12]
+
+        with TemporaryDirectory() as tmpdir:
+            photo_dir = Path(tmpdir)
+            protected_path = photo_dir / f"cid-123-{stale_hash}.jpg"
+            prefix_similar_path = photo_dir / f"cid-123-def-{other_hash}.jpg"
+            protected_path.write_bytes(b"referenced-image")
+            prefix_similar_path.write_bytes(b"other-place-image")
+            legacy_protected_path = photo_dir / "tokyo-japan" / protected_path.name
+            legacy_prefix_similar_path = photo_dir / "tokyo-japan" / prefix_similar_path.name
+            legacy_protected_path.parent.mkdir(parents=True, exist_ok=True)
+            legacy_protected_path.write_bytes(b"legacy-referenced-image")
+            legacy_prefix_similar_path.write_bytes(b"legacy-other-place-image")
+
+            with (
+                patch.object(build_data, "PLACE_PHOTOS_DIR", photo_dir),
+                patch.object(build_data, "urlopen", return_value=FakeResponse()),
+                patch.object(build_data, "optimize_place_photo_asset", return_value=(b"optimized", ".jpg")),
+            ):
+                result = build_data.sync_place_photo(
+                    "tokyo-japan",
+                    "cid:123",
+                    photo_url=photo_url,
+                    protected_photo_paths=(f"/place-photos/{protected_path.stem}",),
+                )
+
+            current_path = photo_dir / f"cid-123-{current_hash}.jpg"
+            self.assertEqual(result, f"/place-photos/{current_path.name}")
+            self.assertTrue(current_path.exists())
+            self.assertTrue(protected_path.exists())
+            self.assertTrue(prefix_similar_path.exists())
+            self.assertFalse(legacy_protected_path.exists())
+            self.assertTrue(legacy_prefix_similar_path.exists())
+
+    def test_sync_place_photo_preserves_dotted_extensionless_protected_stem(self) -> None:
+        class FakeHeaders:
+            def get_content_type(self) -> str:
+                return "image/png"
+
+        class FakeResponse:
+            headers = FakeHeaders()
+
+            def read(self) -> bytes:
+                return b"source-image"
+
+            def __enter__(self) -> "FakeResponse":
+                return self
+
+            def __exit__(self, exc_type, exc, tb) -> bool:
+                return False
+
+        place_id = "google_maps_uri:maps.google.com/place"
+        photo_url = "https://lh3.googleusercontent.com/p/current=s680-w680-h510"
+        protected_url = "https://lh3.googleusercontent.com/p/protected=s680-w680-h510"
+        current_hash = hashlib.sha256(photo_url.encode("utf-8")).hexdigest()[:12]
+        protected_hash = hashlib.sha256(protected_url.encode("utf-8")).hexdigest()[:12]
+        place_stem = build_data.safe_place_photo_stem(place_id)
+        protected_filename = f"{place_stem}-{protected_hash}.jpg"
+        protected_stem = protected_filename.removesuffix(".jpg")
+
+        with TemporaryDirectory() as tmpdir:
+            photo_dir = Path(tmpdir)
+            protected_path = photo_dir / protected_filename
+            protected_path.write_bytes(b"protected-image")
+
+            with (
+                patch.object(build_data, "PLACE_PHOTOS_DIR", photo_dir),
+                patch.object(build_data, "urlopen", return_value=FakeResponse()),
+                patch.object(build_data, "optimize_place_photo_asset", return_value=(b"optimized", ".jpg")),
+            ):
+                result = build_data.sync_place_photo(
+                    "tokyo-japan",
+                    place_id,
+                    photo_url=photo_url,
+                    protected_photo_paths=(f"/place-photos/{protected_stem}",),
+                )
+
+            self.assertEqual(result, f"/place-photos/{place_stem}-{current_hash}.jpg")
+            self.assertTrue(protected_path.exists())
+
     def test_sync_place_photo_migrates_legacy_guide_scoped_file_to_flat_storage(self) -> None:
         photo_url = "https://lh3.googleusercontent.com/p/example=s680-w680-h510"
         photo_hash = hashlib.sha256(photo_url.encode("utf-8")).hexdigest()[:12]
@@ -9791,6 +9933,155 @@ class BuildDataTests(unittest.TestCase):
                 "[photos 1/2] downloaded: tokyo-japan / First Place",
                 "[photos 2/2] downloaded: tokyo-japan / Second Place",
             ],
+        )
+
+    def test_populate_place_photos_for_guides_does_not_protect_replaced_variant(self) -> None:
+        guide = Guide(
+            slug="tokyo-japan",
+            title="Tokyo, Japan",
+            country_name="Japan",
+            city_name="Tokyo",
+            generated_at="2026-04-20T00:00:00+00:00",
+            place_count=1,
+            places=[
+                NormalizedPlace(
+                    id="cid:123",
+                    name="Example Place",
+                    maps_url="https://maps.google.com/?cid=123",
+                    main_photo_path="/place-photos/cid-123-old.jpg",
+                    status="active",
+                )
+            ],
+        )
+        protected_paths: list[tuple[str, ...]] = []
+
+        def fake_sync_place_photo(
+            slug: str,
+            place_id: str,
+            *,
+            photo_url: str | None,
+            startup_jitter_seconds: float = 0,
+            protected_photo_paths: Sequence[str] = (),
+        ) -> str:
+            protected_paths.append(tuple(protected_photo_paths))
+            return "/place-photos/cid-123-new.jpg"
+
+        with (
+            patch.object(build_data, "sync_place_photo", side_effect=fake_sync_place_photo),
+            patch("builtins.print"),
+        ):
+            build_data.populate_place_photos_for_guides(
+                [guide],
+                enrichment_caches={
+                    "tokyo-japan": {
+                        "cid:123": EnrichmentCacheEntry(
+                            fetched_at="2026-04-20T00:00:00+00:00",
+                            query="Example Place",
+                            matched=True,
+                            place=EnrichmentPlace(
+                                main_photo_url="https://example.com/new.jpg"
+                            ),
+                        )
+                    }
+                },
+                refresh_photos=True,
+                photo_workers=1,
+                startup_jitter_seconds=8,
+            )
+
+        self.assertEqual(protected_paths, [()])
+
+    def test_populate_place_photos_for_guides_protects_pending_sibling_variants(self) -> None:
+        guides = [
+            Guide(
+                slug="tokyo-japan",
+                title="Tokyo, Japan",
+                country_name="Japan",
+                city_name="Tokyo",
+                generated_at="2026-04-20T00:00:00+00:00",
+                place_count=1,
+                places=[
+                    NormalizedPlace(
+                        id="cid:123",
+                        name="Example Place",
+                        maps_url="https://maps.google.com/?cid=123",
+                        status="active",
+                    )
+                ],
+            ),
+            Guide(
+                slug="osaka-japan",
+                title="Osaka, Japan",
+                country_name="Japan",
+                city_name="Osaka",
+                generated_at="2026-04-20T00:00:00+00:00",
+                place_count=1,
+                places=[
+                    NormalizedPlace(
+                        id="cid:123",
+                        name="Example Place (alternate)",
+                        maps_url="https://maps.google.com/?cid=123",
+                        status="active",
+                    )
+                ],
+            ),
+        ]
+        protected_paths: list[tuple[str, ...]] = []
+        photo_urls = (
+            "https://example.com/first.jpg",
+            "https://example.com/second.jpg",
+        )
+
+        def fake_sync_place_photo(
+            slug: str,
+            place_id: str,
+            *,
+            photo_url: str | None,
+            startup_jitter_seconds: float = 0,
+            protected_photo_paths: Sequence[str] = (),
+        ) -> str:
+            protected_paths.append(tuple(protected_photo_paths))
+            return f"/place-photos/{place_id}.jpg"
+
+        with (
+            patch.object(build_data, "sync_place_photo", side_effect=fake_sync_place_photo),
+            patch("builtins.print"),
+        ):
+            build_data.populate_place_photos_for_guides(
+                guides,
+                enrichment_caches={
+                    "tokyo-japan": {
+                        "cid:123": EnrichmentCacheEntry(
+                            fetched_at="2026-04-20T00:00:00+00:00",
+                            query="Example Place",
+                            matched=True,
+                            place=EnrichmentPlace(main_photo_url=photo_urls[0]),
+                        )
+                    },
+                    "osaka-japan": {
+                        "cid:123": EnrichmentCacheEntry(
+                            fetched_at="2026-04-20T00:00:00+00:00",
+                            query="Example Place (alternate)",
+                            matched=True,
+                            place=EnrichmentPlace(main_photo_url=photo_urls[1]),
+                        )
+                    },
+                },
+                refresh_photos=True,
+                photo_workers=1,
+                startup_jitter_seconds=0,
+            )
+
+        expected_stems = {
+            "cid-123-"
+            + hashlib.sha256(photo_url.encode("utf-8")).hexdigest()[:12]
+            for photo_url in photo_urls
+        }
+        self.assertEqual(len(protected_paths), 2)
+        self.assertTrue(
+            expected_stems.issubset(
+                {Path(path).name for path in protected_paths[0]}
+            )
         )
 
     def test_populate_place_photos_for_guides_uses_existing_local_files_without_refresh(self) -> None:

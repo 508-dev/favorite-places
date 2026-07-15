@@ -10844,6 +10844,18 @@ def populate_place_photos_for_guides(
                     )
         return
 
+    photo_path_references: Counter[str] = Counter()
+    for guide in guides:
+        if guide.place_photo_mode == "remote_url":
+            continue
+        for place in guide.places:
+            if place.main_photo_path and place.main_photo_path.startswith("/place-photos/"):
+                photo_path_references[Path(place.main_photo_path).name] += 1
+
+    def unreference_current_photo(place: NormalizedPlace) -> None:
+        if place.main_photo_path and place.main_photo_path.startswith("/place-photos/"):
+            photo_path_references[Path(place.main_photo_path).name] -= 1
+
     pending_jobs: list[PendingPhotoJob] = []
     reused_count = 0
     missing_photo_url_count = 0
@@ -10856,6 +10868,7 @@ def populate_place_photos_for_guides(
         for place in guide.places:
             photo_url = cached_place_photo_url(enrichment_cache.get(place.id))
             if not photo_url:
+                unreference_current_photo(place)
                 place.main_photo_path = None
                 missing_photo_url_count += 1
                 continue
@@ -10867,10 +10880,21 @@ def populate_place_photos_for_guides(
                 flat_index=flat_index,
             )
             if existing_path is not None:
+                previous_filename = (
+                    Path(place.main_photo_path).name
+                    if place.main_photo_path
+                    and place.main_photo_path.startswith("/place-photos/")
+                    else None
+                )
+                existing_filename = Path(existing_path).name
+                if previous_filename != existing_filename:
+                    unreference_current_photo(place)
+                    photo_path_references[existing_filename] += 1
                 place.main_photo_path = existing_path
                 reused_count += 1
                 continue
 
+            unreference_current_photo(place)
             pending_jobs.append(
                 PendingPhotoJob(
                     guide_slug=guide.slug,
@@ -10879,6 +10903,18 @@ def populate_place_photos_for_guides(
                     photo_url=photo_url,
                 )
             )
+
+    protected_photo_paths = {
+        filename
+        for filename, reference_count in photo_path_references.items()
+        if reference_count > 0
+    }
+    pending_place_counts = Counter(safe_place_photo_stem(job.place_id) for job in pending_jobs)
+    protected_photo_paths.update(
+        public_photo_path(canonical_place_photo_stem(job.place_id, job.photo_url))
+        for job in pending_jobs
+        if pending_place_counts[safe_place_photo_stem(job.place_id)] > 1
+    )
 
     if not pending_jobs:
         print(
@@ -10905,27 +10941,34 @@ def populate_place_photos_for_guides(
 
     if max_workers == 1 or len(pending_jobs) == 1:
         for index, job in enumerate(pending_jobs, start=1):
-            photo_path = sync_place_photo(
-                job.guide_slug,
-                job.place_id,
-                photo_url=job.photo_url,
-                startup_jitter_seconds=effective_startup_jitter_seconds,
-            )
+            sync_kwargs = {
+                "photo_url": job.photo_url,
+                "startup_jitter_seconds": effective_startup_jitter_seconds,
+            }
+            if protected_photo_paths:
+                sync_kwargs["protected_photo_paths"] = protected_photo_paths
+            photo_path = sync_place_photo(job.guide_slug, job.place_id, **sync_kwargs)
             place_by_key[(job.guide_slug, job.place_id)].main_photo_path = photo_path
             print(photo_progress_line(index, len(pending_jobs), job, photo_path), flush=True)
         return
 
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        future_map = {
-            executor.submit(
-                sync_place_photo,
-                job.guide_slug,
-                job.place_id,
-                photo_url=job.photo_url,
-                startup_jitter_seconds=effective_startup_jitter_seconds,
-            ): job
-            for job in pending_jobs
-        }
+        future_map = {}
+        for job in pending_jobs:
+            sync_kwargs = {
+                "photo_url": job.photo_url,
+                "startup_jitter_seconds": effective_startup_jitter_seconds,
+            }
+            if protected_photo_paths:
+                sync_kwargs["protected_photo_paths"] = protected_photo_paths
+            future_map[
+                executor.submit(
+                    sync_place_photo,
+                    job.guide_slug,
+                    job.place_id,
+                    **sync_kwargs,
+                )
+            ] = job
         for index, future in enumerate(as_completed(future_map), start=1):
             job = future_map[future]
             photo_path = future.result()
@@ -11084,6 +11127,7 @@ def sync_place_photo(
     *,
     photo_url: str | None,
     startup_jitter_seconds: float = 0,
+    protected_photo_paths: Sequence[str] = (),
 ) -> str | None:
     if not photo_url:
         return None
@@ -11120,19 +11164,30 @@ def sync_place_photo(
     if optimized_content is None:
         return None
 
-    place_prefix = canonical_place_photo_stem(place_id, photo_url)
+    place_prefix = f"{safe_place_photo_stem(place_id)}-"
+    protected_photo_filenames = {Path(path).name for path in protected_photo_paths}
+    protected_photo_stems = {
+        place_photo_stem_from_path(path) for path in protected_photo_paths
+    }
     filename = canonical_place_photo_filename(place_id, photo_url, extension=extension)
     output_path = photo_dir / filename
     temp_path = photo_dir / f".{filename}.tmp"
     temp_path.write_bytes(optimized_content)
     temp_path.replace(output_path)
 
-    for stale_path in photo_dir.glob(f"{place_prefix}-*"):
-        if stale_path.name == filename or stale_path.name.startswith("."):
+    for stale_path in photo_dir.iterdir():
+        if (
+            not stale_path.is_file()
+            or stale_path.name == filename
+            or stale_path.name.startswith(".")
+            or stale_path.name in protected_photo_filenames
+            or stale_path.stem in protected_photo_stems
+            or place_photo_prefix_from_stem(stale_path.stem) != place_prefix
+        ):
             continue
         stale_path.unlink(missing_ok=True)
 
-    remove_legacy_place_photo_matches(slug, filename_glob=canonical_place_photo_glob(place_id, photo_url))
+    remove_legacy_place_photo_variants(slug, place_id)
     return public_photo_path(filename)
 
 
@@ -11153,6 +11208,14 @@ def canonical_place_photo_stem(place_id: str, photo_url: str) -> str:
     place_prefix = safe_place_photo_stem(place_id)
     photo_hash = hashlib.sha256(photo_url.encode("utf-8")).hexdigest()[:12]
     return f"{place_prefix}-{photo_hash}"
+
+
+def place_photo_stem_from_path(path: str) -> str:
+    filename = Path(path).name
+    for extension in (".webp", ".jpg", ".jpeg", ".png"):
+        if filename.endswith(extension):
+            return filename[: -len(extension)]
+    return filename
 
 
 def migrate_legacy_place_photo_to_flat_dir(
@@ -11179,6 +11242,28 @@ def remove_legacy_place_photo_matches(slug: str, *, filename_glob: str) -> None:
 
     for stale_path in legacy_dir.glob(filename_glob):
         stale_path.unlink(missing_ok=True)
+
+    try:
+        next(legacy_dir.iterdir())
+    except StopIteration:
+        legacy_dir.rmdir()
+    except FileNotFoundError:
+        return
+
+
+def remove_legacy_place_photo_variants(slug: str, place_id: str) -> None:
+    legacy_dir = PLACE_PHOTOS_DIR / slug
+    if not legacy_dir.exists():
+        return
+
+    place_prefix = f"{safe_place_photo_stem(place_id)}-"
+    for stale_path in legacy_dir.iterdir():
+        if (
+            stale_path.is_file()
+            and not stale_path.name.startswith(".")
+            and place_photo_prefix_from_stem(stale_path.stem) == place_prefix
+        ):
+            stale_path.unlink(missing_ok=True)
 
     try:
         next(legacy_dir.iterdir())
