@@ -190,6 +190,57 @@ RAW_PLACE_DIRECTION_TOKEN_ALIASES = {
     "southwest": "sw",
     "west": "w",
 }
+RAW_PLACE_JAPANESE_PREFECTURE_MARKERS = frozenset(
+    {
+        "北海道",
+        "青森県",
+        "岩手県",
+        "宮城県",
+        "秋田県",
+        "山形県",
+        "福島県",
+        "茨城県",
+        "栃木県",
+        "群馬県",
+        "埼玉県",
+        "千葉県",
+        "東京都",
+        "神奈川県",
+        "新潟県",
+        "富山県",
+        "石川県",
+        "福井県",
+        "山梨県",
+        "長野県",
+        "岐阜県",
+        "静岡県",
+        "愛知県",
+        "三重県",
+        "滋賀県",
+        "京都府",
+        "大阪府",
+        "兵庫県",
+        "奈良県",
+        "和歌山県",
+        "鳥取県",
+        "島根県",
+        "岡山県",
+        "広島県",
+        "山口県",
+        "徳島県",
+        "香川県",
+        "愛媛県",
+        "高知県",
+        "福岡県",
+        "佐賀県",
+        "長崎県",
+        "熊本県",
+        "大分県",
+        "宮崎県",
+        "鹿児島県",
+        "沖縄県",
+    }
+)
 RAW_PLACE_ORDINAL_WORD_VALUES = {
     "first": 1,
     "second": 2,
@@ -6848,6 +6899,7 @@ def preserve_existing_raw_place(
             existing_place,
             refreshed_place.maps_url,
             refreshed_cid=as_string(refreshed_place.cid),
+            refreshed_maps_place_token=as_string(refreshed_place.maps_place_token),
         )
     ):
         updates["google_id"] = existing_place.google_id
@@ -6860,6 +6912,7 @@ def preserve_existing_raw_place(
             existing_place,
             refreshed_place.maps_url,
             refreshed_cid=as_string(refreshed_place.cid),
+            refreshed_maps_place_token=as_string(refreshed_place.maps_place_token),
         )
     ):
         updates["cid"] = existing_place.cid
@@ -6883,6 +6936,7 @@ def preserve_existing_raw_place(
             existing_place,
             refreshed_place.maps_url,
             refreshed_cid=as_string(refreshed_place.cid),
+            refreshed_maps_place_token=as_string(refreshed_place.maps_place_token),
         )
     ):
         updates["maps_place_token"] = existing_place.maps_place_token
@@ -7061,11 +7115,13 @@ def raw_place_coordinate_address_is_stable(
     refreshed_address = as_string(refreshed_place.address)
     if not refreshed_address:
         return raw_place_address_is_preservable(existing_place, refreshed_place)
+    if raw_place_coordinate_address_precision_regressed(
+        existing_place,
+        refreshed_place,
+    ):
+        return True
     if not raw_place_coordinate_address_has_street_level_evidence(refreshed_address):
-        return raw_place_coordinate_address_precision_regressed(
-            existing_place,
-            refreshed_place,
-        )
+        return False
 
     existing_address_key = raw_place_coordinate_address_key(existing_address)
     refreshed_address_key = raw_place_coordinate_address_key(refreshed_address)
@@ -7138,6 +7194,53 @@ def raw_place_coordinate_address_is_stable(
     )
 
 
+def raw_place_coordinate_street_name_tokens(address: str) -> tuple[str, ...]:
+    _comparison_parts, country_code = raw_place_coordinate_address_comparison_key(address)
+    for part in re.split(r"[,、]", address):
+        normalized_part = raw_place_coordinate_normalize_street_prefix(part, country_code)
+        address_key = raw_place_coordinate_address_key(normalized_part)
+        if address_key is None:
+            continue
+        tokens = raw_place_coordinate_address_token_list(address_key)
+        if not raw_place_coordinate_part_has_street_marker(
+            normalized_part,
+            address_key,
+            tokens,
+        ):
+            continue
+        street_suffix_indexes = {
+            index
+            for index, token in enumerate(tokens)
+            if index > 0 and token in RAW_PLACE_STREET_SUFFIX_TOKENS
+        }
+        first_street_suffix_index = min(street_suffix_indexes, default=len(tokens))
+        return tuple(
+            token
+            for index, token in enumerate(tokens)
+            if (
+                raw_place_coordinate_token_is_ordinal(token)
+                or not any(character.isdigit() for character in token)
+            )
+            and (
+                not raw_place_coordinate_token_is_ordinal(token)
+                or index < first_street_suffix_index
+            )
+            and (
+                token not in RAW_PLACE_STREET_SUFFIX_TOKENS
+                or index == 0
+                or (
+                    index != len(tokens) - 1
+                    and tokens[index + 1] not in RAW_PLACE_UNIT_PREFIX_TOKENS
+                )
+            )
+            and (
+                token not in RAW_PLACE_UNIT_PREFIX_TOKENS
+                or index < first_street_suffix_index
+            )
+        )
+    return ()
+
+
 def raw_place_coordinate_address_precision_regressed(
     existing_place: RawPlace,
     refreshed_place: RawPlace,
@@ -7148,9 +7251,37 @@ def raw_place_coordinate_address_precision_regressed(
         return False
     if not raw_place_coordinate_address_has_street_level_evidence(existing_address):
         return False
-    if raw_place_coordinate_address_has_street_level_evidence(refreshed_address):
-        return False
     if not raw_place_address_is_preservable(existing_place, refreshed_place):
+        return False
+
+    existing_street_numbers = raw_place_coordinate_street_numbers(existing_address)
+    refreshed_street_numbers = raw_place_coordinate_street_numbers(refreshed_address)
+    if (
+        existing_street_numbers
+        and refreshed_street_numbers
+        and existing_street_numbers != refreshed_street_numbers
+    ):
+        return False
+    existing_hash_premise_keys = raw_place_coordinate_hash_premise_keys(existing_address)
+    refreshed_hash_premise_keys = raw_place_coordinate_hash_premise_keys(refreshed_address)
+    if (
+        existing_hash_premise_keys
+        and refreshed_hash_premise_keys
+        and existing_hash_premise_keys != refreshed_hash_premise_keys
+    ):
+        return False
+
+    existing_street_name_tokens = raw_place_coordinate_street_name_tokens(
+        existing_address
+    )
+    refreshed_street_name_tokens = raw_place_coordinate_street_name_tokens(
+        refreshed_address
+    )
+    if (
+        raw_place_coordinate_address_has_street_level_evidence(refreshed_address)
+        and (existing_street_name_tokens or refreshed_street_name_tokens)
+        and existing_street_name_tokens != refreshed_street_name_tokens
+    ):
         return False
 
     existing_parts, existing_country = raw_place_coordinate_address_comparison_key(
@@ -7160,10 +7291,85 @@ def raw_place_coordinate_address_precision_regressed(
         refreshed_address,
         country_hint=existing_country,
     )
+    if existing_country is None or refreshed_country is None:
+        subdivision_country_codes = (
+            raw_place_coordinate_subdivision_country_codes(existing_parts)
+            | raw_place_coordinate_subdivision_country_codes(refreshed_parts)
+        )
+        if len(subdivision_country_codes) == 1:
+            country_hint = next(iter(subdivision_country_codes))
+            existing_parts, existing_country = raw_place_coordinate_address_comparison_key(
+                existing_address,
+                country_hint=country_hint,
+            )
+            refreshed_parts, refreshed_country = raw_place_coordinate_address_comparison_key(
+                refreshed_address,
+                country_hint=country_hint,
+            )
     if (
         existing_country is not None
         and refreshed_country is not None
         and existing_country != refreshed_country
+    ):
+        return False
+    directional_tokens = {
+        "e",
+        "east",
+        "n",
+        "north",
+        "ne",
+        "northeast",
+        "nw",
+        "northwest",
+        "s",
+        "south",
+        "se",
+        "southeast",
+        "sw",
+        "southwest",
+        "w",
+        "west",
+    }
+    if not raw_place_coordinate_address_has_street_level_evidence(refreshed_address):
+        if any(
+            set(existing_part).difference(refreshed_part) & directional_tokens
+            for existing_part in existing_parts
+            for refreshed_part in refreshed_parts
+            if set(refreshed_part).issubset(existing_part)
+        ):
+            return False
+        return bool(
+            refreshed_parts
+            and all(
+                any(
+                    set(refreshed_part).issubset(set(existing_part))
+                    for existing_part in existing_parts
+                )
+                for refreshed_part in refreshed_parts
+            )
+        )
+    is_strict_precision_subset = len(refreshed_parts) < len(existing_parts) or any(
+        all(refreshed_part != existing_part for existing_part in existing_parts)
+        for refreshed_part in refreshed_parts
+    )
+    if not is_strict_precision_subset:
+        return False
+    country_name_parts = dict(raw_place_coordinate_country_token_identities())
+    address_country_codes = {
+        country_code
+        for country_code in (existing_country, refreshed_country)
+        if country_code is not None
+    }
+    if any(
+        country_name_parts.get(existing_part) in address_country_codes
+        for existing_part in set(existing_parts) - set(refreshed_parts)
+    ):
+        return False
+    if any(
+        set(existing_part).difference(refreshed_part) & directional_tokens
+        for existing_part in existing_parts
+        for refreshed_part in refreshed_parts
+        if set(refreshed_part).issubset(existing_part)
     ):
         return False
     return bool(
@@ -7319,6 +7525,15 @@ def raw_place_coordinate_part_has_street_intersection(
 
 def raw_place_coordinate_address_has_street_level_evidence(address: str) -> bool:
     normalized_address = raw_place_coordinate_strip_japanese_postal_prefix(address)
+    comparison_parts, country_code = raw_place_coordinate_address_comparison_key(
+        normalized_address
+    )
+    if country_code is None:
+        subdivision_country_codes = raw_place_coordinate_subdivision_country_codes(
+            comparison_parts
+        )
+        if len(subdivision_country_codes) == 1:
+            country_code = next(iter(subdivision_country_codes))
     parsed_parts: list[tuple[str, str, list[str]]] = []
     for part in re.split(r"[,、]", normalized_address):
         address_key = raw_place_coordinate_address_key(part)
@@ -7339,6 +7554,11 @@ def raw_place_coordinate_address_has_street_level_evidence(address: str) -> bool
             and not raw_place_coordinate_token_is_ordinal(token)
             and index not in hash_unit_token_indexes
         }
+        if not numeric_indexes and country_code == "MX":
+            numeric_indexes = raw_place_coordinate_hash_premise_token_indexes(
+                part,
+                tokens,
+            )
         if not numeric_indexes:
             continue
         if raw_place_coordinate_part_is_route_only(tokens, address_key=address_key):
@@ -7368,13 +7588,11 @@ def raw_place_coordinate_address_has_street_level_evidence(address: str) -> bool
             continue
         if set(tokens) & {"hwy", "rte"}:
             continue
-        for neighbor_index in (index - 1, index + 1):
-            if not 0 <= neighbor_index < len(parsed_parts):
-                continue
-            if raw_place_coordinate_part_is_premise_number(
-                parsed_parts[neighbor_index][2]
-            ):
-                return True
+        if raw_place_coordinate_street_part_has_nearby_premise(
+            parsed_parts,
+            index,
+        ):
+            return True
     return False
 
 
@@ -7451,6 +7669,86 @@ def raw_place_coordinate_hash_unit_token_indexes(
             search_end = start
             break
     return matched_indexes
+
+
+def raw_place_coordinate_hash_premise_token_indexes(
+    part: str,
+    tokens: Sequence[str],
+) -> set[int]:
+    matched_indexes: set[int] = set()
+    search_end = len(tokens)
+    normalized_part = unicodedata.normalize("NFKC", part)
+    hash_premises = list(
+        re.finditer(r"#\s*(\d+(?:\s*-\s*[A-Za-z]{1,3})?)\b", normalized_part)
+    )
+    for match in reversed(hash_premises):
+        unit_prefix_pattern = "|".join(
+            re.escape(token)
+            for token in sorted(RAW_PLACE_UNIT_PREFIX_TOKENS, key=len, reverse=True)
+        )
+        if re.search(
+            rf"\b(?:{unit_prefix_pattern})(?:\s+(?:no|number)\.?)?\s*$",
+            normalized_part[: match.start()],
+            flags=re.IGNORECASE,
+        ):
+            continue
+        address_key = raw_place_coordinate_address_key(match.group(1))
+        if address_key is None:
+            continue
+        premise_tokens = raw_place_coordinate_address_token_list(address_key)
+        if not premise_tokens:
+            continue
+        for start in range(search_end - len(premise_tokens), -1, -1):
+            end = start + len(premise_tokens)
+            if list(tokens[start:end]) != premise_tokens:
+                continue
+            matched_indexes.update(range(start, end))
+            search_end = start
+            break
+    return matched_indexes
+
+
+def raw_place_coordinate_hash_premise_keys(address: str) -> set[str]:
+    keys: set[str] = set()
+    normalized_address = unicodedata.normalize("NFKC", address)
+    unit_prefix_pattern = "|".join(
+        re.escape(token)
+        for token in sorted(RAW_PLACE_UNIT_PREFIX_TOKENS, key=len, reverse=True)
+    )
+    for match in re.finditer(
+        r"#\s*(\d+(?:\s*[-/]\s*[A-Za-z]{1,3})?)\b",
+        normalized_address,
+    ):
+        if re.search(
+            rf"\b(?:{unit_prefix_pattern})(?:\s+(?:no|number)\.?)?\s*$",
+            normalized_address[: match.start()],
+            flags=re.IGNORECASE,
+        ):
+            continue
+        key = raw_place_coordinate_address_key(match.group(1))
+        if key is not None:
+            keys.add(key)
+    return keys
+
+
+def raw_place_coordinate_street_part_has_nearby_premise(
+    parsed_parts: Sequence[tuple[str, str, list[str]]],
+    street_part_index: int,
+) -> bool:
+    for direction in (-1, 1):
+        candidate_index = street_part_index + direction
+        while 0 <= candidate_index < len(parsed_parts):
+            candidate_tokens = parsed_parts[candidate_index][2]
+            if raw_place_coordinate_part_is_premise_number(candidate_tokens):
+                return True
+            if not raw_place_coordinate_part_is_section_component(candidate_tokens):
+                break
+            candidate_index += direction
+    return False
+
+
+def raw_place_coordinate_part_is_section_component(tokens: Sequence[str]) -> bool:
+    return bool(tokens) and tokens[0] in {"sec", "section"}
 
 
 def raw_place_coordinate_numeric_indexes_include_premise(
@@ -7896,10 +8194,24 @@ def raw_place_coordinate_collapse_street_number_range(
     if len(endpoint_numbers) != 1:
         return None
     endpoint = next(iter(endpoint_numbers))
+    normalized_address = unicodedata.normalize("NFKC", address)
+    contains_cjk = bool(re.search(r"[\u3040-\u30ff\u3400-\u9fff]", normalized_address))
+    _comparison_parts, country_code = raw_place_coordinate_address_comparison_key(
+        normalized_address
+    )
+    is_japanese_address = raw_place_coordinate_address_is_japanese(
+        normalized_address,
+        country_code=country_code,
+    )
     replaced = False
 
     def collapse(match: re.Match[str]) -> str:
         nonlocal replaced
+        if contains_cjk and (
+            is_japanese_address
+            or not re.match(r"\s*[號号]", normalized_address[match.end() :])
+        ):
+            return match.group(0)
         if endpoint not in {match.group("start"), match.group("end")}:
             return match.group(0)
         replaced = True
@@ -7908,9 +8220,23 @@ def raw_place_coordinate_collapse_street_number_range(
     collapsed = re.sub(
         r"(?<!\d)(?P<start>\d+)\s*[-–—−]\s*(?P<end>\d+)(?!\d)",
         collapse,
-        unicodedata.normalize("NFKC", address),
+        normalized_address,
     )
     return collapsed if replaced else None
+
+
+def raw_place_coordinate_address_is_japanese(
+    address: str,
+    *,
+    country_code: str | None,
+) -> bool:
+    if country_code == "JP":
+        return True
+    if country_code is not None:
+        return False
+    if re.search(r"[\u3040-\u30ff]", address):
+        return True
+    return any(marker in address for marker in RAW_PLACE_JAPANESE_PREFECTURE_MARKERS)
 
 
 def raw_place_coordinate_token_is_part_of_valid_alphanumeric_postal(
@@ -8311,6 +8637,7 @@ def raw_place_refreshed_url_identity_is_compatible(
     refreshed_url: str | None,
     *,
     refreshed_cid: str | None = None,
+    refreshed_maps_place_token: str | None = None,
 ) -> bool:
     if len(raw_place_google_places_identities(existing_place)) > 1:
         return False
@@ -8327,6 +8654,19 @@ def raw_place_refreshed_url_identity_is_compatible(
     if refreshed_cid and existing_cids and refreshed_cid not in existing_cids:
         return False
     matched_identity = bool(refreshed_cid and refreshed_cid in existing_cids)
+
+    existing_tokens = {
+        token
+        for token in [
+            as_string(existing_place.maps_place_token),
+            extract_maps_place_token(existing_place.maps_url),
+        ]
+        if token
+    }
+    if refreshed_maps_place_token and existing_tokens:
+        if refreshed_maps_place_token not in existing_tokens:
+            return False
+        matched_identity = True
 
     url = as_string(refreshed_url)
     if not url or not raw_place_maps_url_has_embedded_identity(url):
@@ -8355,14 +8695,6 @@ def raw_place_refreshed_url_identity_is_compatible(
 
     refreshed_token = extract_maps_place_token(url)
     if refreshed_token:
-        existing_tokens = {
-            token
-            for token in [
-                as_string(existing_place.maps_place_token),
-                extract_maps_place_token(existing_place.maps_url),
-            ]
-            if token
-        }
         if existing_tokens and refreshed_token not in existing_tokens:
             return False
         matched_identity = matched_identity or refreshed_token in existing_tokens
