@@ -9722,6 +9722,52 @@ class BuildDataTests(unittest.TestCase):
             self.assertFalse(legacy_protected_path.exists())
             self.assertTrue(legacy_prefix_similar_path.exists())
 
+    def test_sync_place_photo_preserves_dotted_extensionless_protected_stem(self) -> None:
+        class FakeHeaders:
+            def get_content_type(self) -> str:
+                return "image/png"
+
+        class FakeResponse:
+            headers = FakeHeaders()
+
+            def read(self) -> bytes:
+                return b"source-image"
+
+            def __enter__(self) -> "FakeResponse":
+                return self
+
+            def __exit__(self, exc_type, exc, tb) -> bool:
+                return False
+
+        place_id = "google_maps_uri:maps.google.com/place"
+        photo_url = "https://lh3.googleusercontent.com/p/current=s680-w680-h510"
+        protected_url = "https://lh3.googleusercontent.com/p/protected=s680-w680-h510"
+        current_hash = hashlib.sha256(photo_url.encode("utf-8")).hexdigest()[:12]
+        protected_hash = hashlib.sha256(protected_url.encode("utf-8")).hexdigest()[:12]
+        place_stem = build_data.safe_place_photo_stem(place_id)
+        protected_filename = f"{place_stem}-{protected_hash}.jpg"
+        protected_stem = protected_filename.removesuffix(".jpg")
+
+        with TemporaryDirectory() as tmpdir:
+            photo_dir = Path(tmpdir)
+            protected_path = photo_dir / protected_filename
+            protected_path.write_bytes(b"protected-image")
+
+            with (
+                patch.object(build_data, "PLACE_PHOTOS_DIR", photo_dir),
+                patch.object(build_data, "urlopen", return_value=FakeResponse()),
+                patch.object(build_data, "optimize_place_photo_asset", return_value=(b"optimized", ".jpg")),
+            ):
+                result = build_data.sync_place_photo(
+                    "tokyo-japan",
+                    place_id,
+                    photo_url=photo_url,
+                    protected_photo_paths=(f"/place-photos/{protected_stem}",),
+                )
+
+            self.assertEqual(result, f"/place-photos/{place_stem}-{current_hash}.jpg")
+            self.assertTrue(protected_path.exists())
+
     def test_sync_place_photo_migrates_legacy_guide_scoped_file_to_flat_storage(self) -> None:
         photo_url = "https://lh3.googleusercontent.com/p/example=s680-w680-h510"
         photo_hash = hashlib.sha256(photo_url.encode("utf-8")).hexdigest()[:12]

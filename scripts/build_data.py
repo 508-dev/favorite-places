@@ -11166,7 +11166,9 @@ def sync_place_photo(
 
     place_prefix = f"{safe_place_photo_stem(place_id)}-"
     protected_photo_filenames = {Path(path).name for path in protected_photo_paths}
-    protected_photo_stems = {Path(path).stem for path in protected_photo_paths}
+    protected_photo_stems = {
+        place_photo_stem_from_path(path) for path in protected_photo_paths
+    }
     filename = canonical_place_photo_filename(place_id, photo_url, extension=extension)
     output_path = photo_dir / filename
     temp_path = photo_dir / f".{filename}.tmp"
@@ -11206,6 +11208,14 @@ def canonical_place_photo_stem(place_id: str, photo_url: str) -> str:
     place_prefix = safe_place_photo_stem(place_id)
     photo_hash = hashlib.sha256(photo_url.encode("utf-8")).hexdigest()[:12]
     return f"{place_prefix}-{photo_hash}"
+
+
+def place_photo_stem_from_path(path: str) -> str:
+    filename = Path(path).name
+    for extension in (".webp", ".jpg", ".jpeg", ".png"):
+        if filename.endswith(extension):
+            return filename[: -len(extension)]
+    return filename
 
 
 def migrate_legacy_place_photo_to_flat_dir(
