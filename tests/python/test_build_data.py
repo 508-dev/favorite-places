@@ -9665,6 +9665,62 @@ class BuildDataTests(unittest.TestCase):
             self.assertEqual(current_path.read_bytes(), b"optimized")
             self.assertFalse(stale_path.exists())
 
+    def test_sync_place_photo_preserves_referenced_and_prefix_similar_variants(self) -> None:
+        class FakeHeaders:
+            def get_content_type(self) -> str:
+                return "image/png"
+
+        class FakeResponse:
+            headers = FakeHeaders()
+
+            def read(self) -> bytes:
+                return b"source-image"
+
+            def __enter__(self) -> "FakeResponse":
+                return self
+
+            def __exit__(self, exc_type, exc, tb) -> bool:
+                return False
+
+        photo_url = "https://lh3.googleusercontent.com/p/current=s680-w680-h510"
+        stale_photo_url = "https://lh3.googleusercontent.com/p/stale=s680-w680-h510"
+        other_photo_url = "https://lh3.googleusercontent.com/p/other=s680-w680-h510"
+        current_hash = hashlib.sha256(photo_url.encode("utf-8")).hexdigest()[:12]
+        stale_hash = hashlib.sha256(stale_photo_url.encode("utf-8")).hexdigest()[:12]
+        other_hash = hashlib.sha256(other_photo_url.encode("utf-8")).hexdigest()[:12]
+
+        with TemporaryDirectory() as tmpdir:
+            photo_dir = Path(tmpdir)
+            protected_path = photo_dir / f"cid-123-{stale_hash}.jpg"
+            prefix_similar_path = photo_dir / f"cid-123-def-{other_hash}.jpg"
+            protected_path.write_bytes(b"referenced-image")
+            prefix_similar_path.write_bytes(b"other-place-image")
+            legacy_protected_path = photo_dir / "tokyo-japan" / protected_path.name
+            legacy_prefix_similar_path = photo_dir / "tokyo-japan" / prefix_similar_path.name
+            legacy_protected_path.parent.mkdir(parents=True, exist_ok=True)
+            legacy_protected_path.write_bytes(b"legacy-referenced-image")
+            legacy_prefix_similar_path.write_bytes(b"legacy-other-place-image")
+
+            with (
+                patch.object(build_data, "PLACE_PHOTOS_DIR", photo_dir),
+                patch.object(build_data, "urlopen", return_value=FakeResponse()),
+                patch.object(build_data, "optimize_place_photo_asset", return_value=(b"optimized", ".jpg")),
+            ):
+                result = build_data.sync_place_photo(
+                    "tokyo-japan",
+                    "cid:123",
+                    photo_url=photo_url,
+                    protected_photo_paths=(f"/place-photos/{protected_path.name}",),
+                )
+
+            current_path = photo_dir / f"cid-123-{current_hash}.jpg"
+            self.assertEqual(result, f"/place-photos/{current_path.name}")
+            self.assertTrue(current_path.exists())
+            self.assertTrue(protected_path.exists())
+            self.assertTrue(prefix_similar_path.exists())
+            self.assertFalse(legacy_protected_path.exists())
+            self.assertTrue(legacy_prefix_similar_path.exists())
+
     def test_sync_place_photo_migrates_legacy_guide_scoped_file_to_flat_storage(self) -> None:
         photo_url = "https://lh3.googleusercontent.com/p/example=s680-w680-h510"
         photo_hash = hashlib.sha256(photo_url.encode("utf-8")).hexdigest()[:12]
