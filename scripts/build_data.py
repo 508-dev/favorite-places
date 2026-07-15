@@ -7262,6 +7262,14 @@ def raw_place_coordinate_address_precision_regressed(
         and existing_street_numbers != refreshed_street_numbers
     ):
         return False
+    existing_hash_premise_keys = raw_place_coordinate_hash_premise_keys(existing_address)
+    refreshed_hash_premise_keys = raw_place_coordinate_hash_premise_keys(refreshed_address)
+    if (
+        existing_hash_premise_keys
+        and refreshed_hash_premise_keys
+        and existing_hash_premise_keys != refreshed_hash_premise_keys
+    ):
+        return False
 
     existing_street_name_tokens = raw_place_coordinate_street_name_tokens(
         existing_address
@@ -7304,7 +7312,32 @@ def raw_place_coordinate_address_precision_regressed(
         and existing_country != refreshed_country
     ):
         return False
+    directional_tokens = {
+        "e",
+        "east",
+        "n",
+        "north",
+        "ne",
+        "northeast",
+        "nw",
+        "northwest",
+        "s",
+        "south",
+        "se",
+        "southeast",
+        "sw",
+        "southwest",
+        "w",
+        "west",
+    }
     if not raw_place_coordinate_address_has_street_level_evidence(refreshed_address):
+        if any(
+            set(existing_part).difference(refreshed_part) & directional_tokens
+            for existing_part in existing_parts
+            for refreshed_part in refreshed_parts
+            if set(refreshed_part).issubset(existing_part)
+        ):
+            return False
         return bool(
             refreshed_parts
             and all(
@@ -7332,24 +7365,6 @@ def raw_place_coordinate_address_precision_regressed(
         for existing_part in set(existing_parts) - set(refreshed_parts)
     ):
         return False
-    directional_tokens = {
-        "e",
-        "east",
-        "n",
-        "north",
-        "ne",
-        "northeast",
-        "nw",
-        "northwest",
-        "s",
-        "south",
-        "se",
-        "southeast",
-        "sw",
-        "southwest",
-        "w",
-        "west",
-    }
     if any(
         set(existing_part).difference(refreshed_part) & directional_tokens
         for existing_part in existing_parts
@@ -7691,6 +7706,29 @@ def raw_place_coordinate_hash_premise_token_indexes(
             search_end = start
             break
     return matched_indexes
+
+
+def raw_place_coordinate_hash_premise_keys(address: str) -> set[str]:
+    keys: set[str] = set()
+    normalized_address = unicodedata.normalize("NFKC", address)
+    unit_prefix_pattern = "|".join(
+        re.escape(token)
+        for token in sorted(RAW_PLACE_UNIT_PREFIX_TOKENS, key=len, reverse=True)
+    )
+    for match in re.finditer(
+        r"#\s*(\d+(?:\s*[-/]\s*[A-Za-z]{1,3})?)\b",
+        normalized_address,
+    ):
+        if re.search(
+            rf"\b(?:{unit_prefix_pattern})(?:\s+(?:no|number)\.?)?\s*$",
+            normalized_address[: match.start()],
+            flags=re.IGNORECASE,
+        ):
+            continue
+        key = raw_place_coordinate_address_key(match.group(1))
+        if key is not None:
+            keys.add(key)
+    return keys
 
 
 def raw_place_coordinate_street_part_has_nearby_premise(

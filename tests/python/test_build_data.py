@@ -3042,6 +3042,33 @@ class BuildDataTests(unittest.TestCase):
         self.assertEqual((merged.lat, merged.lng), (37.44, -122.15))
         self.assertNotIn("coordinates", preserved_fields)
 
+    def test_preserve_existing_raw_place_rejects_directional_locality_loss(
+        self,
+    ) -> None:
+        existing_place = RawPlace(
+            name="Example Cafe",
+            address="123 Main St, East Palo Alto, CA, United States",
+            lat=37.47,
+            lng=-122.14,
+            maps_url="https://www.google.com/maps?cid=111",
+            cid="111",
+        )
+        refreshed_place = existing_place.model_copy(
+            update={
+                "address": "Palo Alto, CA, United States",
+                "lat": 37.44,
+                "lng": -122.15,
+            }
+        )
+
+        merged, preserved_fields = build_data.preserve_existing_raw_place(
+            existing_place=existing_place,
+            refreshed_place=refreshed_place,
+        )
+
+        self.assertEqual((merged.lat, merged.lng), (37.44, -122.15))
+        self.assertNotIn("coordinates", preserved_fields)
+
     def test_preserve_existing_raw_place_rejects_diagonal_directional_locality_change(
         self,
     ) -> None:
@@ -3188,6 +3215,33 @@ class BuildDataTests(unittest.TestCase):
         refreshed_place = existing_place.model_copy(
             update={
                 "address": "C. Morelos #192, Mexico",
+                "lat": 17.15,
+                "lng": -96.81,
+            }
+        )
+
+        merged, preserved_fields = build_data.preserve_existing_raw_place(
+            existing_place=existing_place,
+            refreshed_place=refreshed_place,
+        )
+
+        self.assertEqual((merged.lat, merged.lng), (17.15, -96.81))
+        self.assertNotIn("coordinates", preserved_fields)
+
+    def test_preserve_existing_raw_place_rejects_changed_alphanumeric_hash_premise(
+        self,
+    ) -> None:
+        existing_place = RawPlace(
+            name="Example Cafe",
+            address="C/ de la Constitución #104-A, Oaxaca, Mexico",
+            lat=17.06,
+            lng=-96.72,
+            maps_url="https://www.google.com/maps?cid=111",
+            cid="111",
+        )
+        refreshed_place = existing_place.model_copy(
+            update={
+                "address": "C/ de la Constitución #104-B",
                 "lat": 17.15,
                 "lng": -96.81,
             }
