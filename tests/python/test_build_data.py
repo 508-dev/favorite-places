@@ -9711,7 +9711,7 @@ class BuildDataTests(unittest.TestCase):
                     "tokyo-japan",
                     "cid:123",
                     photo_url=photo_url,
-                    protected_photo_paths=(f"/place-photos/{protected_path.name}",),
+                    protected_photo_paths=(f"/place-photos/{protected_path.stem}",),
                 )
 
             current_path = photo_dir / f"cid-123-{current_hash}.jpg"
@@ -9944,6 +9944,99 @@ class BuildDataTests(unittest.TestCase):
             )
 
         self.assertEqual(protected_paths, [()])
+
+    def test_populate_place_photos_for_guides_protects_pending_sibling_variants(self) -> None:
+        guides = [
+            Guide(
+                slug="tokyo-japan",
+                title="Tokyo, Japan",
+                country_name="Japan",
+                city_name="Tokyo",
+                generated_at="2026-04-20T00:00:00+00:00",
+                place_count=1,
+                places=[
+                    NormalizedPlace(
+                        id="cid:123",
+                        name="Example Place",
+                        maps_url="https://maps.google.com/?cid=123",
+                        status="active",
+                    )
+                ],
+            ),
+            Guide(
+                slug="osaka-japan",
+                title="Osaka, Japan",
+                country_name="Japan",
+                city_name="Osaka",
+                generated_at="2026-04-20T00:00:00+00:00",
+                place_count=1,
+                places=[
+                    NormalizedPlace(
+                        id="cid:123",
+                        name="Example Place (alternate)",
+                        maps_url="https://maps.google.com/?cid=123",
+                        status="active",
+                    )
+                ],
+            ),
+        ]
+        protected_paths: list[tuple[str, ...]] = []
+        photo_urls = (
+            "https://example.com/first.jpg",
+            "https://example.com/second.jpg",
+        )
+
+        def fake_sync_place_photo(
+            slug: str,
+            place_id: str,
+            *,
+            photo_url: str | None,
+            startup_jitter_seconds: float = 0,
+            protected_photo_paths: Sequence[str] = (),
+        ) -> str:
+            protected_paths.append(tuple(protected_photo_paths))
+            return f"/place-photos/{place_id}.jpg"
+
+        with (
+            patch.object(build_data, "sync_place_photo", side_effect=fake_sync_place_photo),
+            patch("builtins.print"),
+        ):
+            build_data.populate_place_photos_for_guides(
+                guides,
+                enrichment_caches={
+                    "tokyo-japan": {
+                        "cid:123": EnrichmentCacheEntry(
+                            fetched_at="2026-04-20T00:00:00+00:00",
+                            query="Example Place",
+                            matched=True,
+                            place=EnrichmentPlace(main_photo_url=photo_urls[0]),
+                        )
+                    },
+                    "osaka-japan": {
+                        "cid:123": EnrichmentCacheEntry(
+                            fetched_at="2026-04-20T00:00:00+00:00",
+                            query="Example Place (alternate)",
+                            matched=True,
+                            place=EnrichmentPlace(main_photo_url=photo_urls[1]),
+                        )
+                    },
+                },
+                refresh_photos=True,
+                photo_workers=1,
+                startup_jitter_seconds=0,
+            )
+
+        expected_stems = {
+            "cid-123-"
+            + hashlib.sha256(photo_url.encode("utf-8")).hexdigest()[:12]
+            for photo_url in photo_urls
+        }
+        self.assertEqual(len(protected_paths), 2)
+        self.assertTrue(
+            expected_stems.issubset(
+                {Path(path).name for path in protected_paths[0]}
+            )
+        )
 
     def test_populate_place_photos_for_guides_uses_existing_local_files_without_refresh(self) -> None:
         guide = Guide(

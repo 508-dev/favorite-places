@@ -10909,6 +10909,12 @@ def populate_place_photos_for_guides(
         for filename, reference_count in photo_path_references.items()
         if reference_count > 0
     }
+    pending_place_counts = Counter(safe_place_photo_stem(job.place_id) for job in pending_jobs)
+    protected_photo_paths.update(
+        public_photo_path(canonical_place_photo_stem(job.place_id, job.photo_url))
+        for job in pending_jobs
+        if pending_place_counts[safe_place_photo_stem(job.place_id)] > 1
+    )
 
     if not pending_jobs:
         print(
@@ -11160,6 +11166,7 @@ def sync_place_photo(
 
     place_prefix = f"{safe_place_photo_stem(place_id)}-"
     protected_photo_filenames = {Path(path).name for path in protected_photo_paths}
+    protected_photo_stems = {Path(path).stem for path in protected_photo_paths}
     filename = canonical_place_photo_filename(place_id, photo_url, extension=extension)
     output_path = photo_dir / filename
     temp_path = photo_dir / f".{filename}.tmp"
@@ -11172,6 +11179,7 @@ def sync_place_photo(
             or stale_path.name == filename
             or stale_path.name.startswith(".")
             or stale_path.name in protected_photo_filenames
+            or stale_path.stem in protected_photo_stems
             or place_photo_prefix_from_stem(stale_path.stem) != place_prefix
         ):
             continue
