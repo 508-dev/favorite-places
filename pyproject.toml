@@ -7,7 +7,7 @@ requires-python = ">=3.14,<3.15"
 dependencies = [
   "gmaps-scraper",
   "langfuse==4.6.1",
-  "pillow>=12.2.0,<13.0.0",
+  "pillow>=12.3.0,<13.0.0",
   "pycountry>=24.6.1,<25.0.0",
   "pydantic>=2.11.0,<3.0.0",
   "pydantic-settings>=2.14.2,<3.0.0",
