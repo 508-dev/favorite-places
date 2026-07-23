@@ -51,7 +51,7 @@
     "export:cache:json": "uv run python3 scripts/build_data.py --export-cache-json"
   },
   "dependencies": {
-    "astro": "^6.4.4",
+    "astro": "^7.1.3",
     "leaflet": "^1.9.4"
   },
   "devDependencies": {
