@@ -908,6 +908,7 @@ class TrustSignalsTest(unittest.TestCase):
                         "FAVORITE_PLACES_TRUST_GOOGLE_FALLBACK": "",
                     },
                 ),
+                patch("scripts.trust_signals.datetime", wraps=datetime) as datetime_mock,
                 patch("scripts.trust_signals.scrape_michelin_region_source", return_value=[]),
                 patch(
                     "scripts.trust_signals.scrape_tabelog_source",
@@ -925,6 +926,7 @@ class TrustSignalsTest(unittest.TestCase):
                 ),
                 patch("scripts.trust_signals.tabelog_search", side_effect=AssertionError("unexpected Tabelog search")),
             ):
+                datetime_mock.now.return_value = now
                 refresh_trust_signals_for_raw_guides(
                     root=Path(tmpdir),
                     raw_lists=raw_lists,
@@ -932,7 +934,7 @@ class TrustSignalsTest(unittest.TestCase):
                     stable_place_ids={("tokyo-japan", 0): "place-1"},
                 )
 
-            loaded = store.load_signals_for_place_keys(["place-1"])
+            loaded = store.load_signals_for_place_keys(["place-1"], now=now)
 
         self.assertEqual(len(loaded["place-1"]), 1)
         self.assertEqual(loaded["place-1"][0].source, "tabelog")
