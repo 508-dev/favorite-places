@@ -1,0 +1,17 @@
+)]}'
+[
+  [
+    "preview-place",
+    [
+      "rating-summary",
+      4.7,
+      832
+    ],
+    [
+      null,
+      null,
+      25.2048,
+      55.2708
+    ]
+  ]
+]

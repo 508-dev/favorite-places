@@ -89,6 +89,7 @@ interface PlaceCardConfig {
   showRating: boolean;
   showReviewCount: boolean;
   showPriceRange: boolean;
+  showTrustSignals: boolean;
   showTopPickBadge: boolean;
   showWhyRecommended: boolean;
   showAddress: boolean;
@@ -160,7 +161,7 @@ const defaultSiteConfig: SiteConfig = {
     guidesEyebrow: "Guides",
     guidesHeading: "Browse by country",
     guidesLinkText: null,
-    searchPlaceholder: "Search quiet coffee, date night, rainy day museums",
+    searchPlaceholder: "Search a city, country, or guide",
     showHero: true,
     showHeroStats: true,
     showGuideBrowser: true,
@@ -175,7 +176,7 @@ const defaultSiteConfig: SiteConfig = {
     emptyStateText: "No matching guides. Try a broader search or choose all countries.",
     searchResultsEyebrow: "Search results",
     searchResultsHeading: "Matching places",
-    searchResultsGroupedLabel: "By country",
+    searchResultsGroupedLabel: "By guide",
     searchResultsIndividualLabel: "Individual",
     searchResultsEmptyText: "No matching places. Try a broader search.",
     guideCard: {
@@ -236,6 +237,7 @@ const defaultSiteConfig: SiteConfig = {
     showRating: true,
     showReviewCount: true,
     showPriceRange: true,
+    showTrustSignals: true,
     showTopPickBadge: true,
     showWhyRecommended: true,
     showAddress: true,

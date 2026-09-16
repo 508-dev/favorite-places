@@ -80,6 +80,12 @@ uv run gmaps-scraper \
   --output place-results.json
 ```
 
+Browser sessions use a weighted random desktop viewport by default. Persistent
+profile sessions keep a stable viewport for that profile path. Use
+`--disable-random-window-size` when you need CloakBrowser's default viewport,
+and `--human-mouse` when you want CloakBrowser to add humanized mouse, keyboard,
+and scroll behavior despite the extra latency.
+
 You can also pass multiple URLs directly or pipe them on stdin:
 
 ```bash

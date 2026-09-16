@@ -1,0 +1,32 @@
+)]}'
+[
+  [
+    "price-summary",
+    4.8,
+    101,
+    "NT$101"
+  ],
+  [
+    "history-summary",
+    4.6,
+    2024,
+    "Founded 2024"
+  ],
+  [
+    "non-adjacent-summary",
+    4.7,
+    null,
+    null,
+    912
+  ],
+  [
+    "conflicting-summary-a",
+    4.5,
+    120
+  ],
+  [
+    "conflicting-summary-b",
+    4.6,
+    130
+  ]
+]

@@ -109,6 +109,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="Reuse a persistent browser profile stored in this directory.",
     )
     parser.add_argument(
+        "--disable-random-window-size",
+        action="store_true",
+        help="Use CloakBrowser's default viewport instead of a weighted random desktop size.",
+    )
+    parser.add_argument(
+        "--human-mouse",
+        action="store_true",
+        help="Enable CloakBrowser humanized mouse, keyboard, and scroll behavior.",
+    )
+    parser.add_argument(
         "--proxy",
         default=os.environ.get("GMAPS_SCRAPER_PROXY"),
         help=(
@@ -232,10 +242,17 @@ def main() -> int:
     if not args.urls and args.input is None:
         parser.error("at least one URL or --input is required.")
     browser_session = None
-    if args.session_dir is not None or args.proxy is not None:
+    if (
+        args.session_dir is not None
+        or args.proxy is not None
+        or args.disable_random_window_size
+        or args.human_mouse
+    ):
         browser_session = BrowserSessionConfig(
             profile_dir=args.session_dir,
             proxy=args.proxy,
+            window_size=None if args.disable_random_window_size else "random",
+            human_mouse=args.human_mouse,
         )
     http_session = None
     if args.http_cookie_jar is not None or args.proxy is not None:

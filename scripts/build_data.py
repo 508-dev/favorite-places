@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import argparse
-import atexit
 import csv
 import hashlib
 import html as html_lib
@@ -19,7 +18,7 @@ import time
 import unicodedata
 import uuid
 from collections import Counter
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import UTC, datetime, timedelta
 from dataclasses import dataclass
@@ -35,6 +34,7 @@ from urllib.request import Request, urlopen
 import pycountry
 from pydantic import TypeAdapter
 from PIL import Image, ImageOps, UnidentifiedImageError, features
+from sqlalchemy.engine import make_url
 
 try:
     from scripts.pipeline_models import (
@@ -46,12 +46,20 @@ try:
         ListAuthor,
         MarkerIcon,
         NormalizedPlace,
-        PlacesSettings,
         PlaceField,
         PlaceProvenance,
+        PlaceReservationLink,
+        PlacesSettings,
         RawPlace,
         RawSavedList,
         SourceConfig,
+        TrustSignal,
+    )
+    from scripts.trust_signals import (
+        TrustSignalStore,
+        load_trust_signals_for_places,
+        refresh_trust_signals_for_raw_guides,
+        resolve_trust_store_url,
     )
 except ModuleNotFoundError:
     from pipeline_models import (
@@ -63,12 +71,20 @@ except ModuleNotFoundError:
         ListAuthor,
         MarkerIcon,
         NormalizedPlace,
-        PlacesSettings,
         PlaceField,
         PlaceProvenance,
+        PlaceReservationLink,
+        PlacesSettings,
         RawPlace,
         RawSavedList,
         SourceConfig,
+        TrustSignal,
+    )
+    from trust_signals import (
+        TrustSignalStore,
+        load_trust_signals_for_places,
+        refresh_trust_signals_for_raw_guides,
+        resolve_trust_store_url,
     )
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -135,12 +151,157 @@ SCRAPER_SESSION_MAX_AGE = timedelta(days=14)
 ERROR_CACHE_TTL = timedelta(days=1)
 UNMATCHED_CACHE_TTL = timedelta(days=3)
 LOW_CONFIDENCE_CACHE_TTL = timedelta(days=3)
-RATINGS_CACHE_TTL = timedelta(days=7)
+RATINGS_CACHE_TTL = timedelta(days=15)
+HIGH_REVIEW_COUNT_CACHE_TTL = timedelta(days=30)
+HIGH_REVIEW_COUNT_THRESHOLD = 1_000
 NON_OPERATIONAL_CACHE_TTL = timedelta(days=3)
 OPERATIONAL_CACHE_TTL = timedelta(days=14)
 PHOTOLESS_REAL_PLACE_CACHE_TTL = timedelta(days=1)
 RAW_SOURCE_CACHE_TTL = timedelta(days=14)
 RAW_SOURCE_REFRESH_JITTER = timedelta(days=3)
+RAW_PLACE_SUSPICIOUS_COORDINATE_SHIFT_METERS = 1_000.0
+RAW_PLACE_ADDRESS_TOKEN_ALIASES = {
+    "av": "ave",
+    "avenida": "ave",
+    "avenue": "ave",
+    "boulevard": "blvd",
+    "circle": "cir",
+    "court": "ct",
+    "drive": "dr",
+    "highway": "hwy",
+    "lane": "ln",
+    "parkway": "pkwy",
+    "place": "pl",
+    "road": "rd",
+    "route": "rte",
+    "r": "rua",
+    "str": "strasse",
+    "square": "sq",
+    "street": "st",
+    "terrace": "ter",
+}
+RAW_PLACE_DIRECTION_TOKEN_ALIASES = {
+    "east": "e",
+    "north": "n",
+    "northeast": "ne",
+    "northwest": "nw",
+    "south": "s",
+    "southeast": "se",
+    "southwest": "sw",
+    "west": "w",
+}
+RAW_PLACE_JAPANESE_PREFECTURE_MARKERS = frozenset(
+    {
+        "北海道",
+        "青森県",
+        "岩手県",
+        "宮城県",
+        "秋田県",
+        "山形県",
+        "福島県",
+        "茨城県",
+        "栃木県",
+        "群馬県",
+        "埼玉県",
+        "千葉県",
+        "東京都",
+        "神奈川県",
+        "新潟県",
+        "富山県",
+        "石川県",
+        "福井県",
+        "山梨県",
+        "長野県",
+        "岐阜県",
+        "静岡県",
+        "愛知県",
+        "三重県",
+        "滋賀県",
+        "京都府",
+        "大阪府",
+        "兵庫県",
+        "奈良県",
+        "和歌山県",
+        "鳥取県",
+        "島根県",
+        "岡山県",
+        "広島県",
+        "山口県",
+        "徳島県",
+        "香川県",
+        "愛媛県",
+        "高知県",
+        "福岡県",
+        "佐賀県",
+        "長崎県",
+        "熊本県",
+        "大分県",
+        "宮崎県",
+        "鹿児島県",
+        "沖縄県",
+    }
+)
+RAW_PLACE_ORDINAL_WORD_VALUES = {
+    "first": 1,
+    "second": 2,
+    "third": 3,
+    "fourth": 4,
+    "fifth": 5,
+    "sixth": 6,
+    "seventh": 7,
+    "eighth": 8,
+    "ninth": 9,
+    "tenth": 10,
+    "eleventh": 11,
+    "twelfth": 12,
+    "thirteenth": 13,
+    "fourteenth": 14,
+    "fifteenth": 15,
+    "sixteenth": 16,
+    "seventeenth": 17,
+    "eighteenth": 18,
+    "nineteenth": 19,
+    "twentieth": 20,
+    "thirtieth": 30,
+    "fortieth": 40,
+    "fiftieth": 50,
+    "sixtieth": 60,
+    "seventieth": 70,
+    "eightieth": 80,
+    "ninetieth": 90,
+}
+RAW_PLACE_CARDINAL_TENS_VALUES = {
+    "twenty": 20,
+    "thirty": 30,
+    "forty": 40,
+    "fifty": 50,
+    "sixty": 60,
+    "seventy": 70,
+    "eighty": 80,
+    "ninety": 90,
+}
+RAW_PLACE_STREET_SUFFIX_TOKENS = frozenset(
+    {*RAW_PLACE_ADDRESS_TOKEN_ALIASES.values(), "way"}
+)
+RAW_PLACE_UNIT_PREFIX_TOKENS = frozenset(
+    {
+        "apartment",
+        "apt",
+        "building",
+        "floor",
+        "fl",
+        "level",
+        "lvl",
+        "room",
+        "rm",
+        "ste",
+        "suite",
+        "tower",
+        "unit",
+    }
+)
+RAW_PLACE_UNIT_NUMBER_LABEL_TOKENS = frozenset({"no", "number"})
+RAW_PLACE_TRAILING_UNIT_TOKENS = frozenset({"fl", "floor", "level", "lvl"})
 SOURCE_HTTP_TIMEOUT_SECONDS = 30
 SOURCE_HTTP_USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
@@ -175,22 +336,101 @@ MIN_PLACE_PHOTO_SOURCE_DIMENSION = 200
 PLACE_PHOTO_SOURCE_DIMENSION_RE = re.compile(r"w(?P<width>\d+)-h(?P<height>\d+)")
 PRICE_DISPLAY_SOURCE_FIELDS = ("price_range", "admission_price", "room_price")
 DEFAULT_PRICE_DISPLAY_SOURCE_ORDER = ("price_range", "admission_price", "room_price")
-NUMERIC_PRICE_RANGE_CATEGORY_HINTS = (
-    "bar",
-    "bakery",
-    "cafe",
-    "coffee",
-    "deli",
-    "dessert",
-    "drink",
-    "food",
-    "market",
-    "pub",
-    "restaurant",
-    "shop",
-    "store",
-    "tea",
+PRICE_BUDGET_KINDS = (
+    "restaurant_per_person",
+    "hotel_per_night",
+    "admission_per_person",
 )
+RESTAURANT_BUDGET_PARENT_TAGS = frozenset(
+    {
+        "bakery",
+        "bar",
+        "cafe",
+        "restaurant",
+    }
+)
+HOTEL_BUDGET_PARENT_TAGS = frozenset({"hotel"})
+ADMISSION_BUDGET_PARENT_TAGS = frozenset(
+    {
+        "attraction",
+        "museum",
+        "park",
+    }
+)
+PRICE_RANGE_BUDGET_PARENT_TAGS = frozenset(
+    {
+        *RESTAURANT_BUDGET_PARENT_TAGS,
+        "shopping",
+    }
+)
+PRICE_SOURCE_BUDGET_KINDS = {
+    "admission_price": "admission_per_person",
+    "room_price": "hotel_per_night",
+}
+LODGING_DISPLAY_NAME_TERMS_RE = re.compile(r"\b(?:hotel|hostel|inn|resort|ryokan)\b", re.IGNORECASE)
+LODGING_DISPLAY_NAME_LOCATION_RE = re.compile(
+    r"\b(?:at|in|inside|within)\s+(?:the\s+)?[-&'a-z0-9 ]*"
+    r"(?:hotel|hostel|inn|resort|ryokan)\b",
+    re.IGNORECASE,
+)
+BUDGET_KIND_PARENT_TAGS = {
+    "restaurant_per_person": RESTAURANT_BUDGET_PARENT_TAGS,
+    "hotel_per_night": HOTEL_BUDGET_PARENT_TAGS,
+    "admission_per_person": ADMISSION_BUDGET_PARENT_TAGS,
+}
+PRICE_BUDGET_TIER_THRESHOLDS = {
+    "restaurant_per_person": {
+        "USD": (20, 60, 130),
+        "JPY": (2_999, 8_999, 9_999),
+        "TWD": (600, 1_800, 3_800),
+        "HKD": (160, 480, 1_040),
+        "SGD": (27, 80, 170),
+        "KRW": (28_000, 84_000, 182_000),
+        "EUR": (20, 60, 130),
+        "GBP": (18, 55, 120),
+        "CNY": (145, 435, 940),
+        "THB": (720, 2_200, 4_700),
+        "PHP": (1_150, 3_500, 7_500),
+        "VND": (510_000, 1_520_000, 3_300_000),
+        "INR": (1_700, 5_100, 11_000),
+        "AUD": (32, 95, 205),
+        "CAD": (28, 85, 180),
+    },
+    "hotel_per_night": {
+        "USD": (120, 250, 500),
+        "JPY": (12_000, 30_000, 60_000),
+        "TWD": (3_600, 7_500, 15_000),
+        "HKD": (960, 2_000, 4_000),
+        "SGD": (160, 330, 660),
+        "KRW": (168_000, 350_000, 700_000),
+        "EUR": (120, 250, 500),
+        "GBP": (100, 220, 450),
+        "CNY": (870, 1_800, 3_600),
+        "THB": (4_300, 9_000, 18_000),
+        "PHP": (6_800, 14_000, 28_000),
+        "VND": (3_000_000, 6_300_000, 12_700_000),
+        "INR": (10_000, 21_000, 42_000),
+        "AUD": (180, 380, 750),
+        "CAD": (165, 345, 690),
+    },
+    "admission_per_person": {
+        "USD": (15, 40, 80),
+        "JPY": (999, 2_999, 5_999),
+        "TWD": (450, 1_200, 2_400),
+        "HKD": (120, 320, 640),
+        "SGD": (20, 55, 110),
+        "KRW": (20_000, 55_000, 110_000),
+        "EUR": (15, 40, 80),
+        "GBP": (12, 35, 70),
+        "CNY": (110, 290, 580),
+        "THB": (540, 1_450, 2_900),
+        "PHP": (850, 2_300, 4_600),
+        "VND": (380_000, 1_000_000, 2_000_000),
+        "INR": (1_250, 3_350, 6_700),
+        "AUD": (24, 65, 130),
+        "CAD": (21, 55, 110),
+    },
+}
 PRICE_RATE_CACHE_TTL = timedelta(days=1)
 FX_RATES_API_URL = "https://api.fxratesapi.com/latest"
 FAWAZ_CURRENCY_API_URL = "https://cdn.jsdelivr.net/npm/@fawazahmed0/currency-api@latest/v1/currencies/usd.json"
@@ -515,6 +755,9 @@ def default_refresh_workers() -> int:
 DEFAULT_REFRESH_WORKERS = default_refresh_workers()
 
 
+ENRICHMENT_CONTACT_FIELDS_VERSION = 1
+
+
 PLACES_FIELD_MASK = ",".join(
     [
         "places.id",
@@ -530,6 +773,7 @@ PLACES_FIELD_MASK = ",".join(
         "places.types",
         "places.businessStatus",
         "places.addressComponents",
+        "places.websiteUri",
     ]
 )
 VIBE_TAG_KEYWORDS: dict[str, tuple[str, ...]] = {
@@ -970,14 +1214,111 @@ INVALID_ENRICHMENT_PRIMARY_CATEGORY_DISPLAY_PATTERNS: tuple[re.Pattern[str], ...
     re.compile(r"^free cancellation\b", re.IGNORECASE),
 )
 PARENT_TYPE_TAG_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
-    ("restaurant", ("restaurant", "bistro", "diner", "grill", "eatery")),
+    (
+        "restaurant",
+        (
+            "restaurant",
+            "bistro",
+            "brunch",
+            "deli",
+            "diner",
+            "grill",
+            "eatery",
+            "food-court",
+            "noodle-shop",
+            "ramen",
+            "sandwich-shop",
+            "soba",
+            "steak",
+            "sushi",
+            "tonkatsu",
+            "udon",
+            "unagi",
+            "yakiniku",
+            "yakitori",
+        ),
+    ),
     ("bar", ("bar", "pub", "brewery", "izakaya", "tavern", "speakeasy")),
-    ("cafe", ("cafe", "coffee", "coffee-shop", "espresso-bar", "tea-house")),
+    (
+        "cafe",
+        (
+            "cafe",
+            "coffee",
+            "coffee-shop",
+            "espresso-bar",
+            "tea-house",
+            "tea-room",
+        ),
+    ),
     ("bakery", ("bakery", "patisserie", "pastry", "dessert", "donut", "ice-cream")),
     ("museum", ("museum", "art-gallery", "library", "archive", "planetarium")),
-    ("attraction", ("tourist-attraction", "historical-landmark", "monument", "temple", "shrine", "church", "mosque", "synagogue")),
-    ("park", ("park", "botanical-garden", "garden", "trailhead", "campground", "nature-preserve")),
-    ("shopping", ("market", "boutique", "mall", "shopping-center")),
+    (
+        "attraction",
+        (
+            "tourist-attraction",
+            "historical-landmark",
+            "landmark",
+            "monument",
+            "temple",
+            "shrine",
+            "church",
+            "mosque",
+            "synagogue",
+            "castle",
+            "palace",
+            "aquarium",
+            "zoo",
+            "observation-deck",
+            "visitor-center",
+        ),
+    ),
+    (
+        "park",
+        (
+            "park",
+            "botanical-garden",
+            "garden",
+            "forest",
+            "national-forest",
+            "national-park",
+            "trailhead",
+            "campground",
+            "nature-preserve",
+            "recreation-area",
+            "reserve",
+        ),
+    ),
+    (
+        "shopping",
+        (
+            "antique-store",
+            "book-store",
+            "boutique",
+            "clothing-store",
+            "department-store",
+            "gift-shop",
+            "market",
+            "mall",
+            "shopping-center",
+        ),
+    ),
+    ("hotel", ("lodging", "hotel", "hostel", "inn", "resort", "ryokan")),
+)
+BUDGET_PARENT_TYPE_TAG_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("restaurant", ("food", "food-court", "meal-takeaway", "meal-delivery")),
+    (
+        "shopping",
+        (
+            "store",
+            "shop",
+            "shopping-mall",
+            "gift-shop",
+            "book-store",
+            "clothing-store",
+            "department-store",
+            "antique-store",
+        ),
+    ),
 )
 INFERRED_PARENT_TYPE_TAG_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
     (
@@ -1729,6 +2070,19 @@ def build_parser() -> argparse.ArgumentParser:
         help="Download missing local optimized place photos from cached enrichment photo URLs.",
     )
     parser.add_argument(
+        "--refresh-trust-signals",
+        action="store_true",
+        help=(
+            "Refresh cached trust signals from configured/search providers. Normal builds only read the local "
+            "trust cache and never perform live trust-signal searches."
+        ),
+    )
+    parser.add_argument(
+        "--trust-google-fallback",
+        action="store_true",
+        help="Allow the trust-signal resolver to fall back to parsing Google Search HTML when Brave Search is unavailable or empty.",
+    )
+    parser.add_argument(
         "--export-cache-json",
         action="store_true",
         help="Export the current SQLite-backed enrichment cache into per-guide JSON files for debugging.",
@@ -1780,6 +2134,8 @@ def refresh_raw_sources(
     force_refresh: bool,
     refresh_lists: list[str],
     refresh_workers: int,
+    force_url_refresh: bool = False,
+    allow_suspicious_identity_loss: bool = False,
     refresh_retries: int = DEFAULT_REFRESH_RETRIES,
     refresh_retry_backoff_seconds: float = DEFAULT_REFRESH_RETRY_BACKOFF_SECONDS,
     refresh_startup_jitter_seconds: float = DEFAULT_REFRESH_STARTUP_JITTER_SECONDS,
@@ -1788,7 +2144,7 @@ def refresh_raw_sources(
     sources = load_sources()
     selected_sources = resolve_refresh_sources(sources, refresh_lists)
     selected_slugs = {source.slug for source in selected_sources}
-    refresh_jobs: list[tuple[SourceConfig, Path, bool, RawSavedList | None]] = []
+    refresh_jobs: list[tuple[SourceConfig, Path, bool, RawSavedList | None, bool]] = []
 
     for source in sources:
         if selected_sources and source.slug not in selected_slugs:
@@ -1811,16 +2167,17 @@ def refresh_raw_sources(
         if not source_url:
             raise RuntimeError(f"Configured source {source.slug} is missing a URL.")
 
+        url_force_refresh = force_refresh or force_url_refresh
         refresh_reason = (
             None
-            if force_refresh or bool(selected_sources)
+            if url_force_refresh or bool(selected_sources)
             else raw_source_refresh_reason(source, existing_payload)
         )
-        if not force_refresh and not bool(selected_sources) and refresh_reason is None:
+        if not url_force_refresh and not bool(selected_sources) and refresh_reason is None:
             print(f"Skipping {source.slug} (raw snapshot fresh)")
             continue
 
-        if force_refresh:
+        if url_force_refresh:
             print(f"Refreshing {source.slug} from {source_url} (forced)")
         elif selected_sources:
             print(f"Refreshing {source.slug} from {source_url} (selected)")
@@ -1830,7 +2187,9 @@ def refresh_raw_sources(
             source,
             existing_payload.source_signature,
         )
-        refresh_jobs.append((source, raw_path, backup_available, existing_payload))
+        refresh_jobs.append(
+            (source, raw_path, backup_available, existing_payload, allow_suspicious_identity_loss)
+        )
 
     if not refresh_jobs:
         return
@@ -1841,7 +2200,7 @@ def refresh_raw_sources(
     max_workers = max(1, refresh_workers)
     if headed or len(refresh_jobs) == 1 or max_workers == 1:
         failures: list[str] = []
-        for source, raw_path, backup_available, existing_payload in refresh_jobs:
+        for source, raw_path, backup_available, existing_payload, allow_suspicious_identity_loss in refresh_jobs:
             try:
                 payload = scrape_url_source_with_retries(
                     source,
@@ -1861,6 +2220,7 @@ def refresh_raw_sources(
                 slug=source.slug,
                 existing_payload=existing_payload,
                 refreshed_payload=payload,
+                allow_suspicious_identity_loss=allow_suspicious_identity_loss,
             )
             write_json(raw_path, payload)
         if failures:
@@ -1873,6 +2233,7 @@ def refresh_raw_sources(
     failures: list[str] = []
 
     executor = ThreadPoolExecutor(max_workers=max_workers)
+    interrupted = False
     try:
         future_map = {
             executor.submit(
@@ -1882,11 +2243,11 @@ def refresh_raw_sources(
                 refresh_retries=refresh_retries,
                 refresh_retry_backoff_seconds=refresh_retry_backoff_seconds,
                 refresh_startup_jitter_seconds=effective_startup_jitter_seconds,
-            ): (source, raw_path, backup_available, existing_payload)
-            for source, raw_path, backup_available, existing_payload in refresh_jobs
+            ): (source, raw_path, backup_available, existing_payload, allow_suspicious_identity_loss)
+            for source, raw_path, backup_available, existing_payload, allow_suspicious_identity_loss in refresh_jobs
         }
         for future in as_completed(future_map):
-            source, raw_path, backup_available, existing_payload = future_map[future]
+            source, raw_path, backup_available, existing_payload, allow_suspicious_identity_loss = future_map[future]
             try:
                 payload = future.result()
             except RECOVERABLE_REFRESH_ERRORS as exc:
@@ -1900,14 +2261,17 @@ def refresh_raw_sources(
                 slug=source.slug,
                 existing_payload=existing_payload,
                 refreshed_payload=payload,
+                allow_suspicious_identity_loss=allow_suspicious_identity_loss,
             )
             write_json(raw_path, payload)
     except KeyboardInterrupt:
+        interrupted = True
         print("Interrupt received; terminating refresh workers.", flush=True)
         terminate_executor(executor)
         raise
     finally:
-        executor.shutdown(wait=True, cancel_futures=True)
+        if not interrupted:
+            executor.shutdown(wait=True, cancel_futures=True)
 
     if failures:
         failure_text = "\n".join(failures)
@@ -2373,7 +2737,11 @@ def refresh_google_export_csv(
     print(f"{action} {source.slug} from {csv_path}")
     payload = import_saved_list_csv(source)
     stamp_raw_saved_list(payload, source, source_signature=source_signature)
-    return payload
+    return clear_duplicate_raw_place_cids(
+        slug=source.slug,
+        payload=payload,
+        existing_payload=existing_payload,
+    )
 
 
 def metadata_datetime_or_none(value: str | None) -> datetime | None:
@@ -2391,6 +2759,7 @@ def stable_generated_at(
     enrichment_cache: dict[str, EnrichmentCacheEntry],
     *,
     photo_paths: list[str | None] | None = None,
+    trust_signals: Iterable[TrustSignal] | None = None,
 ) -> str:
     candidates: list[datetime] = []
 
@@ -2413,6 +2782,11 @@ def stable_generated_at(
         if absolute_path is None or not absolute_path.exists():
             continue
         candidates.append(datetime.fromtimestamp(absolute_path.stat().st_mtime, tz=UTC))
+
+    for signal in trust_signals or []:
+        fetched_at = metadata_datetime_or_none(signal.fetched_at)
+        if fetched_at is not None:
+            candidates.append(fetched_at)
 
     if not candidates:
         return STABLE_GENERATED_AT_FALLBACK
@@ -2442,6 +2816,12 @@ def rebuild_generated_data(
         enrichment_caches[raw_path.stem] = enrichment_cache
 
     hydrate_shared_enrichment_photo_urls(enrichment_caches)
+    stable_place_ids = build_stable_place_id_index(raw_lists)
+    trust_signal_maps = load_all_trust_signal_maps(
+        raw_lists=raw_lists,
+        enrichment_caches=enrichment_caches,
+        stable_place_ids=stable_place_ids,
+    )
 
     for raw_path in sorted(RAW_DIR.glob("*.json")):
         raw = raw_lists[raw_path.stem]
@@ -2449,6 +2829,7 @@ def rebuild_generated_data(
             raw_path.stem,
             raw,
             enrichment_cache=enrichment_caches[raw_path.stem],
+            trust_signals=trust_signal_maps.get(raw_path.stem, {}),
         )
         guides.append(guide)
 
@@ -2464,6 +2845,11 @@ def rebuild_generated_data(
             raw_lists[guide.slug],
             enrichment_caches.get(guide.slug, {}),
             photo_paths=[place.main_photo_path for place in guide.places],
+            trust_signals=[
+                signal
+                for place in guide.places
+                for signal in place.trust_signals
+            ],
         )
     rebuild_places_sqlite(
         raw_lists=raw_lists,
@@ -2480,6 +2866,92 @@ def rebuild_generated_data(
     write_json(GENERATED_DIR / "manifests.json", manifests)
     write_json(GENERATED_DIR / "search-index.json", search_index)
     write_json(PUBLIC_DATA_DIR / "search-index.json", search_index, compact=True)
+
+
+def build_stable_place_id_index(raw_lists: Mapping[str, RawSavedList]) -> dict[tuple[str, int], str]:
+    result: dict[tuple[str, int], str] = {}
+    for slug, raw in raw_lists.items():
+        for index, place in enumerate(raw.places):
+            result[(slug, index)] = stable_place_id(place, source_type=raw.configured_source_type)
+    return result
+
+
+def trust_store_url_has_readable_cache(store_url: str) -> bool:
+    parsed_url = make_url(store_url)
+    if parsed_url.drivername.split("+", 1)[0] != "sqlite":
+        return True
+    sqlite_database = parsed_url.database
+    if not sqlite_database or sqlite_database == ":memory:":
+        return True
+    if str(parsed_url.query.get("uri", "")).lower() == "true" and sqlite_database.startswith("file:"):
+        sqlite_database = sqlite_database.removeprefix("file:")
+    if sqlite_database == ":memory:":
+        return True
+    sqlite_path = Path(unquote(sqlite_database))
+    return sqlite_path.exists()
+
+
+def load_all_trust_signal_maps(
+    *,
+    raw_lists: dict[str, RawSavedList],
+    enrichment_caches: dict[str, dict[str, EnrichmentCacheEntry]],
+    stable_place_ids: dict[tuple[str, int], str],
+) -> dict[str, dict[str, list[TrustSignal]]]:
+    store_url = resolve_trust_store_url(ROOT)
+    if not trust_store_url_has_readable_cache(store_url):
+        return {}
+
+    store = TrustSignalStore(store_url, initialize=False)
+    trust_signal_maps: dict[str, dict[str, list[TrustSignal]]] = {}
+    guide_location_contexts = {
+        slug: guide_location_context(slug, raw)
+        for slug, raw in raw_lists.items()
+    }
+    for slug, raw in raw_lists.items():
+        trust_signal_maps[slug] = load_trust_signals_for_places(
+            store,
+            slug,
+            raw,
+            enrichment_caches.get(slug, {}),
+            stable_place_ids=stable_place_ids,
+            location_context=guide_location_contexts.get(slug),
+        )
+    return trust_signal_maps
+
+
+def refresh_trust_signals(
+    *,
+    include_google_fallback: bool,
+) -> None:
+    sync_local_csv_sources()
+    raw_lists: dict[str, RawSavedList] = {}
+    enrichment_caches: dict[str, dict[str, EnrichmentCacheEntry]] = {}
+    for raw_path in sorted(RAW_DIR.glob("*.json")):
+        raw = RawSavedList.model_validate_json(raw_path.read_text(encoding="utf-8"))
+        raw_lists[raw_path.stem] = raw
+        enrichment_caches[raw_path.stem] = load_places_cache(raw_path.stem)
+
+    stable_place_ids = build_stable_place_id_index(raw_lists)
+    guide_location_contexts = {
+        slug: guide_location_context(slug, raw)
+        for slug, raw in raw_lists.items()
+    }
+    summary = refresh_trust_signals_for_raw_guides(
+        root=ROOT,
+        raw_lists=raw_lists,
+        enrichment_caches=enrichment_caches,
+        stable_place_ids=stable_place_ids,
+        guide_location_contexts=guide_location_contexts,
+        include_google_fallback=include_google_fallback,
+    )
+    print(
+        "Refreshed trust signals: "
+        f"Michelin regions {summary.michelin_regions_refreshed}, "
+        f"Michelin details {summary.michelin_details_refreshed}, "
+        f"searched {summary.searched_places}, skipped {summary.skipped_places}, "
+        f"wrote {summary.signals_written}, provider failures {summary.provider_failures}.",
+        flush=True,
+    )
 
 
 def refresh_generated_guide_photos(
@@ -2698,6 +3170,42 @@ def extract_maps_place_token(maps_url: str | None) -> str | None:
     return match.group(1).lower()
 
 
+def extract_maps_query_place_id(maps_url: str | None) -> str | None:
+    normalized_url = as_string(maps_url)
+    if normalized_url is None:
+        return None
+    parsed = urlsplit(normalized_url)
+    for key, value in parse_qsl(parsed.query, keep_blank_values=False):
+        if key == "query_place_id" and value:
+            return value
+    return None
+
+
+def normalized_google_place_resource_identity(value: str | None) -> str | None:
+    normalized = as_string(value)
+    if normalized is None:
+        return None
+    return normalized.removeprefix("places/")
+
+
+def google_maps_url_identity(maps_url: str | None) -> str | None:
+    query_place_id = extract_maps_query_place_id(maps_url)
+    if query_place_id is not None:
+        return f"google_place_id:{query_place_id}"
+    cid = extract_maps_cid(maps_url)
+    if cid is not None:
+        return f"cid:{cid}"
+    maps_place_token = extract_maps_place_token(maps_url)
+    if maps_place_token is not None:
+        return f"gms:{maps_place_token}"
+    normalized_url = as_string(maps_url)
+    if normalized_url is None or not resolved_google_maps_url_is_place_page(normalized_url):
+        return None
+    parsed = urlsplit(normalized_url)
+    path = unquote(parsed.path).rstrip("/")
+    return f"google_maps_uri:{parsed.netloc.lower()}{path}"
+
+
 def expand_location_tag_aliases(tags: set[str]) -> set[str]:
     expanded = set(tags)
     for tag in list(tags):
@@ -2725,7 +3233,13 @@ def coerce_guide_place_photo_mode(value: Any) -> Literal["local_cache", "remote_
     return normalized
 
 
-def normalize_guide(slug: str, raw: RawSavedList, *, enrichment_cache: dict[str, EnrichmentCacheEntry]) -> Guide:
+def normalize_guide(
+    slug: str,
+    raw: RawSavedList,
+    *,
+    enrichment_cache: dict[str, EnrichmentCacheEntry],
+    trust_signals: dict[str, list[TrustSignal]] | None = None,
+) -> Guide:
     list_override = read_json(LIST_OVERRIDES_DIR / f"{slug}.json")
     place_override_map = read_json(PLACE_OVERRIDES_DIR / f"{slug}.json")
 
@@ -2760,11 +3274,51 @@ def normalize_guide(slug: str, raw: RawSavedList, *, enrichment_cache: dict[str,
     normalized_places: list[NormalizedPlace] = []
     category_counter: Counter[str] = Counter()
     prefer_enrichment_names = raw.configured_source_type == "google_export_csv"
+    current_primary_keys = raw_saved_list_primary_match_key_set(raw)
 
     for place in raw.places:
         place_id = stable_place_id(place, source_type=raw.configured_source_type)
-        override = place_override_for_ui_copy(slug, place_id, place_override_map.get(place_id, {}))
-        enrichment_cache_entry = enrichment_cache.get(place_id)
+        override_key = raw_place_mapping_lookup_key(
+            place_override_map,
+            place,
+            source_type=raw.configured_source_type,
+            blocked_alias_keys=current_primary_keys,
+        )
+        cache_key = raw_place_mapping_lookup_key(
+            enrichment_cache,
+            place,
+            source_type=raw.configured_source_type,
+            blocked_alias_keys=current_primary_keys,
+        )
+        place_trust_signals: list[TrustSignal] = []
+        seen_trust_signals: set[tuple[Any, ...]] = set()
+        if trust_signals is not None:
+            for trust_signal_key in raw_place_lookup_keys(
+                place,
+                source_type=raw.configured_source_type,
+                blocked_alias_keys=current_primary_keys,
+            ):
+                for signal in trust_signals.get(trust_signal_key, []):
+                    dedupe_key = (
+                        signal.source,
+                        signal.label,
+                        signal.tier,
+                        signal.url,
+                        signal.title,
+                        signal.award_year,
+                    )
+                    if dedupe_key in seen_trust_signals:
+                        continue
+                    seen_trust_signals.add(dedupe_key)
+                    place_trust_signals.append(display_trust_signal(signal))
+        override = place_override_for_ui_copy(
+            slug,
+            place_id,
+            place_override_map.get(override_key, {}) if override_key is not None else {},
+        )
+        enrichment_cache_entry = enrichment_cache.get(cache_key) if cache_key is not None else None
+        if cache_key is not None and cache_key != place_id and place_id not in enrichment_cache:
+            enrichment_cache[place_id] = enrichment_cache[cache_key]
         enrichment = coerce_enrichment_place(enrichment_cache_entry)
         usable_enrichment_category = usable_enrichment_primary_category(
             enrichment,
@@ -2918,10 +3472,11 @@ def normalize_guide(slug: str, raw: RawSavedList, *, enrichment_cache: dict[str,
             if use_semantic_descriptions
             else None
         )
-        why_recommended = (
-            manual_note
-            or semantic_description
-            or base_recommendation
+        award_recommendation_copy = trust_signal_recommendation_copy(place_trust_signals)
+        base_why_recommended = semantic_description or base_recommendation
+        why_recommended = manual_note or combine_recommendation_copy(
+            award_recommendation_copy,
+            base_why_recommended,
         )
         if "vibe_tags" in override:
             override_vibe_tags = coerce_string_list(override.get("vibe_tags"))
@@ -2969,6 +3524,33 @@ def normalize_guide(slug: str, raw: RawSavedList, *, enrichment_cache: dict[str,
             google_maps_uri=enrichment.google_maps_uri,
             google_place_id=enrichment.google_place_id,
         )
+        enrichment_display_price = display_price_source_for_place(
+            enrichment,
+            country_name=country_name,
+            raw_place=place,
+            primary_category=primary_category,
+            tags=tags,
+        )
+        raw_display_price = display_price_range_for_raw_place(place)
+        price_source = (
+            enrichment_display_price[0]
+            if enrichment_display_price
+            else "raw_price_level"
+            if raw_display_price
+            else None
+        )
+        display_price = (
+            enrichment_display_price[1] if enrichment_display_price else raw_display_price
+        )
+        budget_fields = derive_place_budget_fields(
+            enrichment_place=enrichment,
+            raw_place=place,
+            price_source=price_source,
+            display_price=display_price,
+            primary_category=primary_category,
+            tags=tags,
+            country_name=country_name,
+        )
 
         normalized = NormalizedPlace(
             id=place_id,
@@ -2997,11 +3579,12 @@ def normalize_guide(slug: str, raw: RawSavedList, *, enrichment_cache: dict[str,
                 category=primary_category,
             ),
             vibe_tags=vibe_tags,
-            price_range=display_price_range_for_place(
-                enrichment,
-                country_name=country_name,
-            )
-            or display_price_range_for_raw_place(place),
+            price_range=display_price,
+            budget_kind=budget_fields["budget_kind"],
+            budget_tier=budget_fields["budget_tier"],
+            budget_label=budget_fields["budget_label"],
+            website=as_http_url(enrichment.website),
+            reservation_links=enrichment.reservation_links,
             neighborhood=neighborhood,
             note=note,
             why_recommended=why_recommended,
@@ -3012,6 +3595,7 @@ def normalize_guide(slug: str, raw: RawSavedList, *, enrichment_cache: dict[str,
             hidden=hidden,
             manual_rank=manual_rank,
             status=status,
+            trust_signals=place_trust_signals,
         )
         normalized.provenance = build_place_provenance(
             raw=raw,
@@ -3029,6 +3613,7 @@ def normalize_guide(slug: str, raw: RawSavedList, *, enrichment_cache: dict[str,
             top_pick_override=top_pick_override,
             status=status,
             prefer_enrichment_names=prefer_enrichment_names,
+            trust_signals=place_trust_signals,
         )
         normalized_places.append(normalized)
         if primary_category and not place_is_permanently_closed(normalized):
@@ -3109,6 +3694,7 @@ def build_place_provenance(
     top_pick_override: bool | None,
     status: str,
     prefer_enrichment_names: bool,
+    trust_signals: list[TrustSignal],
 ) -> PlaceProvenance:
     manual_name = as_string(override.get("name"))
     manual_category = as_string(override.get("primary_category"))
@@ -3183,6 +3769,24 @@ def build_place_provenance(
         )
     if primary_category_localized:
         provenance.primary_category_localized = google_places_field(primary_category_localized, enrichment_cache_entry)
+    if normalized.website:
+        provenance.website = (
+            google_maps_page_field(normalized.website, enrichment_cache_entry)
+            if cache_entry_has_merged_page_source(enrichment_cache_entry)
+            else google_places_field(normalized.website, enrichment_cache_entry)
+        )
+    if normalized.reservation_links:
+        reservation_link_values = [link.model_dump(mode="json") for link in normalized.reservation_links]
+        if cache_entry_has_merged_page_source(enrichment_cache_entry):
+            provenance.reservation_links = google_maps_page_field(
+                reservation_link_values,
+                enrichment_cache_entry,
+            )
+        else:
+            provenance.reservation_links = google_places_field(
+                reservation_link_values,
+                enrichment_cache_entry,
+            )
     provenance.tags = build_tag_provenance(
         raw=raw,
         raw_place=raw_place,
@@ -3231,6 +3835,8 @@ def build_place_provenance(
         provenance.status = google_places_field(status, enrichment_cache_entry)
     elif raw_place.business_status:
         provenance.status = google_list_field(status, raw)
+    if trust_signals:
+        provenance.trust_signals = trust_signal_field(trust_signals)
     return provenance
 
 
@@ -3299,6 +3905,96 @@ def manual_place_field(value: Any) -> PlaceField:
     return PlaceField(value=value, source="manual")
 
 
+def trust_signal_field(signals: list[TrustSignal]) -> PlaceField:
+    fetched_dates = [
+        parsed
+        for signal in signals
+        if (parsed := metadata_datetime_or_none(signal.fetched_at)) is not None
+    ]
+    fetched_at = max(fetched_dates).isoformat() if fetched_dates else None
+    return PlaceField(value=signals, source="trust_signal", fetched_at=fetched_at)
+
+
+TABELOG_HYAKUMEITEN_GENRE_DISPLAY = {
+    "うどん": "Udon",
+    "うなぎ": "Unagi",
+    "お好み焼き": "Okonomiyaki",
+    "すき焼き・しゃぶしゃぶ": "Sukiyaki and Shabu-Shabu",
+    "そば": "Soba",
+    "とんかつ": "Tonkatsu",
+    "アイス・ジェラート": "Ice Cream and Gelato",
+    "アジア・エスニック": "Asian and Ethnic",
+    "イタリアン": "Italian",
+    "カフェ": "Cafe",
+    "カレー": "Curry",
+    "スイーツ": "Sweets",
+    "ステーキ・鉄板焼き": "Steak and Teppanyaki",
+    "スペイン料理": "Spanish",
+    "ハンバーガー": "Hamburger",
+    "バー": "Bar",
+    "パン": "Bakery",
+    "ピザ": "Pizza",
+    "フレンチ": "French",
+    "ラーメン": "Ramen",
+    "中国料理": "Chinese",
+    "創作料理・イノベーティブ": "Creative and Innovative",
+    "和菓子・甘味処": "Wagashi and Sweets",
+    "喫茶店": "Kissaten",
+    "天ぷら": "Tempura",
+    "寿司": "Sushi",
+    "居酒屋": "Izakaya",
+    "日本料理": "Japanese",
+    "洋食": "Yoshoku",
+    "焼き鳥": "Yakitori",
+    "焼肉": "Yakiniku",
+    "立ち飲み": "Standing Bar",
+    "食堂": "Shokudo",
+    "餃子": "Gyoza",
+    "鳥料理": "Chicken",
+}
+
+def display_trust_signal(signal: TrustSignal) -> TrustSignal:
+    display_label = trust_signal_display_label(signal)
+    display_tier = trust_signal_display_tier(signal)
+    if display_label == signal.label and display_tier == signal.tier:
+        return signal
+    return signal.model_copy(
+        update={
+            "display_label": display_label,
+            "display_tier": display_tier,
+        }
+    )
+
+
+def trust_signal_display_label(signal: TrustSignal) -> str:
+    if signal.source == "tabelog" and signal.label == "The Tabelog Award":
+        return "Tabelog"
+    if signal.source == "tabelog" and signal.label == "Tabelog Hyakumeiten":
+        return "Tabelog 100"
+    return signal.label
+
+
+def trust_signal_display_tier(signal: TrustSignal) -> str | None:
+    if signal.source == "tabelog" and signal.label == "Tabelog Hyakumeiten":
+        return display_tabelog_hyakumeiten_tier(signal.tier)
+    return signal.tier
+
+
+def display_tabelog_hyakumeiten_tier(tier: str | None) -> str | None:
+    if not tier:
+        return None
+    cleaned = re.sub(r"\s*百名店\s*$", "", tier).strip()
+    if not cleaned:
+        return "Selected Restaurants"
+    parts = cleaned.split()
+    if len(parts) >= 2 and parts[-1].isupper():
+        genre = " ".join(parts[:-1])
+    else:
+        genre = cleaned
+    display_genre = TABELOG_HYAKUMEITEN_GENRE_DISPLAY.get(genre, genre)
+    return display_genre
+
+
 def google_list_field(value: Any, raw: RawSavedList) -> PlaceField:
     return PlaceField(
         value=value,
@@ -3317,6 +4013,25 @@ def google_places_field(value: Any, cache_entry: EnrichmentCacheEntry | None) ->
         source=source,
         fetched_at=cache_entry.fetched_at if cache_entry else None,
         expires_at=cache_entry.refresh_after if cache_entry else None,
+    )
+
+
+def google_maps_page_field(value: Any, cache_entry: EnrichmentCacheEntry | None) -> PlaceField:
+    return PlaceField(
+        value=value,
+        source="google_maps_page",
+        fetched_at=cache_entry.fetched_at if cache_entry else None,
+        expires_at=cache_entry.refresh_after if cache_entry else None,
+    )
+
+
+def cache_entry_has_merged_page_source(cache_entry: EnrichmentCacheEntry | None) -> bool:
+    return bool(
+        cache_entry is not None
+        and (
+            cache_entry.source == "google_maps_page"
+            or "google_maps_page" in cache_entry.merged_sources
+        )
     )
 
 
@@ -3702,7 +4417,7 @@ def enrich_raw_sources(
 ) -> None:
     api_key = google_places_api_key()
     cache_payloads: dict[str, dict[str, EnrichmentCacheEntry]] = {}
-    enrich_jobs: list[tuple[str, str, str, str, dict[str, Any], str | None, str | None]] = []
+    enrich_jobs: list[tuple[str, str, str | None, str | None, str, str, dict[str, Any], str | None, str | None]] = []
     normalized_place_selectors = normalize_place_selectors(place_selectors or [])
     matched_place_selectors: set[str] = set()
 
@@ -3717,23 +4432,42 @@ def enrich_raw_sources(
             if pruned_count:
                 save_places_cache(slug, cache_payload, allow_empty_overwrite=True)
         cache_payloads[slug] = cache_payload
+        current_primary_keys = raw_saved_list_primary_match_key_set(raw)
         for place in raw.places:
             place_id = stable_place_id(place, source_type=raw.configured_source_type)
+            cache_key = raw_place_mapping_lookup_key(
+                cache_payload,
+                place,
+                source_type=raw.configured_source_type,
+                blocked_alias_keys=current_primary_keys,
+            )
+            cache_entry = cache_payload.get(cache_key) if cache_key is not None else None
             if normalized_place_selectors:
                 selector_matches = place_selector_matches(
                     slug,
                     place,
                     place_id=place_id,
                     selectors=normalized_place_selectors,
+                    blocked_alias_keys=current_primary_keys,
                 )
                 matched_place_selectors.update(selector_matches)
                 if not selector_matches:
                     continue
-            override = place_override_for_ui_copy(slug, place_id, place_override_map.get(place_id, {}))
+            override_key = raw_place_mapping_lookup_key(
+                place_override_map,
+                place,
+                source_type=raw.configured_source_type,
+                blocked_alias_keys=current_primary_keys,
+            )
+            override = place_override_for_ui_copy(
+                slug,
+                place_id,
+                place_override_map.get(override_key, {}) if override_key is not None else {},
+            )
             override_google_place_id = as_string(override.get("google_place_id"))
             refresh_reason = enrichment_refresh_reason(
                 place,
-                cache_payload.get(place_id),
+                cache_entry,
                 city_name=city_name,
                 country_name=country_name,
                 signature_google_place_id=override_google_place_id,
@@ -3747,6 +4481,8 @@ def enrich_raw_sources(
                 (
                     slug,
                     place_id,
+                    cache_key,
+                    override_key,
                     place.name,
                     refresh_reason,
                     place.model_dump(mode="json"),
@@ -3771,7 +4507,7 @@ def enrich_raw_sources(
     )
     max_workers = max(1, min(refresh_workers, len(enrich_jobs)))
     if max_workers == 1 or len(enrich_jobs) == 1:
-        for slug, place_id, place_name, refresh_reason, place_payload, city_name, country_name in enrich_jobs:
+        for slug, place_id, cache_key, override_key, place_name, refresh_reason, place_payload, city_name, country_name in enrich_jobs:
             entry = enrich_place_job(
                 slug,
                 place_id,
@@ -3782,14 +4518,18 @@ def enrich_raw_sources(
                 country_name=country_name,
                 api_key=api_key,
                 refresh_startup_jitter_seconds=effective_startup_jitter_seconds,
-                existing_entry=cache_payloads[slug].get(place_id),
+                existing_entry=cache_payloads[slug].get(cache_key) if cache_key is not None else None,
+                override_key=override_key,
             )
+            if cache_key is not None and cache_key != place_id:
+                cache_payloads[slug].pop(cache_key, None)
             cache_payloads[slug][place_id] = entry
             save_places_cache(slug, cache_payloads[slug])
         return
 
     print(f"Running {len(enrich_jobs)} enrichment jobs with {max_workers} workers")
     executor = ThreadPoolExecutor(max_workers=max_workers)
+    interrupted = False
     try:
         future_map = {
             executor.submit(
@@ -3803,20 +4543,25 @@ def enrich_raw_sources(
                 country_name=country_name,
                 api_key=api_key,
                 refresh_startup_jitter_seconds=effective_startup_jitter_seconds,
-                existing_entry=cache_payloads[slug].get(place_id),
-            ): (slug, place_id)
-            for slug, place_id, place_name, refresh_reason, place_payload, city_name, country_name in enrich_jobs
+                existing_entry=cache_payloads[slug].get(cache_key) if cache_key is not None else None,
+                override_key=override_key,
+            ): (slug, place_id, cache_key)
+            for slug, place_id, cache_key, override_key, place_name, refresh_reason, place_payload, city_name, country_name in enrich_jobs
         }
         for future in as_completed(future_map):
-            slug, place_id = future_map[future]
+            slug, place_id, cache_key = future_map[future]
+            if cache_key is not None and cache_key != place_id:
+                cache_payloads[slug].pop(cache_key, None)
             cache_payloads[slug][place_id] = future.result()
             save_places_cache(slug, cache_payloads[slug])
     except KeyboardInterrupt:
+        interrupted = True
         print("Interrupt received; terminating enrichment workers.", flush=True)
         terminate_executor(executor)
         raise
     finally:
-        executor.shutdown(wait=True, cancel_futures=True)
+        if not interrupted:
+            executor.shutdown(wait=True, cancel_futures=True)
 
 
 def enrichment_source_refresh_lists(place_selectors: Sequence[str] | None) -> list[str]:
@@ -3831,6 +4576,7 @@ def enrichment_source_refresh_lists(place_selectors: Sequence[str] | None) -> li
     }
     for raw_path in sorted(RAW_DIR.glob("*.json")):
         raw = RawSavedList.model_validate_json(raw_path.read_text(encoding="utf-8"))
+        current_primary_keys = raw_saved_list_primary_match_key_set(raw)
         for place in raw.places:
             place_id = stable_place_id(place, source_type=raw.configured_source_type)
             if place_selector_matches(
@@ -3838,6 +4584,7 @@ def enrichment_source_refresh_lists(place_selectors: Sequence[str] | None) -> li
                 place,
                 place_id=place_id,
                 selectors=normalized_place_selectors,
+                blocked_alias_keys=current_primary_keys,
             ):
                 refresh_slugs.add(raw_path.stem)
                 break
@@ -3884,6 +4631,7 @@ def refresh_cached_semantic_enrichment(
             if pruned_count:
                 save_places_cache(slug, cache_payload, allow_empty_overwrite=True)
         cache_payloads[slug] = cache_payload
+        current_primary_keys = raw_saved_list_primary_match_key_set(raw)
 
         for place in raw.places:
             place_id = stable_place_id(place, source_type=raw.configured_source_type)
@@ -3893,16 +4641,33 @@ def refresh_cached_semantic_enrichment(
                     place,
                     place_id=place_id,
                     selectors=normalized_place_selectors,
+                    blocked_alias_keys=current_primary_keys,
                 )
                 matched_place_selectors.update(selector_matches)
                 if not selector_matches:
                     continue
 
-            entry = cache_payload.get(place_id)
+            cache_key = raw_place_mapping_lookup_key(
+                cache_payload,
+                place,
+                source_type=raw.configured_source_type,
+                blocked_alias_keys=current_primary_keys,
+            )
+            entry = cache_payload.get(cache_key) if cache_key is not None else None
             if not cache_entry_has_publishable_enrichment(entry) or entry is None or entry.place is None:
                 skipped_count += 1
                 continue
-            override = place_override_for_ui_copy(slug, place_id, place_override_map.get(place_id, {}))
+            override_key = raw_place_mapping_lookup_key(
+                place_override_map,
+                place,
+                source_type=raw.configured_source_type,
+                blocked_alias_keys=current_primary_keys,
+            )
+            override = place_override_for_ui_copy(
+                slug,
+                place_id,
+                place_override_map.get(override_key, {}) if override_key is not None else {},
+            )
             suppress_description = bool(as_string(override.get("note")))
             semantic_jobs.append((slug, place_id, place, entry, city_name, country_name, suppress_description))
 
@@ -4000,6 +4765,7 @@ def enrich_place_job(
     api_key: str | None,
     refresh_startup_jitter_seconds: float,
     existing_entry: EnrichmentCacheEntry | None = None,
+    override_key: str | None = None,
 ) -> EnrichmentCacheEntry:
     print(
         f"Enriching {slug}:{place_id} [{place_name}] ({refresh_reason})",
@@ -4008,7 +4774,11 @@ def enrich_place_job(
     sleep_for_refresh_startup_jitter(refresh_startup_jitter_seconds)
     place = RawPlace.model_validate(place_payload)
     place_override_map = read_json(PLACE_OVERRIDES_DIR / f"{slug}.json")
-    override = place_override_for_ui_copy(slug, place_id, place_override_map.get(place_id, {}))
+    override = place_override_for_ui_copy(
+        slug,
+        place_id,
+        place_override_map.get(override_key or place_id, {}),
+    )
     suppress_description = bool(as_string(override.get("note")))
     override_google_place_id = as_string(override.get("google_place_id"))
     allow_identity_mismatch = as_bool(override.get("allow_enrichment_identity_mismatch")) is True
@@ -4077,6 +4847,10 @@ def stable_place_id(place: RawPlace, *, source_type: str | None = None) -> str:
     maps_place_token = place.maps_place_token or extract_maps_place_token(place.maps_url)
     if maps_place_token:
         return f"gms:{maps_place_token}"
+
+    query_place_id = extract_maps_query_place_id(place.maps_url)
+    if query_place_id:
+        return f"gpid:{query_place_id}"
 
     if source_type == "google_export_csv":
         maps_url_id = short_maps_url_id(place.maps_url)
@@ -4374,6 +5148,8 @@ def canonicalize_enrichment_place(place: EnrichmentPlace | None) -> EnrichmentPl
     place.category_display_en = sanitize_enrichment_primary_category(place.category_display_en)
     place.description = sanitize_place_page_description(place.description)
     place.search_result_description = sanitize_place_page_description(place.search_result_description)
+    place.website = as_http_url(place.website)
+    place.reservation_links = coerce_place_reservation_links(place.reservation_links)
     place.phone = sanitize_place_page_phone(place.phone)
     place.plus_code = sanitize_place_page_plus_code(place.plus_code)
     place.main_photo_url = sanitize_place_photo_url(place.main_photo_url)
@@ -4750,6 +5526,19 @@ def search_index_guide_entry(guide: Guide) -> dict[str, Any]:
 
 
 def search_index_place_entry(guide: Guide, place: NormalizedPlace) -> dict[str, Any]:
+    trust_signal_labels = [
+        " ".join(
+            part
+            for part in [
+                signal.display_label or signal.label,
+                signal.display_tier or signal.tier,
+                signal.title,
+            ]
+            if part
+        )
+        for signal in place.trust_signals
+        if signal.confidence != "low"
+    ]
     return {
         "id": place.id,
         "guide_slug": guide.slug,
@@ -4768,6 +5557,19 @@ def search_index_place_entry(guide: Guide, place: NormalizedPlace) -> dict[str, 
         "user_rating_count": place.user_rating_count,
         "top_pick": place.top_pick,
         "manual_rank": place.manual_rank,
+        "trust_signals": [
+            {
+                "label": signal.label,
+                "tier": signal.tier,
+                "display_label": signal.display_label,
+                "display_tier": signal.display_tier,
+                "award_year": signal.award_year,
+                "is_current": signal.is_current,
+                "source": signal.source,
+            }
+            for signal in place.trust_signals
+            if signal.confidence != "low"
+        ],
         "maps_url": place.maps_url,
         "url": f"/guides/{guide.slug}/?place={quote_query_value(place.id)}",
         "search_text": compact_search_text(
@@ -4780,6 +5582,7 @@ def search_index_place_entry(guide: Guide, place: NormalizedPlace) -> dict[str, 
                 place.neighborhood,
                 " ".join(place.tags),
                 " ".join(place.vibe_tags),
+                " ".join(trust_signal_labels),
                 guide.title,
                 guide.city_name,
                 guide.country_name,
@@ -5445,6 +6248,58 @@ def combine_recommendation_copy(*values: str | None) -> str | None:
     return "\n\n".join(parts) if parts else None
 
 
+def trust_signal_recommendation_copy(signals: list[TrustSignal]) -> str | None:
+    award_entries: list[tuple[str, bool]] = []
+    seen_award_labels: set[str] = set()
+    current_award_tiers = {
+        (signal.source, trust_signal_award_tier(signal))
+        for signal in signals
+        if signal.confidence != "low"
+        and signal.source in {"michelin", "tabelog"}
+        and signal.is_current is True
+    }
+    for signal in signals:
+        if signal.confidence == "low":
+            continue
+        if signal.source not in {"michelin", "tabelog"}:
+            continue
+        if (
+            (signal.source, trust_signal_award_tier(signal)) in current_award_tiers
+            and signal.is_current is False
+        ):
+            continue
+        label_parts = [
+            signal.display_label or trust_signal_display_label(signal),
+            signal.display_tier or trust_signal_display_tier(signal),
+        ]
+        if signal.award_year:
+            label_parts.append(str(signal.award_year))
+        label = " ".join(part for part in label_parts if part)
+        if label and label not in seen_award_labels:
+            seen_award_labels.add(label)
+            award_entries.append((label, signal.is_current is False))
+        if len(award_entries) >= 2:
+            break
+    if not award_entries:
+        return None
+    if len(award_entries) == 1:
+        label, is_previous = award_entries[0]
+        prefix = "Previously recognized by" if is_previous else "Recognized by"
+        return f"{prefix} {label}."
+    first_label, first_is_previous = award_entries[0]
+    second_label, second_is_previous = award_entries[1]
+    if not first_is_previous and second_is_previous:
+        return f"Recognized by {first_label} and previously by {second_label}."
+    if first_is_previous and not second_is_previous:
+        return f"Recognized by {second_label} and previously by {first_label}."
+    prefix = "Previously recognized by" if first_is_previous and second_is_previous else "Recognized by"
+    return f"{prefix} {first_label} and {second_label}."
+
+
+def trust_signal_award_tier(signal: TrustSignal) -> str:
+    return signal.tier or ""
+
+
 def usable_enrichment_recommendation_copy(
     value: Any,
     *,
@@ -5565,6 +6420,52 @@ def as_string(value: Any) -> str | None:
     return None
 
 
+def as_http_url(value: Any) -> str | None:
+    normalized = as_string(value)
+    if normalized is None:
+        return None
+    parts = urlsplit(normalized)
+    if parts.scheme not in {"http", "https"} or not parts.netloc:
+        return None
+    return urlunsplit(parts)
+
+
+def coerce_place_reservation_links(value: Any) -> list[PlaceReservationLink]:
+    if not isinstance(value, list):
+        return []
+
+    links: list[PlaceReservationLink] = []
+    seen_urls: set[str] = set()
+    for item in value:
+        if isinstance(item, PlaceReservationLink):
+            label = as_string(item.label)
+            url = as_http_url(item.url)
+        elif isinstance(item, dict):
+            label = as_string(item.get("label")) or as_string(item.get("provider"))
+            url = as_http_url(item.get("url"))
+        elif hasattr(item, "label") and hasattr(item, "url"):
+            label = as_string(getattr(item, "label", None))
+            url = as_http_url(getattr(item, "url", None))
+        else:
+            continue
+
+        if label is None or url is None or url in seen_urls:
+            continue
+        links.append(PlaceReservationLink(label=label[:80], url=url))
+        seen_urls.add(url)
+
+    if any(not place_reservation_link_is_google_reserve(link) for link in links):
+        links = [link for link in links if not place_reservation_link_is_google_reserve(link)]
+
+    return links
+
+
+def place_reservation_link_is_google_reserve(link: PlaceReservationLink) -> bool:
+    parts = urlsplit(link.url)
+    host = parts.netloc.lower()
+    return host in {"www.google.com", "google.com", "maps.google.com"} and parts.path.startswith("/maps/reserve")
+
+
 def as_float(value: Any) -> float | None:
     if isinstance(value, int | float):
         return float(value)
@@ -5589,12 +6490,17 @@ def coerce_string_list(value: Any) -> list[str]:
     return [item.strip() for item in value if isinstance(item, str) and item.strip()]
 
 
+@lru_cache(maxsize=1)
+def places_settings() -> PlacesSettings:
+    return PlacesSettings()
+
+
 def google_places_api_key() -> str | None:
-    return PlacesSettings().google_places_api_key
+    return places_settings().google_places_api_key
 
 
 def google_places_enrichment_strategy() -> Literal["scrape", "api", "scrape_then_api"]:
-    return PlacesSettings().google_places_enrichment_strategy
+    return places_settings().google_places_enrichment_strategy
 
 
 @lru_cache(maxsize=1)
@@ -5614,7 +6520,7 @@ def site_google_maps_place_config_value(key: str) -> Any:
 
 
 def google_maps_place_llm_repair_mode() -> Literal["off", "dom", "dom_then_translation"]:
-    configured = PlacesSettings().google_maps_place_llm_repair
+    configured = places_settings().google_maps_place_llm_repair
     if configured is not None:
         return configured
     site_value = as_string(site_google_maps_place_config_value("llm_repair"))
@@ -5629,7 +6535,7 @@ def google_maps_place_llm_repair_mode() -> Literal["off", "dom", "dom_then_trans
 
 
 def google_maps_place_llm_cache_dir() -> Path:
-    configured = PlacesSettings().google_maps_place_llm_cache_dir
+    configured = places_settings().google_maps_place_llm_cache_dir
     if configured:
         path = Path(configured).expanduser()
         return path if path.is_absolute() else ROOT / path
@@ -5637,7 +6543,7 @@ def google_maps_place_llm_cache_dir() -> Path:
 
 
 def google_maps_place_collect_reviews() -> bool:
-    configured = PlacesSettings().google_maps_place_collect_reviews
+    configured = places_settings().google_maps_place_collect_reviews
     if configured is not None:
         return configured
     site_value = as_bool(site_google_maps_place_config_value("collect_reviews"))
@@ -5645,7 +6551,7 @@ def google_maps_place_collect_reviews() -> bool:
 
 
 def google_maps_place_collect_about() -> bool:
-    configured = PlacesSettings().google_maps_place_collect_about
+    configured = places_settings().google_maps_place_collect_about
     if configured is not None:
         return configured
     site_value = as_bool(site_google_maps_place_config_value("collect_about"))
@@ -5653,7 +6559,7 @@ def google_maps_place_collect_about() -> bool:
 
 
 def google_maps_place_semantic_llm_enabled() -> bool:
-    configured = PlacesSettings().google_maps_place_semantic_llm
+    configured = places_settings().google_maps_place_semantic_llm
     if configured is not None:
         return configured
     site_value = as_bool(site_google_maps_place_config_value("semantic_llm"))
@@ -5661,7 +6567,7 @@ def google_maps_place_semantic_llm_enabled() -> bool:
 
 
 def google_maps_place_semantic_descriptions_enabled() -> bool:
-    configured = PlacesSettings().google_maps_place_semantic_descriptions
+    configured = places_settings().google_maps_place_semantic_descriptions
     if configured is not None:
         return configured
     site_value = as_bool(site_google_maps_place_config_value("semantic_descriptions"))
@@ -5669,7 +6575,7 @@ def google_maps_place_semantic_descriptions_enabled() -> bool:
 
 
 def google_maps_place_semantic_description_force_refresh() -> bool:
-    configured = PlacesSettings().google_maps_place_semantic_description_force_refresh
+    configured = places_settings().google_maps_place_semantic_description_force_refresh
     if configured is not None:
         return configured
     site_value = as_bool(site_google_maps_place_config_value("semantic_description_force_refresh"))
@@ -5787,7 +6693,7 @@ def stamp_raw_saved_list(payload: RawSavedList, source: SourceConfig, *, source_
     payload.configured_source_path = source.path
 
 
-def raw_place_match_keys(place: RawPlace, *, source_type: str | None = None) -> list[str]:
+def raw_place_primary_match_keys(place: RawPlace, *, source_type: str | None = None) -> list[str]:
     keys: list[str] = []
 
     cid = as_string(place.cid) or extract_maps_cid(place.maps_url)
@@ -5801,6 +6707,10 @@ def raw_place_match_keys(place: RawPlace, *, source_type: str | None = None) -> 
     maps_place_token = place.maps_place_token or extract_maps_place_token(place.maps_url)
     if maps_place_token:
         keys.append(f"gms:{maps_place_token}")
+
+    google_places_id = raw_place_google_places_id_identity(place)
+    if google_places_id:
+        keys.append(f"gpid:{google_places_id}")
 
     name = as_string(place.name)
     lat = as_float(place.lat)
@@ -5821,6 +6731,103 @@ def raw_place_match_keys(place: RawPlace, *, source_type: str | None = None) -> 
     return list(dict.fromkeys(keys))
 
 
+def raw_place_cid_alias_keys(place: RawPlace) -> list[str]:
+    primary_cid = as_string(place.cid) or extract_maps_cid(place.maps_url)
+    keys = [
+        f"cid:{cid_alias}"
+        for cid_alias in place.cid_aliases
+        if cid_alias and cid_alias != primary_cid
+    ]
+    return list(dict.fromkeys(keys))
+
+
+def raw_place_match_keys(place: RawPlace, *, source_type: str | None = None) -> list[str]:
+    return list(
+        dict.fromkeys(
+            [
+                *raw_place_primary_match_keys(place, source_type=source_type),
+                *raw_place_cid_alias_keys(place),
+            ]
+        )
+    )
+
+
+def raw_saved_list_primary_match_key_set(raw: RawSavedList) -> set[str]:
+    return {
+        key
+        for place in raw.places
+        for key in raw_place_primary_match_keys(
+            place,
+            source_type=raw.configured_source_type,
+        )
+    }
+
+
+def raw_saved_list_match_key_set(raw: RawSavedList, *, source_type: str | None = None) -> set[str]:
+    return {
+        key
+        for place in raw.places
+        for key in raw_place_match_keys(
+            place,
+            source_type=source_type or raw.configured_source_type,
+        )
+    }
+
+
+def raw_saved_list_refresh_has_suspicious_identity_loss(
+    existing_payload: RawSavedList,
+    refreshed_payload: RawSavedList,
+    *,
+    source_type: str | None = None,
+) -> bool:
+    existing_place_count = len(existing_payload.places)
+    refreshed_place_count = len(refreshed_payload.places)
+    if existing_place_count < 5:
+        return False
+    if refreshed_place_count > max(2, existing_place_count // 4):
+        return False
+
+    existing_keys = raw_saved_list_match_key_set(existing_payload, source_type=source_type)
+    refreshed_keys = raw_saved_list_match_key_set(refreshed_payload, source_type=source_type)
+    if not existing_keys:
+        return False
+    if not refreshed_keys:
+        return True
+
+    return existing_keys.isdisjoint(refreshed_keys)
+
+
+def raw_place_lookup_keys(
+    place: RawPlace,
+    *,
+    source_type: str | None = None,
+    blocked_alias_keys: set[str] | None = None,
+) -> list[str]:
+    keys = raw_place_primary_match_keys(place, source_type=source_type)
+    for key in raw_place_cid_alias_keys(place):
+        if blocked_alias_keys is not None and key in blocked_alias_keys:
+            continue
+        keys.append(key)
+    return list(dict.fromkeys(keys))
+
+
+def raw_place_mapping_lookup_key(
+    mapping: Mapping[str, Any],
+    place: RawPlace,
+    *,
+    source_type: str | None = None,
+    blocked_alias_keys: set[str] | None = None,
+) -> str | None:
+    for key in raw_place_lookup_keys(
+        place,
+        source_type=source_type,
+        blocked_alias_keys=blocked_alias_keys,
+    ):
+        if key in mapping:
+            return key
+    return None
+
+
 def build_raw_place_preservation_index(
     raw: RawSavedList,
     *,
@@ -5828,9 +6835,54 @@ def build_raw_place_preservation_index(
 ) -> dict[str, RawPlace]:
     index: dict[str, RawPlace] = {}
     for place in raw.places:
-        for key in raw_place_match_keys(place, source_type=source_type):
+        for key in raw_place_primary_match_keys(place, source_type=source_type):
             index.setdefault(key, place)
+    primary_keys = set(index)
+    for place in raw.places:
+        for key in raw_place_cid_alias_keys(place):
+            if key not in primary_keys:
+                index.setdefault(key, place)
     return index
+
+
+def raw_place_identity_loss_fallback_candidate(
+    *,
+    existing_payload: RawSavedList,
+    refreshed_payload: RawSavedList,
+    refreshed_place: RawPlace,
+) -> RawPlace | None:
+    refreshed_name = as_string(refreshed_place.name)
+    if (
+        not refreshed_name
+        or as_string(refreshed_place.address)
+        or raw_place_has_durable_google_identity(refreshed_place)
+    ):
+        return None
+
+    compatible_refreshed_places = [
+        place
+        for place in refreshed_payload.places
+        if (place_name := as_string(place.name))
+        and raw_place_names_are_compatible(place_name, refreshed_name)
+    ]
+    if len(compatible_refreshed_places) != 1:
+        return None
+
+    compatible_existing_places = [
+        place
+        for place in existing_payload.places
+        if (place_name := as_string(place.name))
+        and raw_place_names_are_compatible(place_name, refreshed_name)
+    ]
+    if len(compatible_existing_places) != 1:
+        return None
+
+    candidate = compatible_existing_places[0]
+    if not raw_place_has_durable_google_identity(candidate):
+        return None
+    if not raw_place_coordinate_address_is_stable(candidate, refreshed_place):
+        return None
+    return candidate
 
 
 def preserve_existing_raw_place(
@@ -5843,21 +6895,74 @@ def preserve_existing_raw_place(
     existing_name = as_string(existing_place.name)
     refreshed_name = as_string(refreshed_place.name)
     names_compatible = raw_place_names_are_compatible(existing_name, refreshed_name)
+    strong_identity_compatible = raw_place_strong_google_identity_matches(existing_place, refreshed_place)
+    preserve_coordinates = raw_place_coordinates_should_be_preserved(
+        existing_place,
+        refreshed_place,
+    )
+    address_precision_regressed = raw_place_coordinate_address_precision_regressed(
+        existing_place,
+        refreshed_place,
+    )
 
     if (
-        names_compatible
-        and not refreshed_place.address
+        (names_compatible or preserve_coordinates)
+        and (
+            not refreshed_place.address
+            or (preserve_coordinates and address_precision_regressed)
+        )
         and raw_place_address_is_preservable(existing_place, refreshed_place)
     ):
         updates["address"] = existing_place.address
         preserved_fields.append("address")
-    if names_compatible and not refreshed_place.google_id and existing_place.google_id:
+    if (
+        (names_compatible or preserve_coordinates)
+        and not refreshed_place.google_id
+        and existing_place.google_id
+        and raw_place_refreshed_url_identity_is_compatible(
+            existing_place,
+            refreshed_place.maps_url,
+            refreshed_cid=as_string(refreshed_place.cid),
+            refreshed_maps_place_token=as_string(refreshed_place.maps_place_token),
+        )
+    ):
         updates["google_id"] = existing_place.google_id
         preserved_fields.append("google_id")
-    if names_compatible and not refreshed_place.cid and existing_place.cid:
+    if (
+        (names_compatible or preserve_coordinates)
+        and not refreshed_place.cid
+        and existing_place.cid
+        and raw_place_refreshed_url_identity_is_compatible(
+            existing_place,
+            refreshed_place.maps_url,
+            refreshed_cid=as_string(refreshed_place.cid),
+            refreshed_maps_place_token=as_string(refreshed_place.maps_place_token),
+        )
+    ):
         updates["cid"] = existing_place.cid
         preserved_fields.append("cid")
-    if names_compatible and not refreshed_place.maps_place_token and existing_place.maps_place_token:
+    existing_cid = as_string(existing_place.cid) or extract_maps_cid(existing_place.maps_url)
+    refreshed_cid = as_string(refreshed_place.cid) or extract_maps_cid(refreshed_place.maps_url)
+    if names_compatible or strong_identity_compatible:
+        preserved_cid_aliases = list(refreshed_place.cid_aliases)
+        for cid_alias in [*existing_place.cid_aliases, existing_cid]:
+            if not cid_alias or cid_alias == refreshed_cid or cid_alias in preserved_cid_aliases:
+                continue
+            preserved_cid_aliases.append(cid_alias)
+        if preserved_cid_aliases != refreshed_place.cid_aliases:
+            updates["cid_aliases"] = preserved_cid_aliases
+            preserved_fields.append("cid_alias")
+    if (
+        (names_compatible or preserve_coordinates)
+        and not refreshed_place.maps_place_token
+        and existing_place.maps_place_token
+        and raw_place_refreshed_url_identity_is_compatible(
+            existing_place,
+            refreshed_place.maps_url,
+            refreshed_cid=as_string(refreshed_place.cid),
+            refreshed_maps_place_token=as_string(refreshed_place.maps_place_token),
+        )
+    ):
         updates["maps_place_token"] = existing_place.maps_place_token
         preserved_fields.append("maps_place_token")
     if names_compatible and not refreshed_place.is_favorite and existing_place.is_favorite:
@@ -5866,6 +6971,16 @@ def preserve_existing_raw_place(
     if names_compatible and refreshed_place.added_by is None and existing_place.added_by is not None:
         updates["added_by"] = existing_place.added_by
         preserved_fields.append("added_by")
+    if preserve_coordinates:
+        updates["lat"] = existing_place.lat
+        updates["lng"] = existing_place.lng
+        preserved_fields.append("coordinates")
+    if "coordinates" in preserved_fields and raw_place_maps_url_should_be_preserved(
+        existing_place,
+        refreshed_place,
+    ):
+        updates["maps_url"] = existing_place.maps_url
+        preserved_fields.append("maps_url")
 
     if not updates:
         return refreshed_place, preserved_fields
@@ -5873,12 +6988,1764 @@ def preserve_existing_raw_place(
     return refreshed_place.model_copy(update=updates), preserved_fields
 
 
+def raw_place_strong_google_identity_matches(left: RawPlace, right: RawPlace) -> bool:
+    left_google_id = raw_place_google_id_identity(left)
+    right_google_id = raw_place_google_id_identity(right)
+    if left_google_id is not None and left_google_id == right_google_id:
+        return True
+    left_maps_place_token = raw_place_maps_place_token_identity(left)
+    right_maps_place_token = raw_place_maps_place_token_identity(right)
+    return left_maps_place_token is not None and left_maps_place_token == right_maps_place_token
+
+
+def raw_place_coordinates_should_be_preserved(
+    existing_place: RawPlace,
+    refreshed_place: RawPlace,
+) -> bool:
+    if not raw_place_coordinate_identity_matches(existing_place, refreshed_place):
+        return False
+    if not raw_place_coordinate_address_is_stable(existing_place, refreshed_place):
+        return False
+
+    existing_lat = as_float(existing_place.lat)
+    existing_lng = as_float(existing_place.lng)
+    if existing_lat is None or existing_lng is None:
+        return False
+
+    refreshed_lat = as_float(refreshed_place.lat)
+    refreshed_lng = as_float(refreshed_place.lng)
+    if refreshed_lat is None or refreshed_lng is None:
+        return True
+
+    return (
+        haversine_meters(
+            existing_lat,
+            existing_lng,
+            refreshed_lat,
+            refreshed_lng,
+        )
+        > RAW_PLACE_SUSPICIOUS_COORDINATE_SHIFT_METERS
+    )
+
+
+def raw_place_coordinate_identity_matches(left: RawPlace, right: RawPlace) -> bool:
+    left_google_places_ids = raw_place_google_places_identities(left)
+    right_google_places_ids = raw_place_google_places_identities(right)
+    google_places_ids_are_consistent = (
+        len(left_google_places_ids) <= 1 and len(right_google_places_ids) <= 1
+    )
+    google_places_ids_conflict = bool(
+        left_google_places_ids
+        and right_google_places_ids
+        and left_google_places_ids.isdisjoint(right_google_places_ids)
+    )
+
+    left_legacy_google_id = raw_place_legacy_google_id_identity(left)
+    right_legacy_google_id = raw_place_legacy_google_id_identity(right)
+    legacy_google_ids_conflict = bool(
+        left_legacy_google_id
+        and right_legacy_google_id
+        and left_legacy_google_id != right_legacy_google_id
+    )
+
+    left_maps_place_token = raw_place_maps_place_token_identity(left)
+    right_maps_place_token = raw_place_maps_place_token_identity(right)
+    if (
+        left_maps_place_token is not None
+        and left_maps_place_token == right_maps_place_token
+        and google_places_ids_are_consistent
+        and not google_places_ids_conflict
+        and not legacy_google_ids_conflict
+    ):
+        return True
+
+    left_google_id = raw_place_google_id_identity(left)
+    right_google_id = raw_place_google_id_identity(right)
+    if (
+        google_places_ids_are_consistent
+        and left_google_id is not None
+        and left_google_id == right_google_id
+    ):
+        return True
+
+    if google_places_ids_are_consistent and (
+        left_google_places_ids & right_google_places_ids
+    ):
+        return True
+
+    left_primary_cid = raw_place_cid_identity(left)
+    right_primary_cid = raw_place_cid_identity(right)
+    if (
+        left_primary_cid is not None
+        and left_primary_cid == right_primary_cid
+        and not google_places_ids_conflict
+        and not legacy_google_ids_conflict
+    ):
+        return True
+
+    left_cids = {
+        cid
+        for cid in [left_primary_cid, *left.cid_aliases]
+        if cid
+    }
+    right_cids = {
+        cid
+        for cid in [right_primary_cid, *right.cid_aliases]
+        if cid
+    }
+    names_are_compatible = raw_place_names_are_compatible(
+        as_string(left.name),
+        as_string(right.name),
+    )
+    if (
+        left_cids & right_cids
+        and google_places_ids_are_consistent
+        and not google_places_ids_conflict
+        and not legacy_google_ids_conflict
+        and names_are_compatible
+    ):
+        return True
+
+    if not google_places_ids_are_consistent:
+        return False
+
+    return bool(
+        names_are_compatible
+        and raw_place_has_durable_google_identity(left)
+        and not raw_place_has_durable_google_identity(right)
+    )
+
+
+def raw_place_has_durable_google_identity(place: RawPlace) -> bool:
+    return bool(
+        raw_place_google_id_identity(place)
+        or raw_place_maps_place_token_identity(place)
+        or raw_place_cid_identity(place)
+        or extract_maps_query_place_id(place.maps_url)
+        or any(as_string(cid_alias) for cid_alias in place.cid_aliases)
+    )
+
+
+def raw_place_coordinate_address_is_stable(
+    existing_place: RawPlace,
+    refreshed_place: RawPlace,
+) -> bool:
+    existing_address = as_string(existing_place.address)
+    if not existing_address:
+        return False
+    if not raw_place_coordinate_address_has_street_level_evidence(existing_address):
+        return False
+
+    refreshed_address = as_string(refreshed_place.address)
+    if not refreshed_address:
+        return raw_place_address_is_preservable(existing_place, refreshed_place)
+    if raw_place_coordinate_address_precision_regressed(
+        existing_place,
+        refreshed_place,
+    ):
+        return True
+    if not raw_place_coordinate_address_has_street_level_evidence(refreshed_address):
+        return False
+
+    existing_address_key = raw_place_coordinate_address_key(existing_address)
+    refreshed_address_key = raw_place_coordinate_address_key(refreshed_address)
+    if existing_address_key is None or refreshed_address_key is None:
+        return False
+    if existing_address_key == refreshed_address_key:
+        return True
+
+    existing_street_numbers = raw_place_coordinate_street_numbers(existing_address)
+    refreshed_street_numbers = raw_place_coordinate_street_numbers(refreshed_address)
+    existing_comparison_address = existing_address
+    refreshed_comparison_address = refreshed_address
+    if existing_street_numbers and refreshed_street_numbers:
+        collapsed_existing_address = raw_place_coordinate_collapse_street_number_range(
+            existing_address,
+            refreshed_street_numbers,
+        )
+        collapsed_refreshed_address = raw_place_coordinate_collapse_street_number_range(
+            refreshed_address,
+            existing_street_numbers,
+        )
+        if collapsed_existing_address is not None:
+            existing_comparison_address = collapsed_existing_address
+        if collapsed_refreshed_address is not None:
+            refreshed_comparison_address = collapsed_refreshed_address
+        if (
+            collapsed_existing_address is None
+            and collapsed_refreshed_address is None
+            and existing_street_numbers != refreshed_street_numbers
+        ):
+            return False
+
+    existing_parts, existing_country = raw_place_coordinate_address_comparison_key(
+        existing_comparison_address
+    )
+    refreshed_parts, refreshed_country = raw_place_coordinate_address_comparison_key(
+        refreshed_comparison_address
+    )
+    if existing_country and not refreshed_country:
+        refreshed_parts, _ = raw_place_coordinate_address_comparison_key(
+            refreshed_comparison_address,
+            country_hint=existing_country,
+        )
+    elif refreshed_country and not existing_country:
+        existing_parts, _ = raw_place_coordinate_address_comparison_key(
+            existing_comparison_address,
+            country_hint=refreshed_country,
+        )
+    elif existing_country is None and refreshed_country is None:
+        subdivision_country_codes = (
+            raw_place_coordinate_subdivision_country_codes(existing_parts)
+            | raw_place_coordinate_subdivision_country_codes(refreshed_parts)
+        )
+        if len(subdivision_country_codes) == 1:
+            subdivision_country_code = next(iter(subdivision_country_codes))
+            existing_parts, _ = raw_place_coordinate_address_comparison_key(
+                existing_comparison_address,
+                country_hint=subdivision_country_code,
+            )
+            refreshed_parts, _ = raw_place_coordinate_address_comparison_key(
+                refreshed_comparison_address,
+                country_hint=subdivision_country_code,
+            )
+    if not existing_parts or existing_parts != refreshed_parts:
+        return False
+    return bool(
+        existing_country is None
+        or refreshed_country is None
+        or existing_country == refreshed_country
+    )
+
+
+def raw_place_coordinate_street_name_tokens(address: str) -> tuple[str, ...]:
+    _comparison_parts, country_code = raw_place_coordinate_address_comparison_key(address)
+    for part in re.split(r"[,、]", address):
+        normalized_part = raw_place_coordinate_normalize_street_prefix(part, country_code)
+        address_key = raw_place_coordinate_address_key(normalized_part)
+        if address_key is None:
+            continue
+        tokens = raw_place_coordinate_address_token_list(address_key)
+        if not raw_place_coordinate_part_has_street_marker(
+            normalized_part,
+            address_key,
+            tokens,
+        ):
+            continue
+        street_suffix_indexes = {
+            index
+            for index, token in enumerate(tokens)
+            if index > 0 and token in RAW_PLACE_STREET_SUFFIX_TOKENS
+        }
+        first_street_suffix_index = min(street_suffix_indexes, default=len(tokens))
+        return tuple(
+            token
+            for index, token in enumerate(tokens)
+            if (
+                raw_place_coordinate_token_is_ordinal(token)
+                or not any(character.isdigit() for character in token)
+            )
+            and (
+                not raw_place_coordinate_token_is_ordinal(token)
+                or index < first_street_suffix_index
+            )
+            and (
+                token not in RAW_PLACE_STREET_SUFFIX_TOKENS
+                or index == 0
+                or (
+                    index != len(tokens) - 1
+                    and tokens[index + 1] not in RAW_PLACE_UNIT_PREFIX_TOKENS
+                )
+            )
+            and (
+                token not in RAW_PLACE_UNIT_PREFIX_TOKENS
+                or index < first_street_suffix_index
+            )
+        )
+    return ()
+
+
+def raw_place_coordinate_address_precision_regressed(
+    existing_place: RawPlace,
+    refreshed_place: RawPlace,
+) -> bool:
+    existing_address = as_string(existing_place.address)
+    refreshed_address = as_string(refreshed_place.address)
+    if not existing_address or not refreshed_address:
+        return False
+    if not raw_place_coordinate_address_has_street_level_evidence(existing_address):
+        return False
+    if not raw_place_address_is_preservable(existing_place, refreshed_place):
+        return False
+
+    existing_street_numbers = raw_place_coordinate_street_numbers(existing_address)
+    refreshed_street_numbers = raw_place_coordinate_street_numbers(refreshed_address)
+    if (
+        existing_street_numbers
+        and refreshed_street_numbers
+        and existing_street_numbers != refreshed_street_numbers
+    ):
+        return False
+    existing_hash_premise_keys = raw_place_coordinate_hash_premise_keys(existing_address)
+    refreshed_hash_premise_keys = raw_place_coordinate_hash_premise_keys(refreshed_address)
+    if (
+        existing_hash_premise_keys
+        and refreshed_hash_premise_keys
+        and existing_hash_premise_keys != refreshed_hash_premise_keys
+    ):
+        return False
+
+    existing_street_name_tokens = raw_place_coordinate_street_name_tokens(
+        existing_address
+    )
+    refreshed_street_name_tokens = raw_place_coordinate_street_name_tokens(
+        refreshed_address
+    )
+    if (
+        raw_place_coordinate_address_has_street_level_evidence(refreshed_address)
+        and (existing_street_name_tokens or refreshed_street_name_tokens)
+        and existing_street_name_tokens != refreshed_street_name_tokens
+    ):
+        return False
+
+    existing_parts, existing_country = raw_place_coordinate_address_comparison_key(
+        existing_address
+    )
+    refreshed_parts, refreshed_country = raw_place_coordinate_address_comparison_key(
+        refreshed_address,
+        country_hint=existing_country,
+    )
+    if existing_country is None or refreshed_country is None:
+        subdivision_country_codes = (
+            raw_place_coordinate_subdivision_country_codes(existing_parts)
+            | raw_place_coordinate_subdivision_country_codes(refreshed_parts)
+        )
+        if len(subdivision_country_codes) == 1:
+            country_hint = next(iter(subdivision_country_codes))
+            existing_parts, existing_country = raw_place_coordinate_address_comparison_key(
+                existing_address,
+                country_hint=country_hint,
+            )
+            refreshed_parts, refreshed_country = raw_place_coordinate_address_comparison_key(
+                refreshed_address,
+                country_hint=country_hint,
+            )
+    if (
+        existing_country is not None
+        and refreshed_country is not None
+        and existing_country != refreshed_country
+    ):
+        return False
+    directional_tokens = {
+        "e",
+        "east",
+        "n",
+        "north",
+        "ne",
+        "northeast",
+        "nw",
+        "northwest",
+        "s",
+        "south",
+        "se",
+        "southeast",
+        "sw",
+        "southwest",
+        "w",
+        "west",
+    }
+    if not raw_place_coordinate_address_has_street_level_evidence(refreshed_address):
+        if any(
+            set(existing_part).difference(refreshed_part) & directional_tokens
+            for existing_part in existing_parts
+            for refreshed_part in refreshed_parts
+            if set(refreshed_part).issubset(existing_part)
+        ):
+            return False
+        return bool(
+            refreshed_parts
+            and all(
+                any(
+                    set(refreshed_part).issubset(set(existing_part))
+                    for existing_part in existing_parts
+                )
+                for refreshed_part in refreshed_parts
+            )
+        )
+    is_strict_precision_subset = len(refreshed_parts) < len(existing_parts) or any(
+        all(refreshed_part != existing_part for existing_part in existing_parts)
+        for refreshed_part in refreshed_parts
+    )
+    if not is_strict_precision_subset:
+        return False
+    country_name_parts = dict(raw_place_coordinate_country_token_identities())
+    address_country_codes = {
+        country_code
+        for country_code in (existing_country, refreshed_country)
+        if country_code is not None
+    }
+    if any(
+        country_name_parts.get(existing_part) in address_country_codes
+        for existing_part in set(existing_parts) - set(refreshed_parts)
+    ):
+        return False
+    if any(
+        set(existing_part).difference(refreshed_part) & directional_tokens
+        for existing_part in existing_parts
+        for refreshed_part in refreshed_parts
+        if set(refreshed_part).issubset(existing_part)
+    ):
+        return False
+    return bool(
+        refreshed_parts
+        and all(
+            any(
+                set(refreshed_part).issubset(set(existing_part))
+                for existing_part in existing_parts
+            )
+            for refreshed_part in refreshed_parts
+        )
+    )
+
+
+def raw_place_coordinate_address_key(address: str) -> str | None:
+    decomposed = unicodedata.normalize("NFKD", address.casefold())
+    without_latin_diacritics: list[str] = []
+    previous_base_is_latin = False
+    for character in decomposed:
+        category = unicodedata.category(character)
+        if category.startswith("M"):
+            if not previous_base_is_latin:
+                without_latin_diacritics.append(character)
+            continue
+        without_latin_diacritics.append(character)
+        previous_base_is_latin = bool(
+            category.startswith("L")
+            and "LATIN" in unicodedata.name(character, "")
+        )
+    normalized = unicodedata.normalize("NFKC", "".join(without_latin_diacritics))
+    normalized = re.sub(r"(?<=\w)['’ʼ](?=\w)", "", normalized)
+    normalized_characters = [
+        character
+        if unicodedata.category(character)[0] in {"L", "M", "N"}
+        else " "
+        for character in normalized
+    ]
+    compact = re.sub(r"\s+", " ", "".join(normalized_characters)).strip()
+    return compact or None
+
+
+def raw_place_coordinate_normalize_street_prefix(
+    part: str,
+    country_code: str | None,
+) -> str:
+    normalized = unicodedata.normalize("NFKC", part)
+    prefix_replacements = (
+        (r"^\s*c(?:\.|/)\s*(?=[^\W\d_])", "Calle "),
+        (r"^\s*pl\.\s*(?=[^\W\d_])", "Plaza "),
+    )
+    for pattern, replacement in prefix_replacements:
+        if re.match(pattern, normalized, flags=re.IGNORECASE):
+            return re.sub(
+                pattern,
+                replacement,
+                normalized,
+                count=1,
+                flags=re.IGNORECASE,
+            )
+    piazza_or_plaza_match = re.match(
+        r"^\s*p(?:\.\s*)?za\.?\s*(?=[^\W\d_])",
+        normalized,
+        flags=re.IGNORECASE,
+    )
+    if piazza_or_plaza_match is not None:
+        replacement = "Piazza " if country_code == "IT" else "Plaza "
+        return f"{replacement}{normalized[piazza_or_plaza_match.end():]}"
+    if country_code == "IT":
+        return re.sub(
+            r"^\s*str\.\s*(?=[^\W\d_])",
+            "Strada ",
+            normalized,
+            count=1,
+            flags=re.IGNORECASE,
+        )
+    return normalized
+
+
+def raw_place_coordinate_address_token_list(address_key: str) -> list[str]:
+    raw_tokens = address_key.split()
+    normalized_tokens: list[str] = []
+    index = 0
+    while index < len(raw_tokens):
+        token = raw_tokens[index]
+        compound_strasse_match = re.fullmatch(
+            r"(.{2,}?)(?:strasse|str)",
+            token,
+        )
+        if compound_strasse_match is not None:
+            normalized_tokens.append(f"{compound_strasse_match.group(1)}strasse")
+            index += 1
+            continue
+        ordinal_match = re.fullmatch(r"(\d+)(?:st|nd|rd|th)", token)
+        if ordinal_match is not None:
+            normalized_tokens.append(f"ordinal_{int(ordinal_match.group(1))}")
+            index += 1
+            continue
+        ordinal_value = RAW_PLACE_ORDINAL_WORD_VALUES.get(token)
+        if ordinal_value is not None:
+            normalized_tokens.append(f"ordinal_{ordinal_value}")
+            index += 1
+            continue
+        cardinal_tens_value = RAW_PLACE_CARDINAL_TENS_VALUES.get(token)
+        if cardinal_tens_value is not None and index + 1 < len(raw_tokens):
+            ordinal_unit_value = RAW_PLACE_ORDINAL_WORD_VALUES.get(
+                raw_tokens[index + 1]
+            )
+            if ordinal_unit_value is not None and ordinal_unit_value < 10:
+                normalized_tokens.append(
+                    f"ordinal_{cardinal_tens_value + ordinal_unit_value}"
+                )
+                index += 2
+                continue
+        normalized_tokens.append(
+            RAW_PLACE_DIRECTION_TOKEN_ALIASES.get(
+                token,
+                RAW_PLACE_ADDRESS_TOKEN_ALIASES.get(token, token),
+            )
+        )
+        index += 1
+    return normalized_tokens
+
+
+def raw_place_coordinate_token_is_ordinal(token: str) -> bool:
+    return token.startswith("ordinal_")
+
+
+def raw_place_coordinate_part_has_street_intersection(
+    tokens: list[str],
+    *,
+    part: str | None = None,
+) -> bool:
+    ordinal_street_count = sum(
+        raw_place_coordinate_token_is_ordinal(token)
+        and index + 1 < len(tokens)
+        and tokens[index + 1] in RAW_PLACE_STREET_SUFFIX_TOKENS
+        for index, token in enumerate(tokens)
+    )
+    if ordinal_street_count >= 2:
+        return True
+    if part is None or re.search(
+        r"(?:&|\b(?:and|at)\b)",
+        unicodedata.normalize("NFKC", part).casefold(),
+    ) is None:
+        return False
+    return sum(
+        index > 0
+        and token in RAW_PLACE_STREET_SUFFIX_TOKENS
+        and tokens[index - 1] not in RAW_PLACE_UNIT_PREFIX_TOKENS
+        for index, token in enumerate(tokens)
+    ) >= 2
+
+
+def raw_place_coordinate_address_has_street_level_evidence(address: str) -> bool:
+    normalized_address = raw_place_coordinate_strip_japanese_postal_prefix(address)
+    comparison_parts, country_code = raw_place_coordinate_address_comparison_key(
+        normalized_address
+    )
+    if country_code is None:
+        subdivision_country_codes = raw_place_coordinate_subdivision_country_codes(
+            comparison_parts
+        )
+        if len(subdivision_country_codes) == 1:
+            country_code = next(iter(subdivision_country_codes))
+    parsed_parts: list[tuple[str, str, list[str]]] = []
+    for part in re.split(r"[,、]", normalized_address):
+        address_key = raw_place_coordinate_address_key(part)
+        if address_key is None:
+            continue
+        tokens = raw_place_coordinate_address_token_list(address_key)
+        parsed_parts.append((part, address_key, tokens))
+
+    for part, address_key, tokens in parsed_parts:
+        hash_unit_token_indexes = raw_place_coordinate_hash_unit_token_indexes(
+            part,
+            tokens,
+        )
+        numeric_indexes = {
+            index
+            for index, token in enumerate(tokens)
+            if any(character.isdigit() for character in token)
+            and not raw_place_coordinate_token_is_ordinal(token)
+            and index not in hash_unit_token_indexes
+        }
+        if not numeric_indexes and country_code == "MX":
+            numeric_indexes = raw_place_coordinate_hash_premise_token_indexes(
+                part,
+                tokens,
+            )
+        if not numeric_indexes:
+            continue
+        if raw_place_coordinate_part_is_route_only(tokens, address_key=address_key):
+            continue
+        if raw_place_coordinate_part_has_street_marker(
+            part,
+            address_key,
+            tokens,
+        ) and raw_place_coordinate_numeric_indexes_include_premise(
+            tokens,
+            numeric_indexes,
+        ):
+            return True
+
+    if any(
+        raw_place_coordinate_part_has_street_intersection(tokens, part=part)
+        for part, _, tokens in parsed_parts
+    ):
+        return True
+
+    for index, (part, address_key, tokens) in enumerate(parsed_parts):
+        if not raw_place_coordinate_part_has_street_marker(
+            part,
+            address_key,
+            tokens,
+        ):
+            continue
+        if set(tokens) & {"hwy", "rte"}:
+            continue
+        if raw_place_coordinate_street_part_has_nearby_premise(
+            parsed_parts,
+            index,
+        ):
+            return True
+    return False
+
+
+def raw_place_coordinate_part_has_street_marker(
+    part: str,
+    address_key: str,
+    tokens: list[str],
+) -> bool:
+    normalized_part = unicodedata.normalize("NFKC", part).casefold()
+    if re.match(
+        r"\s*(?:c(?:\.|/)|p(?:\.\s*)?za\.?|pl\.)\s*(?=[^\W\d_])",
+        normalized_part,
+    ):
+        return True
+    street_suffix_indexes = {
+        index
+        for index, token in enumerate(tokens)
+        if index > 0 and token in RAW_PLACE_STREET_SUFFIX_TOKENS
+    }
+    if any(index > 0 for index in street_suffix_indexes):
+        return True
+    if re.search(
+        r"\b(?:allee|allée|av|avenida|avenue|boulevard|calle|carrer|chaussee|chaussée|chemin|chome|corso|impasse|largo|passeig|piazza|plaza|quai|r|rua|rue|str|strada|strasse|straße|via|viale)\b",
+        address_key,
+    ):
+        return True
+    if re.search(r"[^\W\d_]{2,}(?:str|strasse|straße)\b", address_key):
+        return True
+    return bool(re.search(r"(?:丁目|番地|號|号|路|街|道|巷|弄)", part))
+
+
+def raw_place_coordinate_part_is_premise_number(tokens: list[str]) -> bool:
+    premise_tokens = tokens
+    if premise_tokens and premise_tokens[0] in RAW_PLACE_UNIT_NUMBER_LABEL_TOKENS:
+        premise_tokens = premise_tokens[1:]
+    if not premise_tokens or not any(
+        character.isdigit() for character in premise_tokens[0]
+    ):
+        return False
+    for token in premise_tokens:
+        compact = re.sub(r"[^a-z0-9]", "", token)
+        if compact.isdigit() and 1 <= len(compact) <= 4:
+            continue
+        if re.fullmatch(r"\d{1,4}[a-z]{1,3}", compact):
+            continue
+        if compact.isalpha() and len(compact) <= 3:
+            continue
+        return False
+    return True
+
+
+def raw_place_coordinate_hash_unit_token_indexes(
+    part: str,
+    tokens: Sequence[str],
+) -> set[int]:
+    matched_indexes: set[int] = set()
+    search_end = len(tokens)
+    hash_units = re.findall(
+        r"#\s*([\w-]+)",
+        unicodedata.normalize("NFKC", part),
+    )
+    for hash_unit in reversed(hash_units):
+        address_key = raw_place_coordinate_address_key(hash_unit)
+        if address_key is None:
+            continue
+        unit_tokens = raw_place_coordinate_address_token_list(address_key)
+        if not unit_tokens:
+            continue
+        for start in range(search_end - len(unit_tokens), -1, -1):
+            end = start + len(unit_tokens)
+            if list(tokens[start:end]) != unit_tokens:
+                continue
+            matched_indexes.update(range(start, end))
+            search_end = start
+            break
+    return matched_indexes
+
+
+def raw_place_coordinate_hash_premise_token_indexes(
+    part: str,
+    tokens: Sequence[str],
+) -> set[int]:
+    matched_indexes: set[int] = set()
+    search_end = len(tokens)
+    normalized_part = unicodedata.normalize("NFKC", part)
+    hash_premises = list(
+        re.finditer(r"#\s*(\d+(?:\s*-\s*[A-Za-z]{1,3})?)\b", normalized_part)
+    )
+    for match in reversed(hash_premises):
+        unit_prefix_pattern = "|".join(
+            re.escape(token)
+            for token in sorted(RAW_PLACE_UNIT_PREFIX_TOKENS, key=len, reverse=True)
+        )
+        if re.search(
+            rf"\b(?:{unit_prefix_pattern})(?:\s+(?:no|number)\.?)?\s*$",
+            normalized_part[: match.start()],
+            flags=re.IGNORECASE,
+        ):
+            continue
+        address_key = raw_place_coordinate_address_key(match.group(1))
+        if address_key is None:
+            continue
+        premise_tokens = raw_place_coordinate_address_token_list(address_key)
+        if not premise_tokens:
+            continue
+        for start in range(search_end - len(premise_tokens), -1, -1):
+            end = start + len(premise_tokens)
+            if list(tokens[start:end]) != premise_tokens:
+                continue
+            matched_indexes.update(range(start, end))
+            search_end = start
+            break
+    return matched_indexes
+
+
+def raw_place_coordinate_hash_premise_keys(address: str) -> set[str]:
+    keys: set[str] = set()
+    normalized_address = unicodedata.normalize("NFKC", address)
+    unit_prefix_pattern = "|".join(
+        re.escape(token)
+        for token in sorted(RAW_PLACE_UNIT_PREFIX_TOKENS, key=len, reverse=True)
+    )
+    for match in re.finditer(
+        r"#\s*(\d+(?:\s*[-/]\s*[A-Za-z]{1,3})?)\b",
+        normalized_address,
+    ):
+        if re.search(
+            rf"\b(?:{unit_prefix_pattern})(?:\s+(?:no|number)\.?)?\s*$",
+            normalized_address[: match.start()],
+            flags=re.IGNORECASE,
+        ):
+            continue
+        key = raw_place_coordinate_address_key(match.group(1))
+        if key is not None:
+            keys.add(key)
+    return keys
+
+
+def raw_place_coordinate_street_part_has_nearby_premise(
+    parsed_parts: Sequence[tuple[str, str, list[str]]],
+    street_part_index: int,
+) -> bool:
+    for direction in (-1, 1):
+        candidate_index = street_part_index + direction
+        while 0 <= candidate_index < len(parsed_parts):
+            candidate_tokens = parsed_parts[candidate_index][2]
+            if raw_place_coordinate_part_is_premise_number(candidate_tokens):
+                return True
+            if not raw_place_coordinate_part_is_section_component(candidate_tokens):
+                break
+            candidate_index += direction
+    return False
+
+
+def raw_place_coordinate_part_is_section_component(tokens: Sequence[str]) -> bool:
+    return bool(tokens) and tokens[0] in {"sec", "section"}
+
+
+def raw_place_coordinate_numeric_indexes_include_premise(
+    tokens: Sequence[str],
+    numeric_indexes: set[int],
+) -> bool:
+    street_suffix_indexes = {
+        index
+        for index, token in enumerate(tokens)
+        if index > 0 and token in RAW_PLACE_STREET_SUFFIX_TOKENS
+    }
+    if not street_suffix_indexes:
+        return bool(numeric_indexes)
+    first_suffix_index = min(street_suffix_indexes)
+    last_suffix_index = max(street_suffix_indexes)
+    return any(
+        index < first_suffix_index or index == last_suffix_index + 1
+        for index in numeric_indexes
+    )
+
+
+def raw_place_coordinate_part_is_route_only(
+    tokens: list[str],
+    *,
+    address_key: str,
+) -> bool:
+    raw_tokens = address_key.split()
+    if raw_tokens and raw_tokens[0] == "r":
+        has_street_name = any(
+            token.isalpha() and token not in RAW_PLACE_UNIT_PREFIX_TOKENS
+            for token in raw_tokens[1:]
+        )
+        if not has_street_name:
+            return True
+
+    route_indexes = [
+        index
+        for index, token in enumerate(tokens)
+        if token in {"hwy", "rte"}
+    ]
+    if not route_indexes:
+        return False
+    route_qualifiers = {"i", "interstate", "m", "state", "us"}
+    for index, token in enumerate(tokens[: route_indexes[0]]):
+        compact = re.sub(r"[^a-z0-9]", "", token)
+        if not compact or not compact[0].isdigit():
+            continue
+        previous_token = tokens[index - 1] if index > 0 else None
+        if previous_token in route_qualifiers | RAW_PLACE_UNIT_PREFIX_TOKENS:
+            continue
+        if (
+            previous_token in RAW_PLACE_UNIT_NUMBER_LABEL_TOKENS
+            and index > 1
+            and tokens[index - 2] in RAW_PLACE_UNIT_PREFIX_TOKENS
+        ):
+            continue
+        return False
+    return True
+
+
+def raw_place_coordinate_infer_country_from_subdivision_postal(
+    address: str,
+) -> str | None:
+    normalized_address = unicodedata.normalize("NFKC", address)
+    country_patterns = (
+        ("US", r"\b(?P<code>[A-Z]{2})\s*,?\s*\d{5}(?:-\d{4})?\b"),
+        ("CA", r"\b(?P<code>[A-Z]{2})\s*,?\s*[A-Z]\d[A-Z]\s*\d[A-Z]\d\b"),
+        ("AU", r"\b(?P<code>[A-Z]{2,3})\s*,?\s*\d{4}\b"),
+    )
+    for country_code, pattern in country_patterns:
+        subdivision_codes = raw_place_coordinate_subdivision_code_token_identities(
+            country_code
+        )
+        for match in re.finditer(pattern, normalized_address):
+            code_key = raw_place_coordinate_address_key(match.group("code"))
+            if not code_key:
+                continue
+            code_tokens = tuple(raw_place_coordinate_address_token_list(code_key))
+            if code_tokens in subdivision_codes:
+                return country_code
+    return None
+
+
+def raw_place_coordinate_postal_evidence_is_valid_for_country(
+    tokens: Sequence[str],
+    postal_token_indexes: set[int],
+    country_code: str | None,
+) -> bool:
+    if not postal_token_indexes:
+        return False
+    compact_postal = "".join(
+        re.sub(r"[^a-z0-9]", "", tokens[index])
+        for index in sorted(postal_token_indexes)
+    )
+    if country_code == "US":
+        return bool(re.fullmatch(r"\d{5}(?:\d{4})?", compact_postal))
+    if country_code == "CA":
+        return bool(re.fullmatch(r"[a-z]\d[a-z]\d[a-z]\d", compact_postal))
+    if country_code == "AU":
+        return bool(re.fullmatch(r"\d{4}", compact_postal))
+    if country_code == "IT":
+        return bool(re.fullmatch(r"\d{5}", compact_postal))
+    if country_code == "GE":
+        return bool(re.fullmatch(r"\d{4}", compact_postal))
+    if country_code == "TW":
+        return bool(re.fullmatch(r"\d{3,6}", compact_postal))
+    if country_code == "GB":
+        return bool(
+            re.fullmatch(
+                r"(?:gir0aa|[a-z]{1,2}\d[a-z\d]?\d[a-z]{2})",
+                compact_postal,
+            )
+        )
+    return False
+
+
+def raw_place_coordinate_country_span(
+    tokens: Sequence[str],
+    *,
+    expected_country: str | None = None,
+) -> tuple[int, int, str] | None:
+    if expected_country == "GE":
+        for start in range(len(tokens) - 1, -1, -1):
+            if tokens[start] != "georgia":
+                continue
+            end = start + 1
+            trailing_indexes = set(range(end, len(tokens)))
+            if trailing_indexes and not (
+                raw_place_coordinate_postal_evidence_is_valid_for_country(
+                    tokens,
+                    trailing_indexes,
+                    "GE",
+                )
+            ):
+                continue
+            return start, end, "GE"
+    for country_tokens, country_code in raw_place_coordinate_country_token_identities():
+        if expected_country is not None and country_code != expected_country:
+            continue
+        country_length = len(country_tokens)
+        for start in range(len(tokens) - country_length, -1, -1):
+            end = start + country_length
+            if tuple(tokens[start:end]) != country_tokens:
+                continue
+            trailing_indexes = set(range(end, len(tokens)))
+            if trailing_indexes and not (
+                raw_place_coordinate_postal_evidence_is_valid_for_country(
+                    tokens,
+                    trailing_indexes,
+                    country_code,
+                )
+            ):
+                continue
+            return start, end, country_code
+    return None
+
+
+def raw_place_coordinate_infer_georgia_country(raw_parts: Sequence[str]) -> str | None:
+    has_georgia_component = any(
+        raw_place_coordinate_address_key(part) == "georgia"
+        for part in raw_parts
+    )
+    if not has_georgia_component:
+        return None
+
+    subdivision_identities = raw_place_coordinate_subdivision_token_identities(None)
+    for part in raw_parts:
+        part_key = raw_place_coordinate_address_key(part)
+        if part_key is None or part_key == "georgia":
+            continue
+        identity = subdivision_identities.get(
+            tuple(raw_place_coordinate_address_token_list(part_key))
+        )
+        if identity is not None and identity[0] == "subdivision" and identity[1].startswith("ge-"):
+            return "GE"
+    return None
+
+
+def raw_place_coordinate_address_comparison_key(
+    address: str,
+    *,
+    country_hint: str | None = None,
+) -> tuple[tuple[tuple[str, ...], ...], str | None]:
+    comparison_parts: list[tuple[str, ...]] = []
+    embedded_subdivision_code_suffixes: list[tuple[str, ...] | None] = []
+    street_numbers = raw_place_coordinate_street_numbers(address)
+    country: str | None = None
+    normalized_address = raw_place_coordinate_strip_japanese_postal_prefix(address)
+    raw_parts = [
+        part
+        for part in re.split(r"[,、]", normalized_address)
+        if raw_place_coordinate_address_key(part) is not None
+    ]
+    if raw_parts:
+        for raw_part_index in dict.fromkeys((len(raw_parts) - 1, 0)):
+            part_key = raw_place_coordinate_address_key(raw_parts[raw_part_index])
+            part_tokens = (
+                raw_place_coordinate_address_token_list(part_key)
+                if part_key
+                else []
+            )
+            country_span = raw_place_coordinate_country_span(part_tokens)
+            if country_span is not None:
+                country = country_span[2]
+                break
+    if country is None:
+        country = raw_place_coordinate_infer_georgia_country(raw_parts)
+    if country is None:
+        country = raw_place_coordinate_infer_country_from_subdivision_postal(
+            normalized_address
+        )
+    known_subdivision_code_identities = (
+        raw_place_coordinate_subdivision_code_token_identities(
+            country or country_hint
+        )
+    )
+    for raw_part_index, raw_part in enumerate(raw_parts):
+        part = raw_place_coordinate_normalize_street_prefix(
+            raw_part,
+            country or country_hint,
+        )
+        part = re.sub(
+            r"^\s*(?:unit\s+)?[^/\s,]+\s*/\s*",
+            "",
+            part,
+            flags=re.IGNORECASE,
+        )
+        part = re.sub(r"#\s*[\w-]+", "", part)
+        address_key = raw_place_coordinate_address_key(part)
+        if address_key is None:
+            continue
+        part_tokens = raw_place_coordinate_address_token_list(address_key)
+        if raw_place_coordinate_part_has_street_intersection(
+            part_tokens,
+            part=raw_part,
+        ):
+            part_tokens = [
+                token for token in part_tokens if token not in {"and", "at"}
+            ]
+        uppercase_word_suffixes = {
+            tuple(raw_place_coordinate_address_token_list(word_key))
+            for word in re.findall(
+                r"[^\W_]+",
+                unicodedata.normalize("NFKC", raw_part),
+            )
+            if word == word.upper()
+            and any(character.isalpha() for character in word)
+            and (word_key := raw_place_coordinate_address_key(word))
+        }
+        raw_postal_token_indexes = {
+            index
+            for index in range(len(part_tokens))
+            if raw_place_coordinate_token_is_postal(
+                part_tokens,
+                index,
+                street_numbers,
+                country_code=country or country_hint,
+            )
+        }
+        current_part_has_valid_postal = (
+            raw_place_coordinate_postal_evidence_is_valid_for_country(
+                part_tokens,
+                raw_postal_token_indexes,
+                country or country_hint,
+            )
+        )
+        next_part_is_postal_only = False
+        if raw_part_index + 1 < len(raw_parts):
+            next_part_key = raw_place_coordinate_address_key(
+                raw_parts[raw_part_index + 1]
+            )
+            next_part_tokens = (
+                raw_place_coordinate_address_token_list(next_part_key)
+                if next_part_key
+                else []
+            )
+            next_part_postal_token_indexes = {
+                index
+                for index in range(len(next_part_tokens))
+                if raw_place_coordinate_token_is_postal(
+                    next_part_tokens,
+                    index,
+                    street_numbers,
+                    country_code=country or country_hint,
+                )
+            }
+            next_part_is_postal_only = (
+                bool(next_part_tokens)
+                and len(next_part_postal_token_indexes) == len(next_part_tokens)
+                and raw_place_coordinate_postal_evidence_is_valid_for_country(
+                    next_part_tokens,
+                    next_part_postal_token_indexes,
+                    country or country_hint,
+                )
+            )
+        if (
+            len(part_tokens) >= 2
+            and part_tokens[-1] in RAW_PLACE_TRAILING_UNIT_TOKENS
+            and (
+                any(character.isdigit() for character in part_tokens[-2])
+                or part_tokens[-2] in {"basement", "ground", "mezzanine"}
+            )
+        ):
+            del part_tokens[-2:]
+        comparison_part_tokens: list[str] = []
+        index = 0
+        while index < len(part_tokens):
+            token = part_tokens[index]
+            unit_identifier_index = index + 1
+            if (
+                unit_identifier_index < len(part_tokens)
+                and part_tokens[unit_identifier_index]
+                in RAW_PLACE_UNIT_NUMBER_LABEL_TOKENS
+            ):
+                unit_identifier_index += 1
+            is_unit_designator = bool(
+                token in RAW_PLACE_UNIT_PREFIX_TOKENS
+                and unit_identifier_index < len(part_tokens)
+                and part_tokens[unit_identifier_index]
+                not in RAW_PLACE_STREET_SUFFIX_TOKENS
+                and (
+                    not comparison_part_tokens
+                    or comparison_part_tokens[-1] in RAW_PLACE_STREET_SUFFIX_TOKENS
+                )
+                and not (
+                    (token,) in known_subdivision_code_identities
+                    and (token,) in uppercase_word_suffixes
+                    and (
+                        next_part_is_postal_only
+                        or (
+                            current_part_has_valid_postal
+                            and any(
+                                postal_index > index
+                                for postal_index in raw_postal_token_indexes
+                            )
+                        )
+                    )
+                )
+            )
+            if not is_unit_designator:
+                comparison_part_tokens.append(token)
+                index += 1
+                continue
+
+            index = unit_identifier_index + 1
+        country_span = raw_place_coordinate_country_span(
+            comparison_part_tokens,
+            expected_country=country or country_hint,
+        )
+        if country_span is not None:
+            country_start, country_end, country_code = country_span
+            del comparison_part_tokens[country_start:country_end]
+            country = country or country_code
+
+        postal_token_indexes = {
+            index
+            for index in range(len(comparison_part_tokens))
+            if raw_place_coordinate_token_is_postal(
+                comparison_part_tokens,
+                index,
+                street_numbers,
+                country_code=country or country_hint,
+            )
+        }
+        comparison_part_tokens = [
+            token
+            for index, token in enumerate(comparison_part_tokens)
+            if index not in postal_token_indexes
+        ]
+        embedded_subdivision_code_suffix = None
+        if (
+            comparison_part_tokens
+            and (current_part_has_valid_postal or next_part_is_postal_only)
+        ):
+            candidate_suffix = (comparison_part_tokens[-1],)
+            if candidate_suffix in uppercase_word_suffixes:
+                embedded_subdivision_code_suffix = candidate_suffix
+        if comparison_part_tokens:
+            comparison_parts.append(tuple(comparison_part_tokens))
+            embedded_subdivision_code_suffixes.append(
+                embedded_subdivision_code_suffix
+            )
+    subdivision_country_code = country or country_hint
+    subdivision_identities = raw_place_coordinate_subdivision_token_identities(
+        subdivision_country_code
+    )
+    comparison_parts = raw_place_coordinate_normalize_subdivision_parts(
+        comparison_parts,
+        subdivision_identities,
+        raw_place_coordinate_subdivision_code_token_identities(
+            subdivision_country_code
+        ),
+        embedded_subdivision_code_suffixes,
+    )
+    return tuple(sorted(comparison_parts)), country
+
+
+def raw_place_coordinate_normalize_subdivision_parts(
+    comparison_parts: Sequence[tuple[str, ...]],
+    subdivision_identities: Mapping[tuple[str, ...], tuple[str, ...]],
+    subdivision_code_identities: Mapping[tuple[str, ...], tuple[str, ...]],
+    embedded_subdivision_code_suffixes: Sequence[tuple[str, ...] | None],
+) -> list[tuple[str, ...]]:
+    normalized_parts: list[tuple[str, ...]] = []
+    subdivision_suffixes = sorted(
+        subdivision_code_identities.items(),
+        key=lambda item: (-len(item[0]), item[0]),
+    )
+    for part, allowed_suffix in zip(
+        comparison_parts,
+        embedded_subdivision_code_suffixes,
+        strict=True,
+    ):
+        exact_identity = subdivision_identities.get(part)
+        if exact_identity is not None:
+            normalized_parts.append(exact_identity)
+            continue
+
+        for suffix, identity in subdivision_suffixes:
+            suffix_length = len(suffix)
+            if (
+                suffix != allowed_suffix
+                or suffix_length >= len(part)
+                or part[-suffix_length:] != suffix
+            ):
+                continue
+            prefix = part[:-suffix_length]
+            if prefix:
+                normalized_parts.append(
+                    subdivision_identities.get(prefix, prefix)
+                )
+            normalized_parts.append(identity)
+            break
+        else:
+            normalized_parts.append(part)
+    return list(dict.fromkeys(normalized_parts))
+
+
+def raw_place_coordinate_collapse_street_number_range(
+    address: str,
+    endpoint_numbers: set[str],
+) -> str | None:
+    if len(endpoint_numbers) != 1:
+        return None
+    endpoint = next(iter(endpoint_numbers))
+    normalized_address = unicodedata.normalize("NFKC", address)
+    contains_cjk = bool(re.search(r"[\u3040-\u30ff\u3400-\u9fff]", normalized_address))
+    _comparison_parts, country_code = raw_place_coordinate_address_comparison_key(
+        normalized_address
+    )
+    is_japanese_address = raw_place_coordinate_address_is_japanese(
+        normalized_address,
+        country_code=country_code,
+    )
+    replaced = False
+
+    def collapse(match: re.Match[str]) -> str:
+        nonlocal replaced
+        if contains_cjk and (
+            is_japanese_address
+            or not re.match(r"\s*[號号]", normalized_address[match.end() :])
+        ):
+            return match.group(0)
+        if endpoint not in {match.group("start"), match.group("end")}:
+            return match.group(0)
+        replaced = True
+        return endpoint
+
+    collapsed = re.sub(
+        r"(?<!\d)(?P<start>\d+)\s*[-–—−]\s*(?P<end>\d+)(?!\d)",
+        collapse,
+        normalized_address,
+    )
+    return collapsed if replaced else None
+
+
+def raw_place_coordinate_address_is_japanese(
+    address: str,
+    *,
+    country_code: str | None,
+) -> bool:
+    if country_code == "JP":
+        return True
+    if country_code is not None:
+        return False
+    if re.search(r"[\u3040-\u30ff]", address):
+        return True
+    return any(marker in address for marker in RAW_PLACE_JAPANESE_PREFECTURE_MARKERS)
+
+
+def raw_place_coordinate_token_is_part_of_valid_alphanumeric_postal(
+    tokens: Sequence[str],
+    index: int,
+    country_code: str | None,
+) -> bool:
+    if country_code not in {"CA", "GB"}:
+        return False
+    for span_length in (1, 2):
+        first_start = max(0, index - span_length + 1)
+        last_start = min(index, len(tokens) - span_length)
+        for start in range(first_start, last_start + 1):
+            indexes = set(range(start, start + span_length))
+            if raw_place_coordinate_postal_evidence_is_valid_for_country(
+                tokens,
+                indexes,
+                country_code,
+            ):
+                return True
+    return False
+
+
+def raw_place_coordinate_token_is_postal(
+    tokens: list[str],
+    index: int,
+    street_numbers: set[str],
+    *,
+    country_code: str | None = None,
+) -> bool:
+    token = tokens[index]
+    numbers = set(re.findall(r"\d+", token))
+    if not numbers:
+        return False
+    compact = re.sub(r"[^a-z0-9]", "", token)
+    if numbers & street_numbers and not (
+        any(character.isalpha() for character in compact)
+        and any(character.isdigit() for character in compact)
+        and raw_place_coordinate_token_is_part_of_valid_alphanumeric_postal(
+            tokens,
+            index,
+            country_code,
+        )
+    ):
+        return False
+    previous_token = tokens[index - 1] if index > 0 else None
+    if previous_token in {"hwy", "rte"}:
+        return False
+
+    if compact.isdigit():
+        if country_code == "TW" and 3 <= len(compact) <= 6:
+            return True
+        if 4 <= len(compact) <= 6:
+            return True
+        if len(compact) == 3:
+            for neighbor_index in (index - 1, index + 1):
+                if not 0 <= neighbor_index < len(tokens):
+                    continue
+                neighbor = re.sub(r"[^0-9]", "", tokens[neighbor_index])
+                neighbor_numbers = set(re.findall(r"\d+", tokens[neighbor_index]))
+                if (
+                    4 <= len(neighbor) <= 6
+                    and neighbor_numbers
+                    and not neighbor_numbers & street_numbers
+                ):
+                    return True
+        return False
+    return (
+        3 <= len(compact) <= 7
+        and any(character.isalpha() for character in compact)
+        and any(character.isdigit() for character in compact)
+    )
+
+
+def raw_place_coordinate_strip_japanese_postal_prefix(address: str) -> str:
+    normalized = unicodedata.normalize("NFKC", address)
+    return re.sub(
+        r"\s*〒\s*\d{3}\s*-\s*\d{4}\s*(?:[,、]\s*)?",
+        " ",
+        normalized,
+    )
+
+
+@lru_cache(maxsize=1)
+def raw_place_coordinate_country_token_identities() -> tuple[
+    tuple[tuple[str, ...], str],
+    ...,
+]:
+    country_alias_codes = {
+        "England": "GB",
+        "Scotland": "GB",
+        "Wales": "GB",
+        "Northern Ireland": "GB",
+        "UK": "GB",
+        "UAE": "AE",
+        "US": "US",
+        "U.S.": "US",
+        "USA": "US",
+        "U.S.A.": "US",
+        "Korea": "KR",
+        "South Korea": "KR",
+        "韓国": "KR",
+        "Taiwan": "TW",
+        "台灣": "TW",
+        "台湾": "TW",
+        "Trinidad & Tobago": "TT",
+        "España": "ES",
+        "Espanya": "ES",
+        "スペイン": "ES",
+        "フランス": "FR",
+        "モナコ": "MC",
+        "イタリア": "IT",
+        "メキシコ": "MX",
+        "オーストラリア": "AU",
+        "日本": "JP",
+        "中国": "CN",
+        "Ivory Coast": "CI",
+    }
+    suffix_identities: dict[tuple[str, ...], str] = {}
+    for country in pycountry.countries:
+        country_code = country.alpha_2
+        for attribute in ("name", "official_name", "common_name"):
+            country_name = getattr(country, attribute, None)
+            if country_name:
+                raw_place_coordinate_add_country_token_identity(
+                    suffix_identities,
+                    country_name,
+                    country_code,
+                )
+    for country_name, country_code in country_alias_codes.items():
+        raw_place_coordinate_add_country_token_identity(
+            suffix_identities,
+            country_name,
+            country_code,
+        )
+    return tuple(
+        sorted(
+            suffix_identities.items(),
+            key=lambda item: (-len(item[0]), item[0]),
+        )
+    )
+
+
+def raw_place_coordinate_add_country_token_identity(
+    identities: dict[tuple[str, ...], str],
+    country_name: str,
+    country_code: str,
+) -> None:
+    address_key = raw_place_coordinate_address_key(country_name)
+    if address_key is None:
+        return
+    if address_key == "georgia":
+        return
+    identities[tuple(raw_place_coordinate_address_token_list(address_key))] = country_code
+
+
+@lru_cache(maxsize=None)
+def raw_place_coordinate_subdivision_token_identities(
+    country_code: str | None,
+) -> dict[tuple[str, ...], tuple[str, ...]]:
+    candidates: dict[tuple[str, ...], set[str]] = {}
+    for subdivision in pycountry.subdivisions:
+        subdivision_code = as_string(getattr(subdivision, "code", None))
+        subdivision_name = as_string(getattr(subdivision, "name", None))
+        if not subdivision_code or not subdivision_name:
+            continue
+        subdivision_country_code = subdivision_code.split("-", 1)[0]
+        if country_code and subdivision_country_code != country_code:
+            continue
+
+        name_key = raw_place_coordinate_address_key(subdivision_name)
+        if name_key:
+            name_tokens = tuple(raw_place_coordinate_address_token_list(name_key))
+            candidates.setdefault(name_tokens, set()).add(subdivision_code)
+        if country_code and "-" in subdivision_code:
+            code_key = raw_place_coordinate_address_key(
+                subdivision_code.split("-", 1)[1]
+            )
+            if code_key:
+                code_tokens = tuple(raw_place_coordinate_address_token_list(code_key))
+                candidates.setdefault(code_tokens, set()).add(subdivision_code)
+
+    return {
+        tokens: ("subdivision", next(iter(subdivision_codes)).casefold())
+        for tokens, subdivision_codes in candidates.items()
+        if len(subdivision_codes) == 1
+    }
+
+
+@lru_cache(maxsize=None)
+def raw_place_coordinate_subdivision_code_token_identities(
+    country_code: str | None,
+) -> dict[tuple[str, ...], tuple[str, ...]]:
+    if country_code is None:
+        return {}
+
+    candidates: dict[tuple[str, ...], set[str]] = {}
+    for subdivision in pycountry.subdivisions:
+        subdivision_code = as_string(getattr(subdivision, "code", None))
+        if not subdivision_code or "-" not in subdivision_code:
+            continue
+        subdivision_country_code, local_code = subdivision_code.split("-", 1)
+        if subdivision_country_code != country_code:
+            continue
+        code_key = raw_place_coordinate_address_key(local_code)
+        if code_key:
+            code_tokens = tuple(raw_place_coordinate_address_token_list(code_key))
+            candidates.setdefault(code_tokens, set()).add(subdivision_code)
+
+    return {
+        tokens: ("subdivision", next(iter(subdivision_codes)).casefold())
+        for tokens, subdivision_codes in candidates.items()
+        if len(subdivision_codes) == 1
+    }
+
+
+def raw_place_coordinate_subdivision_country_codes(
+    comparison_parts: tuple[tuple[str, ...], ...],
+) -> set[str]:
+    return {
+        part[1].split("-", 1)[0].upper()
+        for part in comparison_parts
+        if len(part) == 2
+        and part[0] == "subdivision"
+        and "-" in part[1]
+    }
+
+
+def raw_place_coordinate_street_numbers(address: str) -> set[str]:
+    address = raw_place_coordinate_strip_japanese_postal_prefix(address)
+    parts = [part.strip() for part in re.split(r"[,、]", address) if part.strip()]
+    if not parts:
+        parts = [address]
+
+    parsed_parts: list[tuple[str, list[str]]] = []
+    for part in parts:
+        address_key = raw_place_coordinate_address_key(part)
+        if address_key is None:
+            continue
+        tokens = raw_place_coordinate_address_token_list(address_key)
+        if any(re.search(r"\d", token) for token in tokens):
+            parsed_parts.append((part, tokens))
+
+    for part, tokens in parsed_parts:
+        if set(tokens) & RAW_PLACE_STREET_SUFFIX_TOKENS:
+            return raw_place_coordinate_part_street_numbers(part, tokens)
+
+    for part, tokens in parsed_parts:
+        if part.lstrip().startswith("#") or set(tokens) & RAW_PLACE_UNIT_PREFIX_TOKENS:
+            continue
+        return {
+            number
+            for token in tokens
+            for number in re.findall(r"\d+", token)
+        }
+    return set()
+
+
+def raw_place_coordinate_part_street_numbers(
+    part: str,
+    tokens: list[str],
+) -> set[str]:
+    slash_unit_match = re.match(
+        r"\s*(?:unit\s+)?[^/\s,]+\s*/\s*(\d+(?:\s*-\s*\d+)?)",
+        part,
+        re.IGNORECASE,
+    )
+    if slash_unit_match is not None:
+        return set(re.findall(r"\d+", slash_unit_match.group(1)))
+
+    numeric_tokens = {
+        index: set(re.findall(r"\d+", token))
+        for index, token in enumerate(tokens)
+        if re.search(r"\d", token)
+        and not raw_place_coordinate_token_is_ordinal(token)
+    }
+    skipped_indexes: set[int] = set()
+    for index, token in enumerate(tokens):
+        if token not in RAW_PLACE_UNIT_PREFIX_TOKENS:
+            continue
+        candidate_index = index + 1
+        if (
+            candidate_index < len(tokens)
+            and tokens[candidate_index] in RAW_PLACE_UNIT_NUMBER_LABEL_TOKENS
+        ):
+            candidate_index += 1
+        if candidate_index in numeric_tokens:
+            skipped_indexes.add(candidate_index)
+    if part.lstrip().startswith("#") and numeric_tokens:
+        skipped_indexes.add(min(numeric_tokens))
+
+    candidate_indexes = [
+        index
+        for index in numeric_tokens
+        if index not in skipped_indexes
+    ]
+    if not candidate_indexes:
+        return set()
+
+    street_suffix_index = max(
+        index
+        for index, token in enumerate(tokens)
+        if token in RAW_PLACE_STREET_SUFFIX_TOKENS
+    )
+    before_suffix = [index for index in candidate_indexes if index < street_suffix_index]
+    selected_indexes = before_suffix or [
+        index
+        for index in candidate_indexes
+        if index > street_suffix_index
+    ][:1]
+    return {
+        number
+        for index in selected_indexes
+        for number in numeric_tokens[index]
+    }
+
+
+def raw_place_maps_url_should_be_preserved(
+    existing_place: RawPlace,
+    refreshed_place: RawPlace,
+) -> bool:
+    existing_url = as_string(existing_place.maps_url)
+    refreshed_url = as_string(refreshed_place.maps_url)
+    if not existing_url or existing_url == refreshed_url:
+        return False
+    if (
+        not raw_place_names_are_compatible(
+            as_string(existing_place.name),
+            as_string(refreshed_place.name),
+        )
+        and not raw_place_maps_url_has_embedded_identity(existing_url)
+    ):
+        return False
+    if google_maps_uri_strength(existing_url) < google_maps_uri_strength(refreshed_url):
+        return False
+    if raw_place_maps_url_has_embedded_identity(
+        refreshed_url,
+    ) and not raw_place_maps_url_has_embedded_identity(existing_url):
+        return False
+
+    existing_url_cid = extract_maps_cid(existing_url)
+    refreshed_cids = {
+        cid
+        for cid in [
+            as_string(refreshed_place.cid),
+            extract_maps_cid(refreshed_url),
+            *refreshed_place.cid_aliases,
+        ]
+        if cid
+    }
+    if existing_url_cid and refreshed_cids and existing_url_cid not in refreshed_cids:
+        return False
+
+    existing_query_place_id = extract_maps_query_place_id(existing_url)
+    refreshed_query_place_id = extract_maps_query_place_id(refreshed_url)
+    if (
+        existing_query_place_id
+        and refreshed_query_place_id
+        and existing_query_place_id != refreshed_query_place_id
+    ):
+        return False
+
+    existing_url_token = extract_maps_place_token(existing_url)
+    refreshed_tokens = {
+        token
+        for token in [
+            as_string(refreshed_place.maps_place_token),
+            extract_maps_place_token(refreshed_url),
+        ]
+        if token
+    }
+    if (
+        existing_url_token
+        and refreshed_tokens
+        and existing_url_token not in refreshed_tokens
+    ):
+        return False
+
+    existing_url_has_identity = raw_place_maps_url_has_embedded_identity(existing_url)
+    refreshed_url_has_identity = raw_place_maps_url_has_embedded_identity(refreshed_url)
+    has_compatible_identity = bool(
+        (existing_url_cid and existing_url_cid in refreshed_cids)
+        or (
+            existing_query_place_id
+            and existing_query_place_id == refreshed_query_place_id
+        )
+        or (existing_url_token and existing_url_token in refreshed_tokens)
+    )
+    return not (
+        existing_url_has_identity
+        and refreshed_url_has_identity
+        and not has_compatible_identity
+    )
+
+
+def raw_place_refreshed_url_identity_is_compatible(
+    existing_place: RawPlace,
+    refreshed_url: str | None,
+    *,
+    refreshed_cid: str | None = None,
+    refreshed_maps_place_token: str | None = None,
+) -> bool:
+    if len(raw_place_google_places_identities(existing_place)) > 1:
+        return False
+
+    existing_cids = {
+        cid
+        for cid in [
+            as_string(existing_place.cid),
+            extract_maps_cid(existing_place.maps_url),
+            *existing_place.cid_aliases,
+        ]
+        if cid
+    }
+    if refreshed_cid and existing_cids and refreshed_cid not in existing_cids:
+        return False
+    matched_identity = bool(refreshed_cid and refreshed_cid in existing_cids)
+
+    existing_tokens = {
+        token
+        for token in [
+            as_string(existing_place.maps_place_token),
+            extract_maps_place_token(existing_place.maps_url),
+        ]
+        if token
+    }
+    if refreshed_maps_place_token and existing_tokens:
+        if refreshed_maps_place_token not in existing_tokens:
+            return False
+        matched_identity = True
+
+    url = as_string(refreshed_url)
+    if not url or not raw_place_maps_url_has_embedded_identity(url):
+        return True
+
+    refreshed_url_cid = extract_maps_cid(url)
+    if refreshed_url_cid:
+        if existing_cids and refreshed_url_cid not in existing_cids:
+            return False
+        matched_identity = matched_identity or refreshed_url_cid in existing_cids
+
+    refreshed_query_place_id = extract_maps_query_place_id(url)
+    if refreshed_query_place_id:
+        existing_query_place_ids = raw_place_google_places_identities(existing_place)
+        if (
+            len(existing_query_place_ids) > 1
+            or (
+                existing_query_place_ids
+                and refreshed_query_place_id not in existing_query_place_ids
+            )
+        ):
+            return False
+        matched_identity = matched_identity or (
+            refreshed_query_place_id in existing_query_place_ids
+        )
+
+    refreshed_token = extract_maps_place_token(url)
+    if refreshed_token:
+        if existing_tokens and refreshed_token not in existing_tokens:
+            return False
+        matched_identity = matched_identity or refreshed_token in existing_tokens
+    return matched_identity
+
+
+def raw_place_maps_url_has_embedded_identity(url: str) -> bool:
+    return bool(
+        extract_maps_cid(url)
+        or extract_maps_query_place_id(url)
+        or extract_maps_place_token(url)
+    )
+
+
 def raw_place_names_are_compatible(existing_name: str | None, refreshed_name: str | None) -> bool:
     if not existing_name or not refreshed_name:
         return True
 
+    existing_name_key = raw_place_coordinate_address_key(existing_name)
+    refreshed_name_key = raw_place_coordinate_address_key(refreshed_name)
+    if existing_name_key is not None and existing_name_key == refreshed_name_key:
+        return True
+
     existing_slug = slugify(existing_name)
     refreshed_slug = slugify(refreshed_name)
+    if existing_slug == "item" or refreshed_slug == "item":
+        return False
     if existing_slug == refreshed_slug:
         return True
 
@@ -5919,35 +8786,733 @@ def raw_place_address_is_preservable(existing_place: RawPlace, refreshed_place: 
     )
 
 
+def raw_place_cid_identity(place: RawPlace) -> str | None:
+    return as_string(place.cid) or extract_maps_cid(place.maps_url)
+
+
+def raw_place_cid_identities(place: RawPlace) -> set[str]:
+    return {
+        identity
+        for identity in (
+            as_string(place.cid),
+            extract_maps_cid(place.maps_url),
+        )
+        if identity
+    }
+
+
+def raw_place_google_id_identity(place: RawPlace) -> str | None:
+    google_id = as_string(place.google_id)
+    if not google_id:
+        return None
+    return google_id.strip("/").replace("/", "-")
+
+
+def raw_place_legacy_google_id_identity(place: RawPlace) -> str | None:
+    google_id = as_string(place.google_id)
+    if not google_id or google_id.startswith("places/") or "/" not in google_id:
+        return None
+    return raw_place_google_id_identity(place)
+
+
+def raw_place_google_places_id_identity(place: RawPlace) -> str | None:
+    identities = raw_place_google_places_identities(place)
+    return next(iter(identities)) if len(identities) == 1 else None
+
+
+def raw_place_google_places_identities(place: RawPlace) -> set[str]:
+    identities = {
+        identity
+        for identity in (extract_maps_query_place_id(place.maps_url),)
+        if identity is not None
+    }
+    google_id = as_string(place.google_id)
+    if google_id:
+        if google_id.startswith("places/"):
+            google_id = google_id.removeprefix("places/")
+            if google_id:
+                identities.add(google_id)
+        elif "/" not in google_id:
+            identities.add(google_id)
+    return identities
+
+
+def raw_place_maps_place_token_identity(place: RawPlace) -> str | None:
+    return as_string(place.maps_place_token) or extract_maps_place_token(place.maps_url)
+
+
+def raw_place_maps_place_token_identities(place: RawPlace) -> set[str]:
+    return {
+        identity
+        for identity in (
+            as_string(place.maps_place_token),
+            extract_maps_place_token(place.maps_url),
+        )
+        if identity
+    }
+
+
+def score_duplicate_raw_place_cid_candidate(
+    place: RawPlace,
+    *,
+    cid: str,
+    prior_places: Sequence[RawPlace],
+) -> int:
+    score = 0
+    if as_string(place.cid) == cid:
+        score += 20
+    if extract_maps_cid(place.maps_url) == cid:
+        score += 25
+
+    best_prior_score = 0
+    for prior_place in prior_places:
+        prior_score = 0
+        if raw_place_names_are_compatible(as_string(prior_place.name), as_string(place.name)):
+            prior_score += 80
+
+        if (
+            as_string(prior_place.google_id)
+            and as_string(prior_place.google_id) == as_string(place.google_id)
+        ):
+            prior_score += 60
+
+        prior_address = normalize_text(prior_place.address)
+        place_address = normalize_text(place.address)
+        if prior_address and place_address:
+            if prior_address == place_address:
+                prior_score += 50
+            else:
+                prior_score += token_overlap_score(prior_address, place_address)
+
+        if (
+            prior_place.lat is not None
+            and prior_place.lng is not None
+            and place.lat is not None
+            and place.lng is not None
+        ):
+            distance_m = haversine_meters(
+                prior_place.lat,
+                prior_place.lng,
+                place.lat,
+                place.lng,
+            )
+            if distance_m <= 100:
+                prior_score += 60
+            elif distance_m <= 400:
+                prior_score += 40
+            elif distance_m <= 1200:
+                prior_score += 10
+
+        best_prior_score = max(best_prior_score, prior_score)
+
+    return score + best_prior_score
+
+
+def preserve_raw_place_url_cid(
+    updates: dict[str, Any],
+    place: RawPlace,
+    url_cid: str | None,
+    *,
+    replacing_cid: str | None = None,
+) -> None:
+    if url_cid is None:
+        return
+    primary_cid = as_string(place.cid)
+    if primary_cid is None or primary_cid == replacing_cid:
+        updates["cid"] = url_cid
+        return
+    if primary_cid == url_cid or url_cid in place.cid_aliases:
+        return
+    updates["cid_aliases"] = [*place.cid_aliases, url_cid]
+
+
+def strip_duplicate_raw_place_cid(
+    place: RawPlace,
+    *,
+    cid: str,
+    shared_google_ids: set[str] | None = None,
+    shared_maps_place_tokens: set[str] | None = None,
+    shared_maps_url_place_tokens: set[str] | None = None,
+    protected_google_ids: set[str] | None = None,
+    protected_maps_place_tokens: set[str] | None = None,
+) -> RawPlace:
+    updates: dict[str, Any] = {}
+    maps_url = as_string(place.maps_url)
+    maps_url_cid = extract_maps_cid(maps_url)
+    maps_url_google_places_id = extract_maps_query_place_id(maps_url)
+    maps_url_place_token = extract_maps_place_token(maps_url)
+    if as_string(place.cid) == cid:
+        updates["cid"] = None
+    maps_place_token = raw_place_maps_place_token_identity(place)
+    maps_url_place_token_should_be_cleared = bool(
+        maps_url_place_token is not None
+        and (
+            (
+                shared_maps_url_place_tokens is not None
+                and maps_url_place_token in shared_maps_url_place_tokens
+            )
+            or (
+                protected_maps_place_tokens is not None
+                and maps_url_place_token in protected_maps_place_tokens
+            )
+        )
+    )
+    if maps_url_cid == cid or maps_url_place_token_should_be_cleared:
+        preserved_cid = maps_url_cid if maps_url_cid != cid else None
+        preserved_maps_place_token = (
+            None if maps_url_place_token_should_be_cleared else maps_url_place_token
+        )
+        preserve_raw_place_url_cid(
+            updates,
+            place,
+            preserved_cid,
+            replacing_cid=cid,
+        )
+        updates["maps_url"] = build_raw_place_maps_url_preserving_identity(
+            place,
+            cid=preserved_cid,
+            google_places_id=maps_url_google_places_id,
+            maps_place_token=preserved_maps_place_token,
+        )
+    else:
+        preserved_maps_place_token = None
+    google_id = raw_place_google_id_identity(place)
+    if google_id and (
+        (shared_google_ids is not None and google_id in shared_google_ids)
+        or (protected_google_ids is not None and google_id in protected_google_ids)
+    ):
+        updates["google_id"] = None
+    maps_place_token_should_be_cleared = bool(
+        as_string(place.maps_place_token)
+        and maps_place_token
+        and (
+            (
+                shared_maps_place_tokens is not None
+                and maps_place_token in shared_maps_place_tokens
+            )
+            or (
+                protected_maps_place_tokens is not None
+                and maps_place_token in protected_maps_place_tokens
+            )
+        )
+    )
+    if maps_place_token_should_be_cleared:
+        updates["maps_place_token"] = None
+    if preserved_maps_place_token is not None and (
+        as_string(place.maps_place_token) is None
+        or maps_place_token_should_be_cleared
+    ):
+        updates["maps_place_token"] = preserved_maps_place_token
+    if not updates:
+        return place
+    return place.model_copy(update=updates)
+
+
+def clear_duplicate_raw_place_cids(
+    *,
+    slug: str,
+    payload: RawSavedList,
+    existing_payload: RawSavedList | None,
+) -> RawSavedList:
+    prior_places_by_cid: dict[str, list[RawPlace]] = {}
+    if existing_payload is not None:
+        for prior_place in existing_payload.places:
+            for cid in raw_place_cid_identities(prior_place):
+                prior_places_by_cid.setdefault(cid, []).append(prior_place)
+
+    updated_places = list(payload.places)
+    made_updates = False
+    while True:
+        indexes_by_cid: dict[str, list[int]] = {}
+        for index, place in enumerate(updated_places):
+            for cid in raw_place_cid_identities(place):
+                indexes_by_cid.setdefault(cid, []).append(index)
+
+        duplicate_indexes_by_cid = {
+            cid: indexes
+            for cid, indexes in indexes_by_cid.items()
+            if len(indexes) > 1
+        }
+        if not duplicate_indexes_by_cid:
+            break
+
+        pass_made_updates = False
+        for cid, indexes in duplicate_indexes_by_cid.items():
+            prior_places = prior_places_by_cid.get(cid, [])
+            google_id_counts = Counter(
+                google_id
+                for google_id in (
+                    raw_place_google_id_identity(updated_places[index])
+                    for index in indexes
+                )
+                if google_id is not None
+            )
+            shared_google_ids = {
+                google_id
+                for google_id, count in google_id_counts.items()
+                if count > 1
+            }
+            maps_place_token_counts = Counter(
+                token
+                for token in (
+                    raw_place_maps_place_token_identity(updated_places[index])
+                    for index in indexes
+                )
+                if token is not None
+            )
+            shared_maps_place_tokens = {
+                token
+                for token, count in maps_place_token_counts.items()
+                if count > 1
+            }
+            maps_url_place_token_counts = Counter(
+                token
+                for token in (
+                    extract_maps_place_token(updated_places[index].maps_url)
+                    for index in indexes
+                )
+                if token is not None
+            )
+            shared_maps_url_place_tokens = {
+                token
+                for token, count in maps_url_place_token_counts.items()
+                if count > 1
+            }
+            keep_index = max(
+                indexes,
+                key=lambda index: (
+                    len(raw_place_cid_identities(updated_places[index])) <= 1,
+                    score_duplicate_raw_place_cid_candidate(
+                        updated_places[index],
+                        cid=cid,
+                        prior_places=prior_places,
+                    ),
+                    -index,
+                ),
+            )
+            kept_place = updated_places[keep_index]
+            protected_google_ids = {
+                google_id
+                for prior_place in prior_places
+                if raw_place_names_are_compatible(
+                    as_string(prior_place.name),
+                    as_string(kept_place.name),
+                )
+                for google_id in [raw_place_google_id_identity(prior_place)]
+                if google_id is not None
+            }
+            protected_maps_place_tokens = {
+                token
+                for prior_place in prior_places
+                if raw_place_names_are_compatible(
+                    as_string(prior_place.name),
+                    as_string(kept_place.name),
+                )
+                for token in [raw_place_maps_place_token_identity(prior_place)]
+                if token is not None
+            }
+            cleared_names: list[str] = []
+            for index in indexes:
+                if index == keep_index:
+                    continue
+                original_place = updated_places[index]
+                updated_place = strip_duplicate_raw_place_cid(
+                    original_place,
+                    cid=cid,
+                    shared_google_ids=shared_google_ids,
+                    shared_maps_place_tokens=shared_maps_place_tokens,
+                    shared_maps_url_place_tokens=shared_maps_url_place_tokens,
+                    protected_google_ids=protected_google_ids,
+                    protected_maps_place_tokens=protected_maps_place_tokens,
+                )
+                if updated_place != original_place:
+                    updated_places[index] = updated_place
+                    cleared_names.append(
+                        updated_place.name or f"place #{index + 1}"
+                    )
+
+            if cleared_names:
+                pass_made_updates = True
+                made_updates = True
+                kept_name = (
+                    updated_places[keep_index].name
+                    or f"place #{keep_index + 1}"
+                )
+                print(
+                    f"WARNING: Clearing duplicate raw CID {cid} in {slug}: "
+                    f"kept [{kept_name}], cleared "
+                    f"[{', '.join(cleared_names)}].",
+                    flush=True,
+                )
+        if not pass_made_updates:
+            break
+
+    if not made_updates:
+        return payload
+    return payload.model_copy(update={"places": updated_places})
+
+
+def score_duplicate_raw_place_google_identity_candidate(
+    place: RawPlace,
+    *,
+    prior_places: Sequence[RawPlace],
+) -> int:
+    score = 0
+    best_prior_score = 0
+    for prior_place in prior_places:
+        prior_score = 0
+        if raw_place_names_are_compatible(as_string(prior_place.name), as_string(place.name)):
+            prior_score += 80
+
+        prior_address = normalize_text(prior_place.address)
+        place_address = normalize_text(place.address)
+        if prior_address and place_address:
+            if prior_address == place_address:
+                prior_score += 50
+            else:
+                prior_score += token_overlap_score(prior_address, place_address)
+
+        if (
+            prior_place.lat is not None
+            and prior_place.lng is not None
+            and place.lat is not None
+            and place.lng is not None
+        ):
+            distance_m = haversine_meters(
+                prior_place.lat,
+                prior_place.lng,
+                place.lat,
+                place.lng,
+            )
+            if distance_m <= 100:
+                prior_score += 60
+            elif distance_m <= 400:
+                prior_score += 40
+            elif distance_m <= 1200:
+                prior_score += 10
+
+        best_prior_score = max(best_prior_score, prior_score)
+
+    return score + best_prior_score
+
+
+def build_raw_place_maps_url_preserving_identity(
+    place: RawPlace,
+    *,
+    cid: str | None = None,
+    google_places_id: str | None = None,
+    maps_place_token: str | None = None,
+) -> str:
+    if google_places_id is not None:
+        query = build_maps_link_query(
+            name=place.name,
+            address=place.address,
+            lat=place.lat,
+            lng=place.lng,
+        ) or google_places_id
+        return build_google_maps_search_url(
+            query,
+            google_place_id=google_places_id,
+        )
+    if maps_place_token is not None:
+        return (
+            "https://www.google.com/maps/place/data=!4m2!3m1!1s"
+            f"{maps_place_token}"
+        )
+    if cid is not None:
+        return f"https://www.google.com/maps?cid={cid}"
+    return build_public_google_maps_url(
+        name=place.name,
+        address=place.address,
+        lat=place.lat,
+        lng=place.lng,
+        raw_maps_url=None,
+    )
+
+
+def strip_duplicate_raw_place_google_identity(
+    place: RawPlace,
+    *,
+    google_id: str | None = None,
+    google_places_id: str | None = None,
+    maps_place_token: str | None = None,
+) -> RawPlace:
+    updates: dict[str, Any] = {}
+    maps_url = as_string(place.maps_url)
+    maps_url_cid = extract_maps_cid(maps_url)
+    embedded_google_places_id = extract_maps_query_place_id(maps_url)
+    embedded_maps_place_token = extract_maps_place_token(maps_url)
+    if google_id is not None and raw_place_google_id_identity(place) == google_id:
+        updates["google_id"] = None
+    if google_places_id is not None:
+        raw_google_id = as_string(place.google_id)
+        stored_google_places_id = None
+        if raw_google_id:
+            if raw_google_id.startswith("places/"):
+                stored_google_places_id = raw_google_id.removeprefix("places/") or None
+            elif "/" not in raw_google_id:
+                stored_google_places_id = raw_google_id
+        if stored_google_places_id == google_places_id:
+            updates["google_id"] = None
+
+    if (
+        google_places_id is not None
+        and embedded_google_places_id == google_places_id
+    ):
+        preserve_raw_place_url_cid(updates, place, maps_url_cid)
+        if (
+            embedded_maps_place_token is not None
+            and as_string(place.maps_place_token) is None
+        ):
+            updates["maps_place_token"] = embedded_maps_place_token
+        updates["maps_url"] = build_raw_place_maps_url_preserving_identity(
+            place,
+            cid=maps_url_cid,
+            maps_place_token=embedded_maps_place_token,
+        )
+    if maps_place_token is not None:
+        if as_string(place.maps_place_token) == maps_place_token:
+            updates["maps_place_token"] = None
+        if extract_maps_place_token(place.maps_url) == maps_place_token:
+            preserve_raw_place_url_cid(updates, place, maps_url_cid)
+            updates["maps_url"] = build_raw_place_maps_url_preserving_identity(
+                place,
+                cid=maps_url_cid,
+                google_places_id=embedded_google_places_id,
+            )
+    if not updates:
+        return place
+    return place.model_copy(update=updates)
+
+
+def raw_place_duplicate_identity_candidate_is_consistent(
+    place: RawPlace,
+    *,
+    identity_name: str,
+) -> bool:
+    if identity_name in {"google_id", "google_places_id"}:
+        return len(raw_place_google_places_identities(place)) <= 1
+    return len(raw_place_maps_place_token_identities(place)) <= 1
+
+
+def clear_duplicate_raw_place_google_identities(
+    *,
+    slug: str,
+    payload: RawSavedList,
+    existing_payload: RawSavedList | None,
+) -> RawSavedList:
+    updated_places = list(payload.places)
+    identity_getters = (
+        (
+            "google_id",
+            lambda place: {
+                identity
+                for identity in (raw_place_google_id_identity(place),)
+                if identity
+            },
+        ),
+        ("google_places_id", raw_place_google_places_identities),
+        ("maps_place_token", raw_place_maps_place_token_identities),
+    )
+
+    prior_places_by_google_id: dict[str, list[RawPlace]] = {}
+    prior_places_by_google_places_id: dict[str, list[RawPlace]] = {}
+    prior_places_by_maps_place_token: dict[str, list[RawPlace]] = {}
+    if existing_payload is not None:
+        for prior_place in existing_payload.places:
+            google_id = raw_place_google_id_identity(prior_place)
+            if google_id:
+                prior_places_by_google_id.setdefault(google_id, []).append(prior_place)
+            for google_places_id in raw_place_google_places_identities(
+                prior_place
+            ):
+                prior_places_by_google_places_id.setdefault(
+                    google_places_id,
+                    [],
+                ).append(prior_place)
+            for maps_place_token in raw_place_maps_place_token_identities(
+                prior_place
+            ):
+                prior_places_by_maps_place_token.setdefault(
+                    maps_place_token,
+                    [],
+                ).append(prior_place)
+
+    made_updates = False
+    while True:
+        pass_made_updates = False
+        for identity_name, identity_getter in identity_getters:
+            indexes_by_identity: dict[str, list[int]] = {}
+            for index, place in enumerate(updated_places):
+                for identity in identity_getter(place):
+                    indexes_by_identity.setdefault(identity, []).append(index)
+
+            for identity, indexes in indexes_by_identity.items():
+                if len(indexes) <= 1:
+                    continue
+                if identity_name == "google_id":
+                    prior_places = prior_places_by_google_id.get(identity, [])
+                elif identity_name == "google_places_id":
+                    prior_places = prior_places_by_google_places_id.get(identity, [])
+                else:
+                    prior_places = prior_places_by_maps_place_token.get(identity, [])
+                keep_index = max(
+                    indexes,
+                    key=lambda index: (
+                        raw_place_duplicate_identity_candidate_is_consistent(
+                            updated_places[index],
+                            identity_name=identity_name,
+                        ),
+                        score_duplicate_raw_place_google_identity_candidate(
+                            updated_places[index],
+                            prior_places=prior_places,
+                        ),
+                        -index,
+                    ),
+                )
+                cleared_names: list[str] = []
+                for index in indexes:
+                    if index == keep_index:
+                        continue
+                    original_place = updated_places[index]
+                    updated_place = strip_duplicate_raw_place_google_identity(
+                        original_place,
+                        google_id=(
+                            identity if identity_name == "google_id" else None
+                        ),
+                        google_places_id=(
+                            identity
+                            if identity_name == "google_places_id"
+                            else None
+                        ),
+                        maps_place_token=(
+                            identity
+                            if identity_name == "maps_place_token"
+                            else None
+                        ),
+                    )
+                    if updated_place != original_place:
+                        updated_places[index] = updated_place
+                        cleared_names.append(
+                            updated_place.name or f"place #{index + 1}"
+                        )
+
+                if cleared_names:
+                    pass_made_updates = True
+                    made_updates = True
+                    kept_name = (
+                        updated_places[keep_index].name
+                        or f"place #{keep_index + 1}"
+                    )
+                    print(
+                        f"WARNING: Clearing duplicate raw {identity_name} "
+                        f"{identity} in {slug}: kept [{kept_name}], "
+                        f"cleared [{', '.join(cleared_names)}].",
+                        flush=True,
+                    )
+        if not pass_made_updates:
+            break
+
+    if not made_updates:
+        return payload
+    return payload.model_copy(update={"places": updated_places})
+
+
 def preserve_existing_raw_saved_list(
     *,
     source: SourceConfig | None = None,
     slug: str,
     existing_payload: RawSavedList | None,
     refreshed_payload: RawSavedList,
+    allow_suspicious_identity_loss: bool = False,
 ) -> RawSavedList:
     if existing_payload is None:
-        return refreshed_payload
+        deduped_payload = clear_duplicate_raw_place_cids(
+            slug=slug,
+            payload=refreshed_payload,
+            existing_payload=None,
+        )
+        return clear_duplicate_raw_place_google_identities(
+            slug=slug,
+            payload=deduped_payload,
+            existing_payload=None,
+        )
     if source is not None:
         if not raw_source_signature_matches(source, existing_payload.source_signature):
-            return refreshed_payload
+            deduped_payload = clear_duplicate_raw_place_cids(
+                slug=slug,
+                payload=refreshed_payload,
+                existing_payload=existing_payload,
+            )
+            return clear_duplicate_raw_place_google_identities(
+                slug=slug,
+                payload=deduped_payload,
+                existing_payload=existing_payload,
+            )
     elif (
         existing_payload.source_signature
         and refreshed_payload.source_signature
         and existing_payload.source_signature != refreshed_payload.source_signature
     ):
-        return refreshed_payload
+        deduped_payload = clear_duplicate_raw_place_cids(
+            slug=slug,
+            payload=refreshed_payload,
+            existing_payload=existing_payload,
+        )
+        return clear_duplicate_raw_place_google_identities(
+            slug=slug,
+            payload=deduped_payload,
+            existing_payload=existing_payload,
+        )
 
     source_type = refreshed_payload.configured_source_type or existing_payload.configured_source_type
+    refreshed_payload = clear_duplicate_raw_place_cids(
+        slug=slug,
+        payload=refreshed_payload,
+        existing_payload=existing_payload,
+    )
+    refreshed_payload = clear_duplicate_raw_place_google_identities(
+        slug=slug,
+        payload=refreshed_payload,
+        existing_payload=existing_payload,
+    )
+    if not allow_suspicious_identity_loss and raw_saved_list_refresh_has_suspicious_identity_loss(
+        existing_payload,
+        refreshed_payload,
+        source_type=source_type,
+    ):
+        print(
+            f"WARNING: Keeping existing raw snapshot for {slug} because the refreshed "
+            "payload lost nearly all prior place identities.",
+            flush=True,
+        )
+        return existing_payload
+
     existing_index = build_raw_place_preservation_index(existing_payload, source_type=source_type)
     updated_places: list[RawPlace] = []
 
     for refreshed_place in refreshed_payload.places:
         existing_place = None
-        for key in raw_place_match_keys(refreshed_place, source_type=source_type):
+        for key in raw_place_primary_match_keys(refreshed_place, source_type=source_type):
             existing_place = existing_index.get(key)
             if existing_place is not None:
                 break
+        if existing_place is None:
+            refreshed_name = as_string(refreshed_place.name)
+            for key in raw_place_cid_alias_keys(refreshed_place):
+                candidate = existing_index.get(key)
+                if candidate is None:
+                    continue
+                if raw_place_names_are_compatible(as_string(candidate.name), refreshed_name):
+                    existing_place = candidate
+                    break
+
+        if existing_place is None:
+            existing_place = raw_place_identity_loss_fallback_candidate(
+                existing_payload=existing_payload,
+                refreshed_payload=refreshed_payload,
+                refreshed_place=refreshed_place,
+            )
 
         if existing_place is None:
             updated_places.append(refreshed_place)
@@ -5966,7 +9531,16 @@ def preserve_existing_raw_saved_list(
             )
         updated_places.append(merged_place)
 
-    return refreshed_payload.model_copy(update={"places": updated_places})
+    deduped_payload = clear_duplicate_raw_place_cids(
+        slug=slug,
+        payload=refreshed_payload.model_copy(update={"places": updated_places}),
+        existing_payload=existing_payload,
+    )
+    return clear_duplicate_raw_place_google_identities(
+        slug=slug,
+        payload=deduped_payload,
+        existing_payload=existing_payload,
+    )
 
 
 def raw_source_refresh_after(fetched_at: datetime, source: SourceConfig, *, source_signature: str) -> datetime:
@@ -6091,9 +9665,17 @@ def cache_refresh_reason(
     if cache_entry.input_signature != expected_signature:
         return "raw-place-changed"
 
+    fetched_at_dt: datetime | None = None
+
+    def parsed_fetched_at() -> datetime:
+        nonlocal fetched_at_dt
+        if fetched_at_dt is None:
+            fetched_at_dt = parse_metadata_datetime(cache_entry.fetched_at)
+        return fetched_at_dt
+
     if cache_entry_needs_photo_url_retry(cache_entry):
         try:
-            fetched_at_dt = parse_metadata_datetime(cache_entry.fetched_at)
+            fetched_at_dt = parsed_fetched_at()
         except ValueError:
             return "invalid-fetched-at"
         if datetime.now(UTC) - fetched_at_dt >= PHOTOLESS_REAL_PLACE_CACHE_TTL:
@@ -6104,12 +9686,17 @@ def cache_refresh_reason(
             refresh_after_dt = parse_metadata_datetime(cache_entry.refresh_after)
         except ValueError:
             return "invalid-refresh-after"
-        if datetime.now(UTC) >= refresh_after_dt:
+        try:
+            fetched_at_dt = parsed_fetched_at()
+        except ValueError:
+            return "invalid-fetched-at"
+        policy_refresh_after_dt = fetched_at_dt + cache_refresh_ttl(cache_entry)
+        if datetime.now(UTC) >= max(refresh_after_dt, policy_refresh_after_dt):
             return "refresh-window-expired"
         return None
 
     try:
-        fetched_at_dt = parse_metadata_datetime(cache_entry.fetched_at)
+        fetched_at_dt = parsed_fetched_at()
     except ValueError:
         return "invalid-fetched-at"
     if datetime.now(UTC) - fetched_at_dt > OPERATIONAL_CACHE_TTL:
@@ -6158,9 +9745,9 @@ def enrichment_refresh_reason(
 
 
 def enrichment_job_priority(
-    job: tuple[str, str, str, str, dict[str, Any], str | None, str | None]
+    job: tuple[str, str, str | None, str | None, str, str, dict[str, Any], str | None, str | None]
 ) -> tuple[int, str, str]:
-    slug, place_id, _place_name, refresh_reason, _place_payload, _city_name, _country_name = job
+    slug, place_id, _cache_key, _override_key, _place_name, refresh_reason, _place_payload, _city_name, _country_name = job
     return (
         ENRICHMENT_REFRESH_REASON_PRIORITY.get(refresh_reason, 99),
         slug,
@@ -6198,6 +9785,7 @@ def enrichment_input_signature(
         "country_name": as_string(country_name),
         "google_place_id_override": as_string(signature_google_place_id),
         "google_maps_places": google_maps_place_scraper_policy_payload(),
+        "contact_fields_version": ENRICHMENT_CONTACT_FIELDS_VERSION,
         "search_query_version": 2,
         "places_api_field_mask": PLACES_FIELD_MASK,
     }
@@ -6242,6 +9830,11 @@ def cache_refresh_ttl(cache_entry: EnrichmentCacheEntry) -> timedelta:
         return PHOTOLESS_REAL_PLACE_CACHE_TTL
     if place.business_status and place.business_status != "OPERATIONAL":
         return NON_OPERATIONAL_CACHE_TTL
+    if (
+        place.user_rating_count is not None
+        and place.user_rating_count >= HIGH_REVIEW_COUNT_THRESHOLD
+    ):
+        return HIGH_REVIEW_COUNT_CACHE_TTL
     if place.rating is not None or place.user_rating_count is not None:
         return RATINGS_CACHE_TTL
     return OPERATIONAL_CACHE_TTL
@@ -6385,16 +9978,22 @@ def merge_page_place_into_api_entry(
         "search_result_url",
         "main_photo_url",
         "photo_url",
+        "website",
     ):
         if getattr(api_place, field_name) in (None, "", []):
             setattr(api_place, field_name, getattr(page_place, field_name))
 
+    if not api_place.reservation_links:
+        api_place.reservation_links = page_place.reservation_links
     if not api_place.review_topics:
         api_place.review_topics = page_place.review_topics
     if not api_place.reviews:
         api_place.reviews = page_place.reviews
     if not api_place.about_sections:
         api_place.about_sections = page_place.about_sections
+
+    if page_place.limited_view is True:
+        api_place.limited_view = True
 
     if google_maps_uri_strength(page_place.google_maps_uri) > google_maps_uri_strength(api_place.google_maps_uri):
         api_place.google_maps_uri = page_place.google_maps_uri
@@ -6409,6 +10008,10 @@ def merged_enrichment_sources(*entries: EnrichmentCacheEntry) -> list[Literal["g
         if any(entry.source == source or source in entry.merged_sources for entry in entries):
             sources.append(source)
     return sources
+
+
+def cache_entry_includes_google_places_api(entry: EnrichmentCacheEntry) -> bool:
+    return entry.source == "google_places_api" or "google_places_api" in entry.merged_sources
 
 
 def preserve_existing_enrichment(
@@ -6442,88 +10045,122 @@ def preserve_existing_enrichment(
     can_preserve_previous_identity = (
         allow_identity_mismatch
         or raw_place is None
-        or enrichment_identity_is_compatible_with_raw(raw_place, previous_place)
+        or (
+            enrichment_identity_is_compatible_with_raw(raw_place, previous_place)
+            and enrichment_address_is_compatible_with_raw(raw_place, previous_place)
+        )
     )
-
-    preserved_fields: list[str] = []
-
-    if refreshed_place.rating is None and previous_place.rating is not None:
-        refreshed_place.rating = previous_place.rating
-        append_unique_reason(preserved_fields, "rating")
-    if refreshed_place.user_rating_count is None and previous_place.user_rating_count is not None:
-        refreshed_place.user_rating_count = previous_place.user_rating_count
-        append_unique_reason(preserved_fields, "user_rating_count")
-    if not refreshed_place.formatted_address and previous_place.formatted_address:
-        refreshed_place.formatted_address = previous_place.formatted_address
-        append_unique_reason(preserved_fields, "address")
-    if not refreshed_place.address_country_name and previous_place.address_country_name:
-        refreshed_place.address_country_name = previous_place.address_country_name
-    if not refreshed_place.address_country_code and previous_place.address_country_code:
-        refreshed_place.address_country_code = previous_place.address_country_code
-    if not refreshed_place.address_admin_area and previous_place.address_admin_area:
-        refreshed_place.address_admin_area = previous_place.address_admin_area
-    if not refreshed_place.address_locality and previous_place.address_locality:
-        refreshed_place.address_locality = previous_place.address_locality
-    if not refreshed_place.address_postal_code and previous_place.address_postal_code:
-        refreshed_place.address_postal_code = previous_place.address_postal_code
-    if not refreshed_place.address_display_en and previous_place.address_display_en:
-        refreshed_place.address_display_en = previous_place.address_display_en
-        refreshed_place.address_display_en_source = previous_place.address_display_en_source
-        refreshed_place.address_display_en_confidence = previous_place.address_display_en_confidence
-
-    if not refreshed_place.primary_type_display_name and previous_place.primary_type_display_name:
-        refreshed_place.primary_type_display_name = previous_place.primary_type_display_name
-        if not refreshed_place.primary_type and previous_place.primary_type:
-            refreshed_place.primary_type = previous_place.primary_type
-        if not refreshed_place.types and previous_place.types:
-            refreshed_place.types = previous_place.types[:]
-        append_unique_reason(preserved_fields, "primary_category")
-    elif (
-        refreshed_place.primary_type_display_name == previous_place.primary_type_display_name
-        and not refreshed_place.primary_type
-        and previous_place.primary_type
-    ):
-        refreshed_place.primary_type = previous_place.primary_type
-        if not refreshed_place.types and previous_place.types:
-            refreshed_place.types = previous_place.types[:]
-
-    if not refreshed_place.primary_type_display_name_localized and previous_place.primary_type_display_name_localized:
-        refreshed_place.primary_type_display_name_localized = previous_place.primary_type_display_name_localized
-    if not refreshed_place.category_display_en and previous_place.category_display_en:
-        refreshed_place.category_display_en = previous_place.category_display_en
-        refreshed_place.category_display_en_source = previous_place.category_display_en_source
-        refreshed_place.category_display_en_confidence = previous_place.category_display_en_confidence
-
-    if not refreshed_place.business_status and previous_place.business_status:
-        refreshed_place.business_status = previous_place.business_status
-        append_unique_reason(preserved_fields, "status")
+    if not can_preserve_previous_identity and refreshed_place.limited_view is True:
+        return refreshed_entry, None
 
     if (
         can_preserve_previous_identity
-        and google_maps_uri_strength(refreshed_place.google_maps_uri)
-        < google_maps_uri_strength(previous_place.google_maps_uri)
-        and google_maps_uri_is_compatible_for_preservation(previous_place, refreshed_place)
+        and previous_place.limited_view is False
+        and refreshed_place.limited_view is True
+        and not cache_entry_includes_google_places_api(refreshed_entry)
     ):
-        refreshed_place.google_maps_uri = previous_place.google_maps_uri
-        if not refreshed_place.google_place_id and previous_place.google_place_id:
-            refreshed_place.google_place_id = previous_place.google_place_id
-        if not refreshed_place.google_place_resource_name and previous_place.google_place_resource_name:
-            refreshed_place.google_place_resource_name = previous_place.google_place_resource_name
-        append_unique_reason(preserved_fields, "maps_url")
-    elif can_preserve_previous_identity and google_maps_uri_is_compatible_for_preservation(previous_place, refreshed_place):
-        if not refreshed_place.google_place_id and previous_place.google_place_id:
-            refreshed_place.google_place_id = previous_place.google_place_id
-        if not refreshed_place.google_place_resource_name and previous_place.google_place_resource_name:
-            refreshed_place.google_place_resource_name = previous_place.google_place_resource_name
+        return (
+            cache_entry_with_refreshed_metadata(existing_entry, refreshed_entry),
+            f"WARNING: Preserving previous enrichment for {slug}:{place_id} [{place_name}] "
+            "because refresh returned degraded result (limited view).",
+        )
 
-    if not refreshed_place.main_photo_url and previous_place.main_photo_url:
-        refreshed_place.main_photo_url = previous_place.main_photo_url
-        append_unique_reason(preserved_fields, "photo_url")
-    if not refreshed_place.photo_url and previous_place.photo_url:
-        refreshed_place.photo_url = previous_place.photo_url
-        append_unique_reason(preserved_fields, "photo_url")
+    if enrichment_google_identity_shift_conflicts_with_raw(
+        previous_place,
+        refreshed_place,
+        raw_place=raw_place,
+        allow_identity_mismatch=allow_identity_mismatch,
+    ):
+        return (
+            existing_entry,
+            f"WARNING: Preserving previous enrichment for {slug}:{place_id} [{place_name}] "
+            "because refresh changed Google place identity to a conflicting location.",
+        )
+
+    preserved_fields: list[str] = []
 
     if can_preserve_previous_identity:
+        if refreshed_place.rating is None and previous_place.rating is not None:
+            refreshed_place.rating = previous_place.rating
+            append_unique_reason(preserved_fields, "rating")
+        if refreshed_place.user_rating_count is None and previous_place.user_rating_count is not None:
+            refreshed_place.user_rating_count = previous_place.user_rating_count
+            append_unique_reason(preserved_fields, "user_rating_count")
+        if not refreshed_place.formatted_address and previous_place.formatted_address:
+            refreshed_place.formatted_address = previous_place.formatted_address
+            append_unique_reason(preserved_fields, "address")
+        if not refreshed_place.address_country_name and previous_place.address_country_name:
+            refreshed_place.address_country_name = previous_place.address_country_name
+        if not refreshed_place.address_country_code and previous_place.address_country_code:
+            refreshed_place.address_country_code = previous_place.address_country_code
+        if not refreshed_place.address_admin_area and previous_place.address_admin_area:
+            refreshed_place.address_admin_area = previous_place.address_admin_area
+        if not refreshed_place.address_locality and previous_place.address_locality:
+            refreshed_place.address_locality = previous_place.address_locality
+        if not refreshed_place.address_postal_code and previous_place.address_postal_code:
+            refreshed_place.address_postal_code = previous_place.address_postal_code
+        if not refreshed_place.address_display_en and previous_place.address_display_en:
+            refreshed_place.address_display_en = previous_place.address_display_en
+            refreshed_place.address_display_en_source = previous_place.address_display_en_source
+            refreshed_place.address_display_en_confidence = previous_place.address_display_en_confidence
+
+        if not refreshed_place.primary_type_display_name and previous_place.primary_type_display_name:
+            refreshed_place.primary_type_display_name = previous_place.primary_type_display_name
+            if not refreshed_place.primary_type and previous_place.primary_type:
+                refreshed_place.primary_type = previous_place.primary_type
+            if not refreshed_place.types and previous_place.types:
+                refreshed_place.types = previous_place.types[:]
+            append_unique_reason(preserved_fields, "primary_category")
+        elif (
+            refreshed_place.primary_type_display_name == previous_place.primary_type_display_name
+            and not refreshed_place.primary_type
+            and previous_place.primary_type
+        ):
+            refreshed_place.primary_type = previous_place.primary_type
+            if not refreshed_place.types and previous_place.types:
+                refreshed_place.types = previous_place.types[:]
+
+        if (
+            not refreshed_place.primary_type_display_name_localized
+            and previous_place.primary_type_display_name_localized
+        ):
+            refreshed_place.primary_type_display_name_localized = previous_place.primary_type_display_name_localized
+        if not refreshed_place.category_display_en and previous_place.category_display_en:
+            refreshed_place.category_display_en = previous_place.category_display_en
+            refreshed_place.category_display_en_source = previous_place.category_display_en_source
+            refreshed_place.category_display_en_confidence = previous_place.category_display_en_confidence
+
+        if not refreshed_place.business_status and previous_place.business_status:
+            refreshed_place.business_status = previous_place.business_status
+            append_unique_reason(preserved_fields, "status")
+
+        if price_range_regressed_from_symbolic_tier(previous_place, refreshed_place):
+            preserve_previous_symbolic_price_range(previous_place, refreshed_place)
+            append_unique_reason(preserved_fields, "price_range")
+
+        if (
+            google_maps_uri_strength(refreshed_place.google_maps_uri)
+            < google_maps_uri_strength(previous_place.google_maps_uri)
+            and google_maps_uri_is_compatible_for_preservation(previous_place, refreshed_place)
+        ):
+            refreshed_place.google_maps_uri = previous_place.google_maps_uri
+            if not refreshed_place.google_place_id and previous_place.google_place_id:
+                refreshed_place.google_place_id = previous_place.google_place_id
+            if not refreshed_place.google_place_resource_name and previous_place.google_place_resource_name:
+                refreshed_place.google_place_resource_name = previous_place.google_place_resource_name
+            append_unique_reason(preserved_fields, "maps_url")
+        elif google_maps_uri_is_compatible_for_preservation(previous_place, refreshed_place):
+            if not refreshed_place.google_place_id and previous_place.google_place_id:
+                refreshed_place.google_place_id = previous_place.google_place_id
+            if not refreshed_place.google_place_resource_name and previous_place.google_place_resource_name:
+                refreshed_place.google_place_resource_name = previous_place.google_place_resource_name
+
+        if not refreshed_place.main_photo_url and previous_place.main_photo_url:
+            refreshed_place.main_photo_url = previous_place.main_photo_url
+            append_unique_reason(preserved_fields, "photo_url")
+        if not refreshed_place.photo_url and previous_place.photo_url:
+            refreshed_place.photo_url = previous_place.photo_url
+            append_unique_reason(preserved_fields, "photo_url")
         if not refreshed_place.review_topics and previous_place.review_topics:
             refreshed_place.review_topics = previous_place.review_topics[:]
             append_unique_reason(preserved_fields, "review_topics")
@@ -6573,6 +10210,20 @@ def semantic_description_for_preservation(
     )
 
 
+def cache_entry_with_refreshed_metadata(
+    existing_entry: EnrichmentCacheEntry,
+    refreshed_entry: EnrichmentCacheEntry,
+) -> EnrichmentCacheEntry:
+    updates: dict[str, Any] = {}
+    for field_name in ("fetched_at", "refresh_after", "input_signature"):
+        value = getattr(refreshed_entry, field_name)
+        if value is not None:
+            updates[field_name] = value
+    if not updates:
+        return existing_entry
+    return existing_entry.model_copy(update=updates)
+
+
 def google_maps_uri_is_compatible_for_preservation(
     previous_place: EnrichmentPlace,
     refreshed_place: EnrichmentPlace,
@@ -6582,6 +10233,202 @@ def google_maps_uri_is_compatible_for_preservation(
     if previous_address and refreshed_address and token_overlap_score(previous_address, refreshed_address) == 0:
         return False
     return True
+
+
+def enrichment_address_is_compatible_with_raw(
+    raw_place: RawPlace | None,
+    enrichment_place: EnrichmentPlace,
+) -> bool:
+    if raw_place is None:
+        return True
+    raw_address = as_string(raw_place.address)
+    if raw_address is None:
+        return True
+    enrichment_address = as_string(enrichment_place.formatted_address)
+    if enrichment_address is None:
+        return True
+    return not address_texts_conflict(raw_address, enrichment_address)
+
+
+def price_range_regressed_from_symbolic_tier(
+    previous_place: EnrichmentPlace,
+    refreshed_place: EnrichmentPlace,
+) -> bool:
+    previous_price = as_string(previous_place.price_range)
+    refreshed_price = as_string(refreshed_place.price_range)
+    if previous_price is None or refreshed_price is None:
+        return False
+    return (
+        symbolic_price_tier(previous_price) is not None
+        and symbolic_price_tier(refreshed_price) is None
+        and parse_price_text(refreshed_price) is not None
+    )
+
+
+def reset_semantic_description_after_price_preservation(place: EnrichmentPlace) -> None:
+    if not place.semantic_description and not place.semantic_description_signature:
+        return
+    place.semantic_description = None
+    place.semantic_description_signature = None
+    if not semantic_enrichment_state_is_populated(semantic_enrichment_state(place)):
+        place.semantic_source = None
+
+
+def preserve_previous_symbolic_price_range(
+    previous_place: EnrichmentPlace,
+    refreshed_place: EnrichmentPlace,
+) -> None:
+    numeric_price = as_string(refreshed_place.price_range)
+    for field_name in ("admission_price", "room_price"):
+        if numeric_price is not None and as_string(getattr(refreshed_place, field_name)) == numeric_price:
+            setattr(refreshed_place, field_name, None)
+    refreshed_place.price_range = previous_place.price_range
+    reset_semantic_description_after_price_preservation(refreshed_place)
+
+
+def enrichment_google_identity_shift_conflicts_with_raw(
+    previous_place: EnrichmentPlace,
+    refreshed_place: EnrichmentPlace,
+    *,
+    raw_place: RawPlace | None,
+    allow_identity_mismatch: bool,
+) -> bool:
+    if allow_identity_mismatch or raw_place is None:
+        return False
+    if not enrichment_identity_is_compatible_with_raw(raw_place, previous_place):
+        return False
+    previous_identity = enrichment_google_identity_for_shift_detection(previous_place)
+    refreshed_identity = enrichment_google_identity_for_shift_detection(refreshed_place)
+    if previous_identity is not None and refreshed_identity is not None and previous_identity == refreshed_identity:
+        return False
+    if not enrichment_identity_is_compatible_with_raw(raw_place, refreshed_place):
+        return True
+    if not enrichment_address_conflicts_with_raw_or_previous(
+        previous_place,
+        refreshed_place,
+        raw_place=raw_place,
+    ):
+        return False
+    if previous_identity is None or refreshed_identity is None:
+        return False
+    return True
+
+
+def enrichment_google_identity_for_shift_detection(place: EnrichmentPlace) -> str | None:
+    google_place_id = as_string(place.google_place_id)
+    if google_place_id is not None:
+        return f"google_place_id:{google_place_id}"
+    google_place_resource_name = normalized_google_place_resource_identity(place.google_place_resource_name)
+    if google_place_resource_name is not None:
+        return f"google_place_id:{google_place_resource_name}"
+    google_maps_identity = google_maps_url_identity(place.google_maps_uri)
+    if google_maps_identity is not None:
+        return google_maps_identity
+    search_result_identity = google_maps_url_identity(place.search_result_url)
+    if search_result_identity is not None:
+        return search_result_identity
+    return None
+
+
+def enrichment_address_conflicts_with_raw_or_previous(
+    previous_place: EnrichmentPlace,
+    refreshed_place: EnrichmentPlace,
+    *,
+    raw_place: RawPlace,
+) -> bool:
+    refreshed_address = refreshed_place.formatted_address
+    if refreshed_address is None:
+        return False
+    return address_texts_conflict(raw_place.address, refreshed_address) or address_texts_conflict(
+        previous_place.formatted_address,
+        refreshed_address,
+    )
+
+
+def address_texts_conflict(left: str | None, right: str | None) -> bool:
+    left_text = normalize_text(left)
+    right_text = normalize_text(right)
+    if not left_text or not right_text or left_text == right_text:
+        return False
+    left_street_numbers = address_street_numbers(as_string(left) or "")
+    right_street_numbers = address_street_numbers(as_string(right) or "")
+    if left_street_numbers and right_street_numbers and not left_street_numbers & right_street_numbers:
+        return True
+    left_numbers = set(re.findall(r"\d+", left_text))
+    right_numbers = set(re.findall(r"\d+", right_text))
+    if left_numbers and right_numbers and not left_numbers & right_numbers:
+        return True
+    return address_token_overlap_score(as_string(left) or "", as_string(right) or "") == 0
+
+
+ADDRESS_TOKEN_STOPWORDS = {
+    "city",
+    "country",
+    "county",
+    "district",
+    "prefecture",
+    "province",
+    "region",
+    "state",
+    "street",
+    "st",
+    "the",
+    "united",
+    "avenue",
+    "ave",
+    "road",
+    "rd",
+    "boulevard",
+    "blvd",
+    "lane",
+    "ln",
+    "drive",
+    "dr",
+    "way",
+    "place",
+    "pl",
+    "court",
+    "ct",
+    "square",
+    "sq",
+}
+
+
+def address_street_numbers(text: str) -> set[str]:
+    parts = [part.strip() for part in re.split(r"[,、]", text) if part.strip()]
+    if not parts:
+        parts = [text]
+    for part in parts:
+        numbers = set(re.findall(r"\d+", part))
+        if numbers:
+            return numbers
+    return set()
+
+
+def address_identity_tokens(text: str) -> set[str]:
+    parts = [part.strip() for part in re.split(r"[,、]", text) if part.strip()]
+    if not parts:
+        parts = [text]
+    streetish_parts = [
+        part
+        for index, part in enumerate(parts)
+        if index == 0 or re.search(r"\d", part)
+    ]
+    tokens = {
+        token
+        for part in streetish_parts
+        for token in re.findall(r"[\w]+", part.casefold())
+        if len(token) > 2 and not token.isdigit() and token not in ADDRESS_TOKEN_STOPWORDS
+    }
+    return tokens
+
+
+def address_token_overlap_score(left: str, right: str) -> int:
+    left_tokens = address_identity_tokens(left)
+    right_tokens = address_identity_tokens(right)
+    if not left_tokens or not right_tokens:
+        return 0
+    return len(left_tokens & right_tokens) * 5
 
 
 def load_places_cache(slug: str) -> dict[str, EnrichmentCacheEntry]:
@@ -6601,18 +10448,64 @@ def prune_places_cache_to_raw_places(
     payload: dict[str, EnrichmentCacheEntry],
     raw: RawSavedList,
 ) -> tuple[dict[str, EnrichmentCacheEntry], int]:
-    current_place_ids = {
-        stable_place_id(place, source_type=raw.configured_source_type)
-        for place in raw.places
-    }
-    if not current_place_ids:
+    if not raw.places:
         return {}, len(payload)
-    pruned_payload = {
-        place_id: entry
-        for place_id, entry in payload.items()
-        if place_id in current_place_ids
-    }
-    return pruned_payload, len(payload) - len(pruned_payload)
+
+    candidate_key_counts: Counter[str] = Counter()
+    place_candidate_keys: list[tuple[str, list[str]]] = []
+    current_primary_keys = raw_saved_list_primary_match_key_set(raw)
+    for place in raw.places:
+        place_id = stable_place_id(place, source_type=raw.configured_source_type)
+        candidate_keys = raw_place_lookup_keys(
+            place,
+            source_type=raw.configured_source_type,
+            blocked_alias_keys=current_primary_keys,
+        )
+        candidate_key_counts.update(candidate_keys)
+        place_candidate_keys.append((place_id, candidate_keys))
+
+    pruned_payload: dict[str, EnrichmentCacheEntry] = {}
+    used_payload_keys: set[str] = set()
+    changed_count = 0
+
+    for place_id, candidate_keys in place_candidate_keys:
+        candidates = [
+            (key, payload[key])
+            for key in candidate_keys
+            if key in payload and (key == place_id or candidate_key_counts[key] == 1)
+        ]
+        if not candidates:
+            continue
+
+        selected_key, selected_entry = max(
+            candidates,
+            key=lambda candidate: cache_entry_alias_priority(
+                candidate[1],
+                exact_match=candidate[0] == place_id,
+            ),
+        )
+        pruned_payload[place_id] = selected_entry
+        used_payload_keys.add(selected_key)
+        if selected_key != place_id:
+            changed_count += 1
+
+    changed_count += len(payload) - len(used_payload_keys)
+    return pruned_payload, changed_count
+
+
+def cache_entry_alias_priority(
+    entry: EnrichmentCacheEntry,
+    *,
+    exact_match: bool,
+) -> tuple[datetime, bool]:
+    for value in (entry.last_verified_at, entry.fetched_at):
+        if value is None:
+            continue
+        try:
+            return (parse_metadata_datetime(value), exact_match)
+        except ValueError:
+            continue
+    return (datetime.min.replace(tzinfo=UTC), exact_match)
 
 
 def export_places_cache_json(slug: str, payload: dict[str, EnrichmentCacheEntry]) -> None:
@@ -7318,6 +11211,18 @@ def populate_place_photos_for_guides(
                     )
         return
 
+    photo_path_references: Counter[str] = Counter()
+    for guide in guides:
+        if guide.place_photo_mode == "remote_url":
+            continue
+        for place in guide.places:
+            if place.main_photo_path and place.main_photo_path.startswith("/place-photos/"):
+                photo_path_references[Path(place.main_photo_path).name] += 1
+
+    def unreference_current_photo(place: NormalizedPlace) -> None:
+        if place.main_photo_path and place.main_photo_path.startswith("/place-photos/"):
+            photo_path_references[Path(place.main_photo_path).name] -= 1
+
     pending_jobs: list[PendingPhotoJob] = []
     reused_count = 0
     missing_photo_url_count = 0
@@ -7330,6 +11235,7 @@ def populate_place_photos_for_guides(
         for place in guide.places:
             photo_url = cached_place_photo_url(enrichment_cache.get(place.id))
             if not photo_url:
+                unreference_current_photo(place)
                 place.main_photo_path = None
                 missing_photo_url_count += 1
                 continue
@@ -7341,10 +11247,21 @@ def populate_place_photos_for_guides(
                 flat_index=flat_index,
             )
             if existing_path is not None:
+                previous_filename = (
+                    Path(place.main_photo_path).name
+                    if place.main_photo_path
+                    and place.main_photo_path.startswith("/place-photos/")
+                    else None
+                )
+                existing_filename = Path(existing_path).name
+                if previous_filename != existing_filename:
+                    unreference_current_photo(place)
+                    photo_path_references[existing_filename] += 1
                 place.main_photo_path = existing_path
                 reused_count += 1
                 continue
 
+            unreference_current_photo(place)
             pending_jobs.append(
                 PendingPhotoJob(
                     guide_slug=guide.slug,
@@ -7353,6 +11270,18 @@ def populate_place_photos_for_guides(
                     photo_url=photo_url,
                 )
             )
+
+    protected_photo_paths = {
+        filename
+        for filename, reference_count in photo_path_references.items()
+        if reference_count > 0
+    }
+    pending_place_counts = Counter(safe_place_photo_stem(job.place_id) for job in pending_jobs)
+    protected_photo_paths.update(
+        public_photo_path(canonical_place_photo_stem(job.place_id, job.photo_url))
+        for job in pending_jobs
+        if pending_place_counts[safe_place_photo_stem(job.place_id)] > 1
+    )
 
     if not pending_jobs:
         print(
@@ -7379,27 +11308,34 @@ def populate_place_photos_for_guides(
 
     if max_workers == 1 or len(pending_jobs) == 1:
         for index, job in enumerate(pending_jobs, start=1):
-            photo_path = sync_place_photo(
-                job.guide_slug,
-                job.place_id,
-                photo_url=job.photo_url,
-                startup_jitter_seconds=effective_startup_jitter_seconds,
-            )
+            sync_kwargs = {
+                "photo_url": job.photo_url,
+                "startup_jitter_seconds": effective_startup_jitter_seconds,
+            }
+            if protected_photo_paths:
+                sync_kwargs["protected_photo_paths"] = protected_photo_paths
+            photo_path = sync_place_photo(job.guide_slug, job.place_id, **sync_kwargs)
             place_by_key[(job.guide_slug, job.place_id)].main_photo_path = photo_path
             print(photo_progress_line(index, len(pending_jobs), job, photo_path), flush=True)
         return
 
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        future_map = {
-            executor.submit(
-                sync_place_photo,
-                job.guide_slug,
-                job.place_id,
-                photo_url=job.photo_url,
-                startup_jitter_seconds=effective_startup_jitter_seconds,
-            ): job
-            for job in pending_jobs
-        }
+        future_map = {}
+        for job in pending_jobs:
+            sync_kwargs = {
+                "photo_url": job.photo_url,
+                "startup_jitter_seconds": effective_startup_jitter_seconds,
+            }
+            if protected_photo_paths:
+                sync_kwargs["protected_photo_paths"] = protected_photo_paths
+            future_map[
+                executor.submit(
+                    sync_place_photo,
+                    job.guide_slug,
+                    job.place_id,
+                    **sync_kwargs,
+                )
+            ] = job
         for index, future in enumerate(as_completed(future_map), start=1):
             job = future_map[future]
             photo_path = future.result()
@@ -7558,6 +11494,7 @@ def sync_place_photo(
     *,
     photo_url: str | None,
     startup_jitter_seconds: float = 0,
+    protected_photo_paths: Sequence[str] = (),
 ) -> str | None:
     if not photo_url:
         return None
@@ -7594,19 +11531,30 @@ def sync_place_photo(
     if optimized_content is None:
         return None
 
-    place_prefix = canonical_place_photo_stem(place_id, photo_url)
+    place_prefix = f"{safe_place_photo_stem(place_id)}-"
+    protected_photo_filenames = {Path(path).name for path in protected_photo_paths}
+    protected_photo_stems = {
+        place_photo_stem_from_path(path) for path in protected_photo_paths
+    }
     filename = canonical_place_photo_filename(place_id, photo_url, extension=extension)
     output_path = photo_dir / filename
     temp_path = photo_dir / f".{filename}.tmp"
     temp_path.write_bytes(optimized_content)
     temp_path.replace(output_path)
 
-    for stale_path in photo_dir.glob(f"{place_prefix}-*"):
-        if stale_path.name == filename or stale_path.name.startswith("."):
+    for stale_path in photo_dir.iterdir():
+        if (
+            not stale_path.is_file()
+            or stale_path.name == filename
+            or stale_path.name.startswith(".")
+            or stale_path.name in protected_photo_filenames
+            or stale_path.stem in protected_photo_stems
+            or place_photo_prefix_from_stem(stale_path.stem) != place_prefix
+        ):
             continue
         stale_path.unlink(missing_ok=True)
 
-    remove_legacy_place_photo_matches(slug, filename_glob=canonical_place_photo_glob(place_id, photo_url))
+    remove_legacy_place_photo_variants(slug, place_id)
     return public_photo_path(filename)
 
 
@@ -7627,6 +11575,14 @@ def canonical_place_photo_stem(place_id: str, photo_url: str) -> str:
     place_prefix = safe_place_photo_stem(place_id)
     photo_hash = hashlib.sha256(photo_url.encode("utf-8")).hexdigest()[:12]
     return f"{place_prefix}-{photo_hash}"
+
+
+def place_photo_stem_from_path(path: str) -> str:
+    filename = Path(path).name
+    for extension in (".webp", ".jpg", ".jpeg", ".png"):
+        if filename.endswith(extension):
+            return filename[: -len(extension)]
+    return filename
 
 
 def migrate_legacy_place_photo_to_flat_dir(
@@ -7653,6 +11609,28 @@ def remove_legacy_place_photo_matches(slug: str, *, filename_glob: str) -> None:
 
     for stale_path in legacy_dir.glob(filename_glob):
         stale_path.unlink(missing_ok=True)
+
+    try:
+        next(legacy_dir.iterdir())
+    except StopIteration:
+        legacy_dir.rmdir()
+    except FileNotFoundError:
+        return
+
+
+def remove_legacy_place_photo_variants(slug: str, place_id: str) -> None:
+    legacy_dir = PLACE_PHOTOS_DIR / slug
+    if not legacy_dir.exists():
+        return
+
+    place_prefix = f"{safe_place_photo_stem(place_id)}-"
+    for stale_path in legacy_dir.iterdir():
+        if (
+            stale_path.is_file()
+            and not stale_path.name.startswith(".")
+            and place_photo_prefix_from_stem(stale_path.stem) == place_prefix
+        ):
+            stale_path.unlink(missing_ok=True)
 
     try:
         next(legacy_dir.iterdir())
@@ -8359,6 +12337,9 @@ def suppress_uncertain_place_page_identity_fields(
         if as_string(getattr(enrichment_place, field_name)) is not None:
             setattr(enrichment_place, field_name, None)
             suppressed_fields.append(field_name)
+    if enrichment_place.reservation_links:
+        enrichment_place.reservation_links = []
+        suppressed_fields.append("reservation_links")
 
     if resolved_google_maps_url_is_place_page(enrichment_place.google_maps_uri):
         enrichment_place.google_maps_uri = None
@@ -9095,6 +13076,7 @@ def normalize_place_page_enrichment(details: Any) -> EnrichmentPlace:
     rating = as_float(getattr(details, "rating", None))
     user_rating_count = as_int(getattr(details, "review_count", None))
     website = as_string(getattr(details, "website", None))
+    reservation_links = coerce_place_reservation_links(getattr(details, "reservation_links", None))
     phone = sanitize_place_page_phone(getattr(details, "phone", None))
     plus_code = sanitize_place_page_plus_code(getattr(details, "plus_code", None))
     if formatted_address is None and plus_code and any(
@@ -9126,6 +13108,7 @@ def normalize_place_page_enrichment(details: Any) -> EnrichmentPlace:
             rating is not None,
             user_rating_count is not None,
             website,
+            reservation_links,
             phone,
             plus_code,
             description,
@@ -9158,7 +13141,8 @@ def normalize_place_page_enrichment(details: Any) -> EnrichmentPlace:
         category_display_en_confidence=as_string(getattr(details, "category_display_en_confidence", None)),
         types=types,
         business_status=normalize_place_page_business_status(as_string(getattr(details, "status", None))),
-        website=website,
+        website=as_http_url(website),
+        reservation_links=reservation_links,
         phone=phone,
         plus_code=plus_code,
         address_parts=coerce_enrichment_address_parts(getattr(details, "address_parts", None)),
@@ -10134,8 +14118,34 @@ def display_price_range_for_place(
     enrichment_place: EnrichmentPlace,
     *,
     country_name: str | None,
+    raw_place: RawPlace | None = None,
+    primary_category: str | None = None,
+    tags: Iterable[str] = (),
 ) -> str | None:
-    selected_price = select_place_display_price(enrichment_place)
+    selected_display_price = display_price_source_for_place(
+        enrichment_place,
+        country_name=country_name,
+        raw_place=raw_place,
+        primary_category=primary_category,
+        tags=tags,
+    )
+    return selected_display_price[1] if selected_display_price else None
+
+
+def display_price_source_for_place(
+    enrichment_place: EnrichmentPlace,
+    *,
+    country_name: str | None,
+    raw_place: RawPlace | None = None,
+    primary_category: str | None = None,
+    tags: Iterable[str] = (),
+) -> tuple[str, str] | None:
+    selected_price = select_place_display_price(
+        enrichment_place,
+        raw_place=raw_place,
+        primary_category=primary_category,
+        tags=tags,
+    )
     if selected_price is None:
         return None
     source, raw_price = selected_price
@@ -10163,7 +14173,7 @@ def display_price_range_for_place(
         target_currency = None
     if not price_display_amount_is_allowed(source, display_price, target_currency=target_currency):
         return None
-    return display_price
+    return source, display_price
 
 
 def display_price_range_for_raw_place(place: RawPlace) -> str | None:
@@ -10173,7 +14183,230 @@ def display_price_range_for_raw_place(place: RawPlace) -> str | None:
     return "$" * min(price_level, 4)
 
 
-def select_place_display_price(enrichment_place: EnrichmentPlace) -> tuple[str, str] | None:
+def derive_place_budget_fields(
+    *,
+    enrichment_place: EnrichmentPlace,
+    raw_place: RawPlace,
+    price_source: str | None,
+    display_price: str | None,
+    primary_category: str | None,
+    tags: list[str],
+    country_name: str | None,
+) -> dict[str, str | int | None]:
+    budget_kind = derive_price_budget_kind(
+        enrichment_place=enrichment_place,
+        raw_place=raw_place,
+        price_source=price_source,
+        primary_category=primary_category,
+        tags=tags,
+    )
+    if budget_kind is None:
+        return {"budget_kind": None, "budget_tier": None, "budget_label": None}
+
+    budget_tier = derive_budget_tier(
+        display_price,
+        budget_kind=budget_kind,
+        country_name=country_name,
+    )
+    if budget_tier is None:
+        return {"budget_kind": None, "budget_tier": None, "budget_label": None}
+
+    return {
+        "budget_kind": budget_kind,
+        "budget_tier": budget_tier,
+        "budget_label": "$" * budget_tier,
+    }
+
+
+def derive_price_budget_kind(
+    *,
+    enrichment_place: EnrichmentPlace,
+    raw_place: RawPlace,
+    price_source: str | None,
+    primary_category: str | None,
+    tags: list[str],
+) -> str | None:
+    if price_source in PRICE_SOURCE_BUDGET_KINDS:
+        budget_kind = PRICE_SOURCE_BUDGET_KINDS[price_source]
+        parent_tags = (
+            room_price_budget_parent_tags_for_place(
+                enrichment_place=enrichment_place,
+                raw_place=raw_place,
+                primary_category=primary_category,
+                tags=tags,
+            )
+            if price_source == "room_price"
+            else budget_parent_tags_for_place(
+                enrichment_place=enrichment_place,
+                raw_place=raw_place,
+                primary_category=primary_category,
+                tags=tags,
+            )
+        )
+        return budget_kind if budget_parent_tags_allow_kind(parent_tags, budget_kind) else None
+
+    parent_tags = budget_parent_tags_for_place(
+        enrichment_place=enrichment_place,
+        raw_place=raw_place,
+        primary_category=primary_category,
+        tags=tags,
+    )
+    for budget_kind in PRICE_BUDGET_KINDS:
+        if budget_parent_tags_allow_kind(parent_tags, budget_kind):
+            return budget_kind
+    return None
+
+
+def budget_parent_tags_for_place(
+    *,
+    enrichment_place: EnrichmentPlace,
+    raw_place: RawPlace | None = None,
+    primary_category: str | None = None,
+    tags: Iterable[str] = (),
+) -> set[str]:
+    values: list[str | None] = [
+        primary_category,
+        enrichment_place.primary_type,
+        enrichment_place.primary_type_display_name,
+        enrichment_place.primary_type_display_name_localized,
+        *enrichment_place.types,
+        *tags,
+    ]
+    if raw_place is not None:
+        values.extend(raw_place.types)
+    return budget_parent_tags_from_values(values)
+
+
+def budget_parent_tags_from_values(values: Iterable[str | None]) -> set[str]:
+    parent_tags: set[str] = set()
+    for value in values:
+        if not value:
+            continue
+        candidates = [slugify(value.replace("_", "-")), *infer_display_name_type_tags(value)]
+        for candidate in candidates:
+            if not candidate:
+                continue
+            parent_tags.add(candidate)
+            parent_tags.update(expanded_parent_type_tags(candidate))
+            for parent_tag, phrases in BUDGET_PARENT_TYPE_TAG_RULES:
+                if any(slug_phrase_matches(candidate, phrase) for phrase in phrases):
+                    parent_tags.add(parent_tag)
+    return parent_tags
+
+
+def room_price_budget_parent_tags_for_place(
+    *,
+    enrichment_place: EnrichmentPlace,
+    raw_place: RawPlace | None = None,
+    primary_category: str | None = None,
+    tags: Iterable[str] = (),
+) -> set[str]:
+    parent_tags = budget_parent_tags_for_place(
+        enrichment_place=enrichment_place,
+        raw_place=raw_place,
+        primary_category=primary_category,
+        tags=tags,
+    )
+    if room_price_display_name_indicates_lodging_listing(enrichment_place):
+        parent_tags.add("hotel")
+    return parent_tags
+
+
+def room_price_display_name_indicates_lodging_listing(enrichment_place: EnrichmentPlace) -> bool:
+    if as_string(enrichment_place.room_price) is None:
+        return False
+    display_name = as_string(enrichment_place.display_name)
+    if display_name is None:
+        return False
+    normalized = normalize_type_lookup_text(display_name)
+    if not LODGING_DISPLAY_NAME_TERMS_RE.search(normalized):
+        return False
+    return LODGING_DISPLAY_NAME_LOCATION_RE.search(normalized) is None
+
+
+def budget_parent_tags_allow_kind(parent_tags: set[str], budget_kind: str) -> bool:
+    if (
+        budget_kind == "hotel_per_night"
+        and parent_tags & RESTAURANT_BUDGET_PARENT_TAGS
+        and not parent_tags & HOTEL_BUDGET_PARENT_TAGS
+    ):
+        return False
+    allowed_parent_tags = BUDGET_KIND_PARENT_TAGS.get(budget_kind, frozenset())
+    return bool(parent_tags & allowed_parent_tags)
+
+
+def derive_budget_tier(
+    display_price: str | None,
+    *,
+    budget_kind: str,
+    country_name: str | None,
+) -> int | None:
+    if display_price is None or budget_kind not in PRICE_BUDGET_KINDS:
+        return None
+
+    symbolic_tier = symbolic_price_tier(display_price)
+    if symbolic_tier is not None:
+        return symbolic_tier
+
+    parsed_price = parse_price_text(display_price)
+    if parsed_price is None:
+        return None
+
+    parsed_currency, amounts, _suffix = parsed_price
+    expected_currency = budget_tier_currency_code(country_name)
+    currency = resolve_budget_tier_currency(parsed_currency, expected_currency)
+    if expected_currency and expected_currency != currency:
+        return None
+
+    thresholds = PRICE_BUDGET_TIER_THRESHOLDS.get(budget_kind, {}).get(currency)
+    if thresholds is None:
+        return None
+
+    reference_amount = (
+        max(amounts)
+        if budget_kind == "admission_per_person"
+        else sum(amounts) / len(amounts)
+    )
+    for index, threshold in enumerate(thresholds, start=1):
+        if reference_amount <= threshold:
+            return index
+    return 4
+
+
+def resolve_budget_tier_currency(parsed_currency: str, expected_currency: str | None) -> str:
+    if expected_currency == parsed_currency:
+        return parsed_currency
+    if expected_currency == "CNY" and parsed_currency == "JPY":
+        return expected_currency
+    return parsed_currency
+
+
+def symbolic_price_tier(value: str) -> int | None:
+    text = unicodedata.normalize("NFKC", value).strip()
+    if not text:
+        return None
+    if re.fullmatch(r"\${1,4}", text):
+        return len(text)
+    for prefix in ("NT$", "HK$", "S$", "US$", "A$", "CA$"):
+        if text.startswith(prefix):
+            suffix = text.removeprefix(prefix)
+            if suffix and not re.fullmatch(r"\$*", suffix):
+                return None
+            count = 1 + len(suffix)
+            return count if 1 <= count <= 4 else None
+    for symbol in ("€", "£", "¥", "₩", "฿", "₱", "₫", "₹"):
+        if re.fullmatch(re.escape(symbol) + r"{1,4}", text):
+            return len(text)
+    return None
+
+
+def select_place_display_price(
+    enrichment_place: EnrichmentPlace,
+    *,
+    raw_place: RawPlace | None = None,
+    primary_category: str | None = None,
+    tags: Iterable[str] = (),
+) -> tuple[str, str] | None:
     config = google_maps_place_price_display_config()
     configured_order = coerce_string_list(config.get("source_order"))
     source_order = [
@@ -10187,7 +14420,21 @@ def select_place_display_price(enrichment_place: EnrichmentPlace) -> tuple[str, 
     for source in source_order:
         value = as_string(values.get(source))
         if value is not None:
-            if source == "price_range" and not price_range_source_is_eligible(enrichment_place, value):
+            if source == "price_range" and not price_range_source_is_eligible(
+                enrichment_place,
+                value,
+                raw_place=raw_place,
+                primary_category=primary_category,
+                tags=tags,
+            ):
+                continue
+            if source in {"admission_price", "room_price"} and not price_source_is_eligible_for_category(
+                enrichment_place,
+                source,
+                raw_place=raw_place,
+                primary_category=primary_category,
+                tags=tags,
+            ):
                 continue
             return source, value
     return None
@@ -10222,23 +14469,92 @@ def price_display_max_numeric_amount(source: str, currency: str) -> float | None
     return as_float(amount)
 
 
-def price_range_source_is_eligible(enrichment_place: EnrichmentPlace, value: str) -> bool:
-    category_values = [
-        enrichment_place.primary_type,
-        enrichment_place.primary_type_display_name,
-        enrichment_place.primary_type_display_name_localized,
-        *enrichment_place.types,
-    ]
-    category_text = " ".join(value for value in category_values if value).casefold()
+def price_range_source_is_eligible(
+    enrichment_place: EnrichmentPlace,
+    value: str,
+    *,
+    raw_place: RawPlace | None = None,
+    primary_category: str | None = None,
+    tags: Iterable[str] = (),
+) -> bool:
+    if room_price_should_preempt_price_range(
+        enrichment_place,
+        raw_place=raw_place,
+        primary_category=primary_category,
+        tags=tags,
+    ):
+        return False
+    parent_tags = budget_parent_tags_for_place(
+        enrichment_place=enrichment_place,
+        raw_place=raw_place,
+        primary_category=primary_category,
+        tags=tags,
+    )
     if re.fullmatch(r"\${1,4}", value.strip()):
-        return any(hint in category_text for hint in NUMERIC_PRICE_RANGE_CATEGORY_HINTS)
+        return bool(parent_tags & PRICE_RANGE_BUDGET_PARENT_TAGS)
     if parse_price_text(value) is None:
         return True
-    return any(hint in category_text for hint in NUMERIC_PRICE_RANGE_CATEGORY_HINTS)
+    return bool(parent_tags & PRICE_RANGE_BUDGET_PARENT_TAGS)
+
+
+def room_price_should_preempt_price_range(
+    enrichment_place: EnrichmentPlace,
+    *,
+    raw_place: RawPlace | None = None,
+    primary_category: str | None = None,
+    tags: Iterable[str] = (),
+) -> bool:
+    if as_string(enrichment_place.room_price) is None:
+        return False
+    parent_tags = room_price_budget_parent_tags_for_place(
+        enrichment_place=enrichment_place,
+        raw_place=raw_place,
+        primary_category=primary_category,
+        tags=tags,
+    )
+    return budget_parent_tags_allow_kind(parent_tags, "hotel_per_night")
+
+
+def price_source_is_eligible_for_category(
+    enrichment_place: EnrichmentPlace,
+    source: str,
+    *,
+    raw_place: RawPlace | None = None,
+    primary_category: str | None = None,
+    tags: Iterable[str] = (),
+) -> bool:
+    budget_kind = PRICE_SOURCE_BUDGET_KINDS.get(source)
+    if budget_kind is None:
+        return True
+    parent_tags = (
+        room_price_budget_parent_tags_for_place(
+            enrichment_place=enrichment_place,
+            raw_place=raw_place,
+            primary_category=primary_category,
+            tags=tags,
+        )
+        if source == "room_price"
+        else budget_parent_tags_for_place(
+            enrichment_place=enrichment_place,
+            raw_place=raw_place,
+            primary_category=primary_category,
+            tags=tags,
+        )
+    )
+    return budget_parent_tags_allow_kind(parent_tags, budget_kind)
 
 
 def country_currency_code(country_name: str | None) -> str | None:
     return COUNTRY_CURRENCY_CODES.get(normalize_locality_key(country_name))
+
+
+def budget_tier_currency_code(country_name: str | None) -> str | None:
+    config = google_maps_place_price_display_config()
+    currency_mode = as_string(config.get("currency_mode")) or "raw"
+    if currency_mode == "target":
+        target_currency = as_string(config.get("target_currency"))
+        return target_currency.upper() if target_currency else None
+    return country_currency_code(country_name)
 
 
 def normalize_price_text_to_currency(value: str, *, target_currency: str) -> str | None:
@@ -10823,8 +15139,10 @@ def load_dotenv_values(path: Path) -> dict[str, str]:
     return values
 
 
-LANGFUSE_CLIENT_CACHE: dict[tuple[str, str, str | None], Any] = {}
-LANGFUSE_FLUSH_CLIENT_IDS: set[int] = set()
+LANGFUSE_DEFAULT_TIMEOUT_SECONDS = 2
+LANGFUSE_DEFAULT_FLUSH_AT = 8
+LANGFUSE_DEFAULT_FLUSH_INTERVAL_SECONDS = 1.0
+LANGFUSE_CLIENT_CACHE: dict[tuple[str, str, str | None, int, int, float], Any] = {}
 LANGFUSE_CLIENT_CACHE_LOCK = Lock()
 
 
@@ -10840,11 +15158,62 @@ def configured_langfuse_client() -> Any | None:
     )
     if not public_key or not secret_key:
         return None
-    return langfuse_client_for_config(public_key, secret_key, base_url)
+    options = langfuse_client_options(env)
+    return langfuse_client_for_config(public_key, secret_key, base_url, **options)
 
 
-def langfuse_client_for_config(public_key: str, secret_key: str, base_url: str | None) -> Any | None:
-    cache_key = (public_key, secret_key, base_url)
+def langfuse_client_options(env: dict[str, str]) -> dict[str, int | float]:
+    return {
+        "timeout": langfuse_int_option(
+            "LANGFUSE_TIMEOUT",
+            env,
+            default=LANGFUSE_DEFAULT_TIMEOUT_SECONDS,
+        ),
+        "flush_at": langfuse_int_option(
+            "LANGFUSE_FLUSH_AT",
+            env,
+            default=LANGFUSE_DEFAULT_FLUSH_AT,
+        ),
+        "flush_interval": langfuse_float_option(
+            "LANGFUSE_FLUSH_INTERVAL",
+            env,
+            default=LANGFUSE_DEFAULT_FLUSH_INTERVAL_SECONDS,
+        ),
+    }
+
+
+def langfuse_int_option(name: str, env: dict[str, str], *, default: int) -> int:
+    raw_value = os.environ.get(name) or env.get(name)
+    if not raw_value:
+        return default
+    try:
+        value = int(raw_value)
+    except ValueError:
+        return default
+    return value if value > 0 else default
+
+
+def langfuse_float_option(name: str, env: dict[str, str], *, default: float) -> float:
+    raw_value = os.environ.get(name) or env.get(name)
+    if not raw_value:
+        return default
+    try:
+        value = float(raw_value)
+    except ValueError:
+        return default
+    return value if value > 0 else default
+
+
+def langfuse_client_for_config(
+    public_key: str,
+    secret_key: str,
+    base_url: str | None,
+    *,
+    timeout: int,
+    flush_at: int,
+    flush_interval: float,
+) -> Any | None:
+    cache_key = (public_key, secret_key, base_url, timeout, flush_at, flush_interval)
     cached = LANGFUSE_CLIENT_CACHE.get(cache_key)
     if cached is not None:
         return cached
@@ -10856,7 +15225,13 @@ def langfuse_client_for_config(public_key: str, secret_key: str, base_url: str |
             from langfuse import Langfuse
         except ImportError:
             return None
-        kwargs = {"public_key": public_key, "secret_key": secret_key}
+        kwargs = {
+            "public_key": public_key,
+            "secret_key": secret_key,
+            "timeout": timeout,
+            "flush_at": flush_at,
+            "flush_interval": flush_interval,
+        }
         if base_url:
             kwargs["base_url"] = base_url
         try:
@@ -10864,14 +15239,12 @@ def langfuse_client_for_config(public_key: str, secret_key: str, base_url: str |
         except Exception:
             return None
         LANGFUSE_CLIENT_CACHE[cache_key] = client
-        register_langfuse_flush(client)
         return client
 
 
 def clear_langfuse_client_cache() -> None:
     with LANGFUSE_CLIENT_CACHE_LOCK:
         LANGFUSE_CLIENT_CACHE.clear()
-        LANGFUSE_FLUSH_CLIENT_IDS.clear()
 
 
 def normalize_langfuse_base_url(value: str | None) -> str | None:
@@ -10883,14 +15256,6 @@ def normalize_langfuse_base_url(value: str | None) -> str | None:
     if "://" in stripped:
         return stripped
     return f"https://{stripped}"
-
-
-def register_langfuse_flush(client: Any) -> None:
-    client_id = id(client)
-    if client_id in LANGFUSE_FLUSH_CLIENT_IDS:
-        return
-    LANGFUSE_FLUSH_CLIENT_IDS.add(client_id)
-    atexit.register(flush_langfuse_client, client)
 
 
 def flush_langfuse_client(client: Any) -> None:
@@ -11286,6 +15651,7 @@ def normalize_enrichment_match(candidate: dict[str, Any]) -> EnrichmentPlace:
         address_admin_area=api_components["admin_area"],
         address_locality=api_components["locality"],
         address_postal_code=api_components["postal_code"],
+        website=as_http_url(candidate.get("websiteUri")),
     )
 
 
@@ -11335,6 +15701,7 @@ def place_selector_matches(
     *,
     place_id: str,
     selectors: set[str],
+    blocked_alias_keys: set[str] | None = None,
 ) -> set[str]:
     if not selectors:
         return set()
@@ -11344,10 +15711,16 @@ def place_selector_matches(
         f"{slug}:{place_id}".casefold(),
         f"guide-slug:{slug}".casefold(),
     }
+    cid_aliases = [
+        cid_alias
+        for cid_alias in place.cid_aliases
+        if not cid_alias or blocked_alias_keys is None or f"cid:{cid_alias}" not in blocked_alias_keys
+    ]
     for candidate in (
         place.name,
         place.maps_url,
         place.cid,
+        *cid_aliases,
         place.google_id,
         place.maps_place_token,
     ):
@@ -11359,6 +15732,11 @@ def place_selector_matches(
     for prefix, candidate in (
         ("cid", place.cid),
         ("cid", extract_maps_cid(place.maps_url)),
+        *((("cid", cid_alias) for cid_alias in cid_aliases)),
+        *(
+            ("gpid", google_places_id)
+            for google_places_id in sorted(raw_place_google_places_identities(place))
+        ),
         ("gms", place.maps_place_token),
         ("gms", extract_maps_place_token(place.maps_url)),
     ):
@@ -11408,6 +15786,9 @@ def main() -> int:
     parser = build_parser()
     args = parser.parse_args()
 
+    if args.trust_google_fallback and not args.refresh_trust_signals:
+        parser.error("--trust-google-fallback requires --refresh-trust-signals")
+
     if (args.refresh_list or args.refresh_force) and not args.refresh:
         args.refresh = True
     if args.force_semantic_descriptions and not args.refresh_semantic_descriptions:
@@ -11429,6 +15810,7 @@ def main() -> int:
             force_refresh=args.refresh_force,
             refresh_lists=args.refresh_list,
             refresh_workers=args.refresh_workers,
+            allow_suspicious_identity_loss=bool(args.refresh_list) or args.refresh_force,
             refresh_retries=args.refresh_retries,
             refresh_retry_backoff_seconds=args.refresh_retry_backoff_seconds,
             refresh_startup_jitter_seconds=args.refresh_startup_jitter_seconds,
@@ -11446,6 +15828,7 @@ def main() -> int:
                 force_refresh=bool(enrichment_refresh_lists),
                 refresh_lists=enrichment_refresh_lists,
                 refresh_workers=args.refresh_workers,
+                allow_suspicious_identity_loss=False,
                 refresh_retries=args.refresh_retries,
                 refresh_retry_backoff_seconds=args.refresh_retry_backoff_seconds,
                 refresh_startup_jitter_seconds=args.refresh_startup_jitter_seconds,
@@ -11471,6 +15854,9 @@ def main() -> int:
             place_selectors=args.enrich_place,
         )
 
+    if args.refresh_trust_signals:
+        refresh_trust_signals(include_google_fallback=args.trust_google_fallback)
+
     if args.export_cache_json:
         exported_guides = export_all_places_cache_json()
         print(f"Exported JSON cache debug files for {exported_guides} guide(s).")
@@ -11484,6 +15870,7 @@ def main() -> int:
         and not args.refresh_enrichment
         and not args.refresh_semantic_descriptions
         and not args.refresh_semantic_enrichment
+        and not args.refresh_trust_signals
         and not args.export_cache_json
     )
     if photo_only_refresh and refresh_generated_guide_photos(

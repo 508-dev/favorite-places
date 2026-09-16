@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -12,9 +13,13 @@ from gmaps_scraper.models import (
     PlaceScrapeResult,
 )
 from gmaps_scraper.place_scraper import (
+    _PLACE_ABOUT_PANEL_JS,
     _PLACE_ABOUT_TAB_CLICK_JS,
     _PLACE_DETAIL_READY_JS,
     _PLACE_JS_EXTRACTOR,
+    _PLACE_RESERVATION_BUTTON_CLICK_JS,
+    _PLACE_RESERVATION_DIALOG_JS,
+    _PLACE_REVIEW_SNIPPET_JS,
     _PLACE_REVIEW_TAB_CLICK_JS,
     _PLACE_REVIEW_TOPIC_JS,
     _PLACE_SEARCH_RESULT_CLICK_JS,
@@ -26,6 +31,7 @@ from gmaps_scraper.place_scraper import (
     _clean_category_text,
     _clean_description_text,
     _clean_name_text,
+    _collect_reservation_dialog_snapshot,
     _extract_address_from_lines,
     _extract_admission_price_from_lines,
     _extract_preview_address,
@@ -40,10 +46,12 @@ from gmaps_scraper.place_scraper import (
     _looks_like_google_maps_place_url,
     _merge_llm_place_fields,
     _merge_place_sources,
+    _merge_reservation_links,
     _normalize_google_place_id,
     _normalize_phone_candidate,
     _normalize_photo_url,
     _normalize_preview_website,
+    _normalize_reservation_links,
     _normalize_review_topics,
     _normalize_reviews,
     _normalize_website,
@@ -57,7 +65,150 @@ from gmaps_scraper.place_scraper import (
     collect_place_snapshot,
     scrape_places,
 )
-from gmaps_scraper.scraper import BrowserSessionConfig, HttpSessionConfig, ScrapeError
+from gmaps_scraper.scraper import (
+    BrowserSessionConfig,
+    HttpSessionConfig,
+    ScrapeError,
+    _launch_browser_context,
+)
+
+_FIXTURE_DIR = Path(__file__).parent / "fixtures" / "place_pages"
+_PREVIEW_FIXTURE_DIR = Path(__file__).parent / "fixtures" / "preview_payloads"
+_SKIP_BROWSER_FIXTURE_TESTS_ENV = "GMAPS_SCRAPER_SKIP_BROWSER_FIXTURE_TESTS"
+
+
+class PlaceJsExtractorFixtureTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        if os.environ.get(_SKIP_BROWSER_FIXTURE_TESTS_ENV):
+            raise unittest.SkipTest(
+                f"{_SKIP_BROWSER_FIXTURE_TESTS_ENV} is set; skipping browser fixture tests."
+            )
+        try:
+            cls.context = _launch_browser_context(
+                headless=True,
+                browser_session=BrowserSessionConfig(window_size=(1280, 720)),
+            )
+        except Exception as exc:
+            raise unittest.SkipTest(
+                f"Browser fixture tests require a launchable browser: {exc}"
+            ) from exc
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        context = getattr(cls, "context", None)
+        if context is not None:
+            context.close()
+
+    def _evaluate_fixture(self, fixture_name: str, script: str = _PLACE_JS_EXTRACTOR) -> object:
+        page = self.context.new_page()
+        try:
+            page.goto(
+                (_FIXTURE_DIR / fixture_name).as_uri(),
+                wait_until="domcontentloaded",
+                timeout=5_000,
+            )
+            return page.evaluate(script)
+        finally:
+            page.close()
+
+    def test_overview_fixture_extracts_core_place_fields(self) -> None:
+        snapshot = self._evaluate_fixture("overview.html")
+
+        self.assertIsInstance(snapshot, dict)
+        self.assertEqual(snapshot["name"], "Fixture Cafe")
+        self.assertEqual(snapshot["rating"], "4.6")
+        self.assertEqual(snapshot["review_count"], "1,234")
+        self.assertEqual(snapshot["review_count_source"], "f7nice")
+        self.assertEqual(snapshot["category"], "Coffee shop")
+        self.assertEqual(
+            snapshot["description"],
+            "Compact fixture description for the place overview.",
+        )
+        self.assertEqual(snapshot["address"], "123 Test Street, Fixture City")
+        self.assertEqual(snapshot["website"], "https://fixture.example/")
+        self.assertEqual(snapshot["phone"], "+1 555-0100")
+        self.assertEqual(snapshot["plus_code"], "7FG8+22 Fixture City")
+        self.assertEqual(
+            snapshot["main_photo_url"],
+            "https://lh3.googleusercontent.com/place-overview.jpg",
+        )
+        self.assertFalse(snapshot["limited_view"])
+
+    def test_reviews_fixture_keeps_reviewer_photo_out_of_place_photo(self) -> None:
+        snapshot = self._evaluate_fixture("reviews.html")
+        reviews = self._evaluate_fixture("reviews.html", _PLACE_REVIEW_SNIPPET_JS)
+
+        self.assertIsInstance(snapshot, dict)
+        self.assertEqual(snapshot["name"], "Fixture Reviews Cafe")
+        self.assertEqual(
+            snapshot["main_photo_url"],
+            "https://lh3.googleusercontent.com/place-review-hero.jpg",
+        )
+        self.assertNotEqual(
+            snapshot["main_photo_url"],
+            "https://lh3.googleusercontent.com/reviewer-placeholder.jpg",
+        )
+        self.assertEqual(
+            [(topic["text"], topic["aria_label"]) for topic in snapshot["review_topics"]],
+            [
+                ("coffee 19", "coffee, mentioned in 19 reviews"),
+                ("service 12", "service, mentioned in 12 reviews"),
+            ],
+        )
+        self.assertIsInstance(reviews, list)
+        self.assertEqual(reviews[0]["author"], "Reviewer Placeholder")
+        self.assertEqual(reviews[0]["text"], "Useful visible review snippet.")
+
+    def test_about_fixture_preserves_core_fields_and_reads_about_sections(self) -> None:
+        snapshot = self._evaluate_fixture("about.html")
+        about_sections = self._evaluate_fixture("about.html", _PLACE_ABOUT_PANEL_JS)
+
+        self.assertIsInstance(snapshot, dict)
+        self.assertEqual(snapshot["name"], "Fixture About Bakery")
+        self.assertEqual(snapshot["category"], "Bakery")
+        self.assertEqual(snapshot["address"], "9 About Avenue, Fixture City")
+        self.assertEqual(snapshot["phone"], "+1 555-0102")
+        self.assertEqual(
+            about_sections,
+            [
+                {
+                    "title": "Service options",
+                    "items": [
+                        {
+                            "label": "Takeaway",
+                            "aria_label": "Offers takeaway",
+                            "source": "about_panel",
+                        },
+                        {
+                            "label": "Delivery",
+                            "aria_label": "Offers delivery",
+                            "source": "about_panel",
+                        },
+                    ],
+                }
+            ],
+        )
+
+    def test_limited_view_fixture_sets_limited_view_flag(self) -> None:
+        snapshot = self._evaluate_fixture("limited_view.html")
+
+        self.assertIsInstance(snapshot, dict)
+        self.assertEqual(snapshot["name"], "Limited Fixture Place")
+        self.assertTrue(snapshot["limited_view"])
+
+    def test_search_result_fixture_is_not_detail_ready(self) -> None:
+        snapshot = self._evaluate_fixture("search_result.html")
+        detail_ready = self._evaluate_fixture("search_result.html", _PLACE_DETAIL_READY_JS)
+        search_candidate = self._evaluate_fixture(
+            "search_result.html",
+            _PLACE_SEARCH_RESULT_CLICK_JS,
+        )
+
+        self.assertIsInstance(snapshot, dict)
+        self.assertEqual(snapshot["name"], "Results")
+        self.assertFalse(detail_ready)
+        self.assertIs(search_candidate, False)
 
 
 class PlaceScraperTests(unittest.TestCase):
@@ -76,19 +227,7 @@ class PlaceScraperTests(unittest.TestCase):
                 llm_policy="on_quality_failure",
             )
 
-    def test_place_js_extractor_skips_review_scoped_photo_nodes(self) -> None:
-        self.assertIn('element.closest("[data-review-id]")', _PLACE_JS_EXTRACTOR)
-        self.assertIn("root.querySelectorAll(selector)", _PLACE_JS_EXTRACTOR)
-        self.assertIn(r"return /(^|\W)reviews?(\W|$)/i.test(label);", _PLACE_JS_EXTRACTOR)
-        self.assertIn("const descriptionValue = () => {", _PLACE_JS_EXTRACTOR)
-        self.assertIn('firstText([".WeS02d", ".PYvSYb"])', _PLACE_JS_EXTRACTOR)
-        self.assertIn("const descriptionBoundaryTop = () => {", _PLACE_JS_EXTRACTOR)
-        self.assertIn("[role='button'], [role='tab'], [role='tablist']", _PLACE_JS_EXTRACTOR)
-
-    def test_place_js_extractor_uses_structural_panel_photo_selectors(self) -> None:
-        self.assertIn("div.RZ66Rb button[jsaction*='heroHeaderImage'] img", _PLACE_JS_EXTRACTOR)
-        self.assertIn("div.ZKCDEc [data-photo-index='0'] img", _PLACE_JS_EXTRACTOR)
-        self.assertIn("[data-photo-index='0'] img", _PLACE_JS_EXTRACTOR)
+    def test_place_js_extractor_avoids_broad_photo_selectors(self) -> None:
         self.assertNotIn("button[jsaction*='image'] img", _PLACE_JS_EXTRACTOR)
         self.assertNotIn("button[jsaction*='photo'] img", _PLACE_JS_EXTRACTOR)
         self.assertNotIn("button[aria-label^='Photo of'] img", _PLACE_JS_EXTRACTOR)
@@ -167,13 +306,111 @@ class PlaceScraperTests(unittest.TestCase):
             review_signal.assert_not_called()
             self.assertEqual(screenshot_path.read_bytes(), b"screenshot")
 
-    def test_collect_place_snapshot_wraps_browser_launch_failures(self) -> None:
-        with patch(
-            "gmaps_scraper.place_scraper._launch_browser_context",
-            side_effect=RuntimeError("context launch failed"),
+    def test_collect_reservation_dialog_snapshot_clicks_and_reads_provider_links(self) -> None:
+        class _FakePage:
+            def __init__(self) -> None:
+                self.waited: list[int] = []
+
+            def evaluate(self, script: object) -> object:
+                if script == _PLACE_RESERVATION_BUTTON_CLICK_JS:
+                    return True
+                if script == _PLACE_RESERVATION_DIALOG_JS:
+                    return [{"label": "TableCheck", "url": "https://www.tablecheck.com/example"}]
+                return None
+
+            def wait_for_timeout(self, value: int) -> None:
+                self.waited.append(value)
+
+        page = _FakePage()
+
+        self.assertEqual(
+            _collect_reservation_dialog_snapshot(page, timeout_ms=30_000),
+            {"reservation_links": [{"label": "TableCheck", "url": "https://www.tablecheck.com/example"}]},
+        )
+        self.assertEqual(page.waited, [1_500])
+
+    def test_reservation_dialog_extractor_trusts_provider_popup_without_dialog_role(self) -> None:
+        self.assertIn("continue with", _PLACE_RESERVATION_DIALOG_JS)
+        self.assertIn("about these providers", _PLACE_RESERVATION_DIALOG_JS)
+        self.assertIn("hasTrustedProviderRoot", _PLACE_RESERVATION_DIALOG_JS)
+        self.assertIn("closeProviderRoot", _PLACE_RESERVATION_DIALOG_JS)
+        self.assertIn(
+            "return (rightRect.width * rightRect.height) - (leftRect.width * leftRect.height);",
+            _PLACE_RESERVATION_DIALOG_JS,
+        )
+        self.assertIn("KeyboardEvent", _PLACE_RESERVATION_DIALOG_JS)
+
+    def test_reservation_extractors_match_provider_hosts_with_boundaries(self) -> None:
+        self.assertNotIn("providerHostMatches", _PLACE_JS_EXTRACTOR)
+        self.assertIn("if (!reservationPattern.test(evidence))", _PLACE_JS_EXTRACTOR)
+        self.assertIn("providerHostMatches", _PLACE_RESERVATION_DIALOG_JS)
+        self.assertIn("(^|[.-])(?:opentable|resy|sevenrooms", _PLACE_RESERVATION_DIALOG_JS)
+        self.assertNotIn("providerHostPattern.test(evidence)", _PLACE_RESERVATION_DIALOG_JS)
+
+    def test_reservation_extractors_do_not_match_generic_booking_copy(self) -> None:
+        for script in (
+            _PLACE_JS_EXTRACTOR,
+            _PLACE_RESERVATION_BUTTON_CLICK_JS,
+            _PLACE_RESERVATION_DIALOG_JS,
         ):
-            with self.assertRaisesRegex(ScrapeError, "Failed to launch browser context"):
-                collect_place_snapshot("https://www.google.com/maps/place/Den")
+            self.assertIn("book a table", script)
+            self.assertNotIn("|booking", script)
+            self.assertNotIn("book(?: a table)?", script)
+
+    def test_collect_reservation_dialog_snapshot_skips_when_no_button(self) -> None:
+        class _FakePage:
+            def __init__(self) -> None:
+                self.waited: list[int] = []
+
+            def evaluate(self, script: object) -> object:
+                if script == _PLACE_RESERVATION_BUTTON_CLICK_JS:
+                    return False
+                raise AssertionError("dialog should not be read")
+
+            def wait_for_timeout(self, value: int) -> None:
+                self.waited.append(value)
+
+        page = _FakePage()
+
+        self.assertEqual(_collect_reservation_dialog_snapshot(page, timeout_ms=30_000), {})
+        self.assertEqual(page.waited, [])
+
+    def test_merge_reservation_links_dedupes_overview_and_dialog_links(self) -> None:
+        merged = _merge_reservation_links(
+            {"reservation_links": [{"label": "Resy", "url": "https://resy.com/example"}]},
+            {
+                "reservation_links": [
+                    {"label": "Resy duplicate", "url": "https://resy.com/example"},
+                    {"label": "TableCheck", "url": "https://www.tablecheck.com/example"},
+                ]
+            },
+        )
+
+        self.assertEqual(
+            merged["reservation_links"],
+            [
+                {"label": "Resy", "url": "https://resy.com/example"},
+                {"label": "TableCheck", "url": "https://www.tablecheck.com/example"},
+            ],
+        )
+
+    def test_merge_reservation_links_stores_normalized_redirect_urls(self) -> None:
+        merged = _merge_reservation_links(
+            {
+                "reservation_links": [
+                    {
+                        "label": "Inline",
+                        "url": "https://www.google.com:443/url?q=https%3A%2F%2Finline.app%2Fbooking%2Ffoo",
+                    }
+                ]
+            },
+            {"reservation_links": []},
+        )
+
+        self.assertEqual(
+            merged["reservation_links"],
+            [{"label": "Inline", "url": "https://inline.app/booking/foo"}],
+        )
 
     def test_scrape_places_reuses_context_and_retries_quality_flags(self) -> None:
         class _FakeContext:
@@ -238,6 +475,8 @@ class PlaceScraperTests(unittest.TestCase):
     def test_scrape_places_parallel_uses_worker_scoped_session_paths(self) -> None:
         seen_profile_dirs: list[Path | None] = []
         seen_cookie_jar_paths: list[Path | None] = []
+        seen_human_mouse: list[bool] = []
+        seen_window_sizes: list[object] = []
 
         def fake_scrape_places_sequential(
             place_urls: list[str],
@@ -248,6 +487,8 @@ class PlaceScraperTests(unittest.TestCase):
             self.assertIsInstance(browser_session, BrowserSessionConfig)
             self.assertIsInstance(http_session, HttpSessionConfig)
             seen_profile_dirs.append(browser_session.profile_dir)
+            seen_human_mouse.append(browser_session.human_mouse)
+            seen_window_sizes.append(browser_session.window_size)
             seen_cookie_jar_paths.append(http_session.cookie_jar_path)
             return [
                 PlaceScrapeResult(source_url=place_url, attempts=1)
@@ -266,7 +507,11 @@ class PlaceScraperTests(unittest.TestCase):
             ):
                 results = scrape_places(
                     ["url-1", "url-2", "url-3"],
-                    browser_session=BrowserSessionConfig(profile_dir=profile_dir),
+                    browser_session=BrowserSessionConfig(
+                        profile_dir=profile_dir,
+                        window_size=None,
+                        human_mouse=True,
+                    ),
                     http_session=HttpSessionConfig(cookie_jar_path=cookie_jar_path),
                     max_concurrency=2,
                     stagger_ms=10,
@@ -285,6 +530,8 @@ class PlaceScraperTests(unittest.TestCase):
                 ]
             ),
         )
+        self.assertEqual(seen_human_mouse, [True, True])
+        self.assertEqual(seen_window_sizes, [None, None])
         self.assertEqual([result.source_url for result in results], ["url-1", "url-2", "url-3"])
 
     def test_scrape_places_parallel_returns_worker_errors_per_url(self) -> None:
@@ -599,24 +846,12 @@ class PlaceScraperTests(unittest.TestCase):
         self.assertEqual(_parse_price_amount("1.234,56"), 1234.56)
         self.assertEqual(_parse_price_amount("1,234.56"), 1234.56)
 
-    def test_place_js_extractor_prefers_data_item_address_rows(self) -> None:
-        self.assertIn('const legacy = itemValue("address");', _PLACE_JS_EXTRACTOR)
-        self.assertIn("if (legacy) {", _PLACE_JS_EXTRACTOR)
-        self.assertIn('`[data-item-id="${itemId}"] .Io6YTe`', _PLACE_JS_EXTRACTOR)
-
     def test_place_js_extractor_falls_back_to_address_icon_rows(self) -> None:
         self.assertIn('const isAddressIcon = (icon) => {', _PLACE_JS_EXTRACTOR)
         self.assertIn('glyph === ""', _PLACE_JS_EXTRACTOR)
         self.assertIn('panel.querySelectorAll(".google-symbols, [role=', _PLACE_JS_EXTRACTOR)
         self.assertIn('icon.closest(".LCF4w', _PLACE_JS_EXTRACTOR)
         self.assertIn('const rowValue = (row) => {', _PLACE_JS_EXTRACTOR)
-
-    def test_place_js_extractor_reads_structured_info_rows(self) -> None:
-        self.assertIn("button[jsaction*='category']", _PLACE_JS_EXTRACTOR)
-        self.assertIn("button[data-item-id^='phone:'] .Io6YTe", _PLACE_JS_EXTRACTOR)
-        self.assertIn('plus_code: itemValue("oloc")', _PLACE_JS_EXTRACTOR)
-        self.assertIn("a[data-item-id='authority']", _PLACE_JS_EXTRACTOR)
-        self.assertIn("panel,\n    ].filter(Boolean);", _PLACE_JS_EXTRACTOR)
 
     def test_place_js_extractor_collects_quote_sections_separately(self) -> None:
         self.assertLess(
@@ -948,6 +1183,57 @@ class PlaceScraperTests(unittest.TestCase):
         )
         assert details.diagnostics is not None
         self.assertEqual(details.diagnostics.field_sources.get("category"), "preview")
+
+    def test_build_place_details_backfills_preview_rating_summary_sources(self) -> None:
+        preview = _extract_preview_place_enrichment(
+            (_PREVIEW_FIXTURE_DIR / "rating_review_count.txt").read_text(encoding="utf-8")
+        )
+        details = _build_place_details_from_snapshot(
+            "https://www.google.com/maps/place/Limited+Fixture",
+            snapshot={
+                "resolved_url": "https://www.google.com/maps/place/Limited+Fixture",
+                "dom": {
+                    "name": "Limited Fixture",
+                    "limited_view": True,
+                },
+                "search_result": {},
+                "preview": preview,
+            },
+            llm_fallback=None,
+            llm_policy="never",
+        )
+
+        self.assertEqual(details.rating, 4.7)
+        self.assertEqual(details.review_count, 832)
+        assert details.diagnostics is not None
+        self.assertEqual(details.diagnostics.field_sources.get("rating"), "preview")
+        self.assertEqual(details.diagnostics.field_sources.get("review_count"), "preview")
+
+    def test_build_place_details_keeps_dom_rating_summary_over_preview(self) -> None:
+        details = _build_place_details_from_snapshot(
+            "https://www.google.com/maps/place/Fixture",
+            snapshot={
+                "resolved_url": "https://www.google.com/maps/place/Fixture",
+                "dom": {
+                    "name": "Fixture",
+                    "rating": "4.9",
+                    "review_count": "1,234",
+                },
+                "search_result": {},
+                "preview": {
+                    "rating": 4.7,
+                    "review_count": 832,
+                },
+            },
+            llm_fallback=None,
+            llm_policy="never",
+        )
+
+        self.assertEqual(details.rating, 4.9)
+        self.assertEqual(details.review_count, 1234)
+        assert details.diagnostics is not None
+        self.assertEqual(details.diagnostics.field_sources.get("rating"), "dom")
+        self.assertEqual(details.diagnostics.field_sources.get("review_count"), "dom")
 
     def test_build_place_details_prefers_selected_card_when_search_open_fails(self) -> None:
         details = _build_place_details_from_snapshot(
@@ -1431,6 +1717,31 @@ class PlaceScraperTests(unittest.TestCase):
         self.assertEqual(enrichment["lat"], 35.6731762)
         self.assertEqual(enrichment["lng"], 139.7127216)
         self.assertEqual(enrichment["google_place_id"], "ChIJ8T36HxCLGGARvpARPDyaKLA")
+
+    def test_extract_preview_place_enrichment_reads_rating_summary_fixture(self) -> None:
+        enrichment = _extract_preview_place_enrichment(
+            (_PREVIEW_FIXTURE_DIR / "rating_review_count.txt").read_text(encoding="utf-8")
+        )
+
+        self.assertEqual(enrichment["rating"], 4.7)
+        self.assertEqual(enrichment["review_count"], 832)
+
+    def test_extract_preview_place_enrichment_accepts_year_range_review_count(self) -> None:
+        payload = ")]}'\n" + json.dumps([["rating-summary", 4.7, 2000]])
+        enrichment = _extract_preview_place_enrichment(payload)
+
+        self.assertEqual(enrichment["rating"], 4.7)
+        self.assertEqual(enrichment["review_count"], 2000)
+
+    def test_extract_preview_place_enrichment_rejects_ambiguous_rating_counts(self) -> None:
+        enrichment = _extract_preview_place_enrichment(
+            (_PREVIEW_FIXTURE_DIR / "ambiguous_rating_review_count.txt").read_text(
+                encoding="utf-8"
+            )
+        )
+
+        self.assertNotIn("rating", enrichment)
+        self.assertNotIn("review_count", enrichment)
 
     def test_extract_preview_description_preserves_text_starting_with_open(self) -> None:
         description = _extract_preview_description(
@@ -2156,6 +2467,29 @@ class PlaceScraperTests(unittest.TestCase):
             "https://lh3.googleusercontent.com/p/example=s680-w680-h510",
         )
 
+    def test_build_place_details_preserves_reservation_links(self) -> None:
+        details = _build_place_details(
+            "https://www.google.com/maps/place/Open+Kitchen",
+            resolved_url="https://www.google.com/maps/place/Open+Kitchen",
+            snapshot={
+                "name": "Open Kitchen",
+                "reservation_links": [
+                    {"label": "TableCheck", "url": "https://www.tablecheck.com/example"},
+                    {"label": "Bad", "url": "javascript:alert(1)"},
+                ],
+                "body_text": "Open Kitchen",
+            },
+        )
+
+        self.assertEqual(
+            [link.to_dict() for link in details.reservation_links],
+            [{"label": "TableCheck", "url": "https://www.tablecheck.com/example"}],
+        )
+        self.assertEqual(
+            details.to_dict()["reservation_links"],
+            [{"label": "TableCheck", "url": "https://www.tablecheck.com/example"}],
+        )
+
     def test_build_place_details_preserves_google_place_id(self) -> None:
         details = _build_place_details(
             "https://www.google.com/maps/place/Den",
@@ -2501,10 +2835,6 @@ class PlaceScraperTests(unittest.TestCase):
             _PLACE_SEARCH_RESULT_CLICK_JS,
         )
 
-    def test_place_js_extractor_keeps_place_page_description_selectors(self) -> None:
-        self.assertIn('const direct = firstText([".WeS02d", ".PYvSYb"])', _PLACE_JS_EXTRACTOR)
-        self.assertIn("description: descriptionValue()", _PLACE_JS_EXTRACTOR)
-
     def test_looks_like_google_maps_place_url_accepts_google_tlds_only(self) -> None:
         self.assertTrue(
             _looks_like_google_maps_place_url(
@@ -2639,6 +2969,112 @@ class PlaceScraperTests(unittest.TestCase):
         self.assertIsNone(_normalize_website("javascript:alert(1)"))
         self.assertIsNone(_normalize_website("mailto:test@example.com"))
         self.assertIsNone(_normalize_website("example.com"))
+
+    def test_normalize_reservation_links_keeps_http_provider_links(self) -> None:
+        links = _normalize_reservation_links(
+            [
+                {"label": "Resy", "url": "https://resy.com/cities/lisbon/example"},
+                {"label": "Duplicate", "url": "https://resy.com/cities/lisbon/example"},
+                {"label": "Bad", "url": "javascript:alert(1)"},
+            ]
+        )
+
+        self.assertEqual(
+            [link.to_dict() for link in links],
+            [{"label": "Resy", "url": "https://resy.com/cities/lisbon/example"}],
+        )
+
+    def test_normalize_reservation_links_cleans_google_dialog_labels(self) -> None:
+        links = _normalize_reservation_links(
+            [
+                {
+                    "label": "\ue878 Find a table tablecheck.com",
+                    "url": "https://www.tablecheck.com/markstokyo/reserve",
+                },
+                {
+                    "label": "ikyu.com ikyu.com ikyu.com",
+                    "url": "https://restaurant.ikyu.com/112767/?ikgo=2",
+                },
+                {
+                    "label": "autoreserve.com autoreserve.com autoreserve.com",
+                    "url": "https://autoreserve.com/restaurants/example",
+                },
+                {
+                    "label": "\ue157 sg-management.jp \ue157sg-management.jp sg-management.jp",
+                    "url": "https://sg-management.jp/reserve/",
+                },
+                {
+                    "label": "Reserve a table",
+                    "url": "https://www.google.com/maps/reserve/v/dine/c/example",
+                },
+            ]
+        )
+
+        self.assertEqual(
+            [link.to_dict() for link in links],
+            [
+                {"label": "TableCheck", "url": "https://www.tablecheck.com/markstokyo/reserve"},
+                {"label": "Ikyu", "url": "https://restaurant.ikyu.com/112767/?ikgo=2"},
+                {"label": "AutoReserve", "url": "https://autoreserve.com/restaurants/example"},
+                {"label": "SG Management", "url": "https://sg-management.jp/reserve/"},
+            ],
+        )
+
+    def test_normalize_reservation_links_unwraps_provider_redirects(self) -> None:
+        links = _normalize_reservation_links(
+            [
+                {
+                    "label": "Find a table Inline",
+                    "url": "https://www.google.com:443/url?q=https%3A%2F%2Finline.app%2Fbooking%2Ffoo",
+                }
+            ]
+        )
+
+        self.assertEqual(
+            [link.to_dict() for link in links],
+            [{"label": "Inline", "url": "https://inline.app/booking/foo"}],
+        )
+
+    def test_normalize_reservation_links_drops_google_reserve_cctld(self) -> None:
+        links = _normalize_reservation_links(
+            [
+                {
+                    "label": "Reserve a table",
+                    "url": "https://www.google.com.sg/maps/reserve/v/dine/c/example",
+                },
+                {
+                    "label": "TableCheck",
+                    "url": "https://www.tablecheck.com/example",
+                },
+            ]
+        )
+
+        self.assertEqual(
+            [link.to_dict() for link in links],
+            [{"label": "TableCheck", "url": "https://www.tablecheck.com/example"}],
+        )
+
+    def test_normalize_reservation_links_ignores_google_substring_hosts(self) -> None:
+        links = _normalize_reservation_links(
+            [
+                {
+                    "label": "Reserve",
+                    "url": "https://evilgoogle.com/maps/reserve/v/dine/c/example",
+                },
+                {
+                    "label": "TableCheck",
+                    "url": "https://www.tablecheck.com/example",
+                },
+            ]
+        )
+
+        self.assertEqual(
+            [link.url for link in links],
+            [
+                "https://evilgoogle.com/maps/reserve/v/dine/c/example",
+                "https://www.tablecheck.com/example",
+            ],
+        )
 
     def test_merge_place_sources_only_backfills_missing_fields(self) -> None:
         merged = _merge_place_sources(

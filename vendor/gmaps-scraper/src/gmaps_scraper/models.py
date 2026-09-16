@@ -271,6 +271,21 @@ class PlaceLLMRepairRequest:
 
 
 @dataclass(slots=True)
+class PlaceReservationLink:
+    """A visible booking or reservation provider link from a place page."""
+
+    label: str
+    url: str
+
+    def to_dict(self) -> dict[str, object]:
+        """Convert a reservation link into a JSON-serializable dictionary."""
+        return {
+            "label": self.label,
+            "url": self.url,
+        }
+
+
+@dataclass(slots=True)
 class PlaceDetails:
     """A parsed Google Maps place page."""
 
@@ -293,6 +308,7 @@ class PlaceDetails:
     located_in: str | None = None
     status: str | None = None
     website: str | None = None
+    reservation_links: list[PlaceReservationLink] = field(default_factory=list)
     phone: str | None = None
     plus_code: str | None = None
     address_parts: AddressParts | None = None
@@ -334,6 +350,7 @@ class PlaceDetails:
             "located_in": self.located_in,
             "status": self.status,
             "website": self.website,
+            "reservation_links": [link.to_dict() for link in self.reservation_links],
             "phone": self.phone,
             "plus_code": self.plus_code,
             "address_parts": self.address_parts,

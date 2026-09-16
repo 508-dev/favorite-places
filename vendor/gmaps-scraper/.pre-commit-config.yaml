@@ -7,8 +7,8 @@ repos:
         language: system
         always_run: true
         pass_filenames: false
-      - id: mypy
-        name: mypy
+      - id: pyrefly
+        name: pyrefly
         entry: ./scripts/typecheck.sh
         language: system
         always_run: true

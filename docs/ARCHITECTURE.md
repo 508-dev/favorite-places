@@ -151,7 +151,7 @@ bun run refresh:backfill
 bun run refresh:sweep
 ```
 
-- `refresh:balanced`: refreshes due raw sources, then runs normal incremental enrichment. Missing places and raw-place changes go first; stale cache entries are refreshed afterward according to their TTLs.
+- `refresh:balanced`: refreshes URL-backed raw sources so saved-list changes are pulled in promptly, keeps CSV sources on content-signature skips unless explicitly selected or force-refreshed, then runs normal incremental enrichment. Missing places and raw-place changes go first; stale cache entries are refreshed afterward according to their TTLs.
 - `refresh:backfill`: refreshes due raw sources, then fills only missing enrichment and missing photos.
 - `refresh:sweep`: refreshes due raw sources, then force-refreshes every enrichment entry as a periodic consistency sweep.
 
@@ -167,6 +167,24 @@ GitHub Actions schedules use UTC.
 ## Self-Hosted Refresh Runner
 
 The repo includes `.github/workflows/data-refresh.yml` for refresh automation on a self-hosted Linux runner.
+
+The workflow intentionally keeps the upstream runner selection generic. It defaults to:
+
+```json
+["self-hosted", "Linux"]
+```
+
+Site repos that need a specific private runner pool should set the GitHub Actions repository variable `DATA_REFRESH_RUNNER_LABELS` to a JSON array, for example:
+
+```json
+["self-hosted", "Linux", "residential"]
+```
+
+Use repository variables for installation-specific runner labels instead of committing private labels to the upstream template.
+
+The Actions job has a 180-minute hard timeout and runs the refresh command with a shorter soft timeout. The default soft timeout is 150 minutes, and manual dispatch values are capped at 150 minutes so setup, the 5-minute kill-after window, and summary, commit, and PR steps still fit under the job timeout. When the soft timeout expires, the workflow interrupts the refresh command, writes a partial summary, and continues to the commit and PR steps so completed raw snapshots, enrichment cache rows, and downloaded photos are not lost.
+
+Rating-bearing place enrichment uses longer TTLs than raw saved-list snapshots because small review-count and rating movements usually do not change the guide experience. Normal rating-bearing places refresh after 15 days; places with at least 1,000 reviews refresh after 30 days. Non-operational, error, low-confidence, unmatched, and missing-photo retry entries keep shorter retry windows.
 
 Recommended boundary:
 
@@ -190,6 +208,7 @@ Minimum `GH_AUTOMATION_TOKEN` permissions:
 Runner provisioning:
 
 - `unzip` must be present on `PATH` for `oven-sh/setup-bun`.
+- GNU `timeout` must be present on `PATH` for the soft-timeout partial commit path.
 - `cloakbrowser` downloads Chromium, but the host still needs Chromium system libraries.
 - Prefer provisioning the full Playwright Chromium dependency set:
 
@@ -247,12 +266,17 @@ Common variables:
 - `GOOGLE_MAPS_PLACES_SEMANTIC_DESCRIPTIONS`: override optional LLM-generated card descriptions
 - `GOOGLE_MAPS_PLACES_SEMANTIC_DESCRIPTION_FORCE_REFRESH`: force description regeneration instead of signature reuse
 - `LANGFUSE_PUBLIC_KEY` / `LANGFUSE_SECRET_KEY` / `LANGFUSE_BASE_URL`: optionally log uncached scraper repair and semantic enrichment LLM generations to Langfuse
+- `LANGFUSE_TIMEOUT` / `LANGFUSE_FLUSH_AT` / `LANGFUSE_FLUSH_INTERVAL`: tune Langfuse export behavior; the pipeline defaults these to `2`, `8`, and `1.0` so telemetry remains bounded during long refresh jobs
 - `GMAPS_SCRAPER_LANGFUSE_FULL_CAPTURE`: opt scraper repair traces into full request/response payload capture; unset by default so scraper repair traces use URL hashes and metadata only
 - `PUBLIC_MAP_PROVIDER=leaflet`: force Leaflet/OpenStreetMap rendering
 - `PUBLIC_PLACE_PHOTOS=off`: hide place photos in the UI
 - `FAVORITE_PLACES_SITE_DIR`: point the app and Python pipeline at a non-default site pack
 - `GMAPS_SCRAPER_PROXY`: route scraper traffic through a proxy
 - `FAVORITE_PLACES_GMAPS_SCRAPER_STATE_DIR`: optionally override the scraper browser-profile and HTTP-cookie-jar root; point multiple worktrees at the same absolute path to reuse scraper session state
+- `BRAVE_SEARCH_API_KEY` / `BRAVE_API_KEY`: enable Brave Search for optional trust-signal refreshes
+- `FAVORITE_PLACES_TRUST_STORE_URL`: override trust-signal storage with an explicit SQLAlchemy URL, including local SQLite file URLs
+- `FAVORITE_PLACES_TRUST_GOOGLE_FALLBACK`: allow Google Search HTML fallback for trust-signal refreshes when set to `true`
+- `FAVORITE_PLACES_MICHELIN_REGION_URLS`: JSON object of `"country/city"` to MICHELIN region URL overrides for full-guide snapshots
 
 Use a restricted browser key for `GOOGLE_MAPS_JS_API_KEY`. Do not expose `GOOGLE_PLACES_API_KEY` to the browser.
 
@@ -262,15 +286,16 @@ The project keeps these layers separate:
 
 1. `site/data/raw/`: raw scraper or CSV import snapshots
 2. `site/data/cache/places.sqlite`: cached Google Places lookups keyed by guide slug and stable place id
-3. `site/data/cache/google-places/`: optional debug export directory, gitignored
-4. `site/overrides/`: handwritten metadata, tags, notes, visibility, attribution, and ranking
-5. `src/data/generated/`: static JSON that Astro reads at build time, gitignored
-6. `public/data/search-index.json`: browser search index, gitignored
+3. `~/.cache/favorite-places/trust-signals/trust.sqlite`: optional user-shared trust-signal cache for MICHELIN guide snapshots, MICHELIN restaurant detail-year snapshots, Wikipedia Michelin-star history, Tabelog, Time Out, and blog/search mentions
+4. `site/data/cache/google-places/`: optional debug export directory, gitignored
+5. `site/overrides/`: handwritten metadata, tags, notes, visibility, attribution, and ranking
+6. `src/data/generated/`: static JSON that Astro reads at build time, gitignored
+7. `public/data/search-index.json`: browser search index, gitignored
 
 Merge precedence:
 
 1. Manual overrides
-2. Google Places enrichment cache
+2. Google Places enrichment cache and optional trust-signal cache
 3. Raw scraped list data
 
 Manual overrides always win over machine-enriched fields.
@@ -301,7 +326,7 @@ The default strategy is `scrape_then_api`. The scraper path does not require a P
 
 `google_maps_places.semantic_llm` defaults to `false`. When enabled, the pipeline sends compact cache-only evidence to the configured OpenAI-compatible model to infer better neighborhood labels, type tags, and vibe tags. Inputs include category, address, price range, review topics, compact review signals, and About labels; generated public JSON still does not expose reviews or About sections directly. `google_maps_places.semantic_descriptions` separately enables generated card descriptions. Description reuse is keyed by a coarse semantic signature over identity and enrichment quality signals, not volatile review text; `semantic_description_force_refresh` bypasses reuse and the semantic LLM cache for intentional regeneration. If credentials are absent or the LLM call fails, deterministic locality/category/vibe rules remain the fallback.
 
-When Langfuse credentials are configured, each uncached OpenAI-compatible LLM request is recorded as a Langfuse generation with token usage when the provider returns it and metadata such as prompt version, evidence hash, and model. Semantic enrichment logging includes the compact semantic request payload and parsed output. Scraper repair logging redacts URLs to hashes and omits request/response payloads by default; `GMAPS_SCRAPER_LANGFUSE_FULL_CAPTURE=true` opts scraper repair traces into full payload capture. Semantic and scraper cache hits intentionally skip Langfuse generation logging because no model call occurred.
+When Langfuse credentials are configured, each uncached OpenAI-compatible LLM request is recorded as a Langfuse generation with token usage when the provider returns it and metadata such as prompt version, evidence hash, and model. Semantic enrichment logging includes the compact semantic request payload and parsed output. Scraper repair logging redacts URLs to hashes and omits request/response payloads by default; `GMAPS_SCRAPER_LANGFUSE_FULL_CAPTURE=true` opts scraper repair traces into full payload capture. Both Langfuse clients use the SDK's async batch exporter with refresh-friendly defaults (`LANGFUSE_TIMEOUT=2`, `LANGFUSE_FLUSH_AT=8`, `LANGFUSE_FLUSH_INTERVAL=1.0`) and avoid adding extra process-exit flush hooks, so a slow Langfuse server does not become the main refresh bottleneck. Semantic and scraper cache hits intentionally skip Langfuse generation logging because no model call occurred.
 
 `google_maps_places.price_display` controls the card-facing price label without changing raw scraper cache fields. `source_order` can prefer `price_range`, `admission_price`, or `room_price`. Numeric `price_range` values are shown conservatively for food/drink/shopping-style categories; attraction tickets and lodging quotes should use the separate `admission_price` or `room_price` fields. `currency_mode` defaults to `raw`; `guide_local` converts to the guide country currency, and `target` converts to `target_currency`. Symbolic values preserve the price tier while numeric prices use daily cached USD exchange rates from `api.fxratesapi.com` with jsDelivr currency-api fallback; failures degrade to the raw scraper price. `max_numeric_by_source` optionally hides converted numeric values above a per-source/per-currency ceiling so reseller bundles or bad localized offers do not appear on cards as normal admission prices.
 

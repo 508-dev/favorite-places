@@ -40,7 +40,7 @@ const initials = avatarMode === "initials" ? getAuthorInitials(authorName) : nul
           class="guide-author-photo"
           src={photoUrl}
           alt=""
-          loading="lazy"
+          loading={variant === "hero" ? "eager" : "lazy"}
           decoding="async"
           onerror="this.parentElement?.querySelector('[data-author-fallback]')?.classList.remove('guide-author-icon--hidden'); this.remove()"
         />

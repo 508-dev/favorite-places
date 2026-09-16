@@ -1,1 +1,5 @@
 .env
+.env.local
+.env.development
+.env.development.local
+.sops.yaml

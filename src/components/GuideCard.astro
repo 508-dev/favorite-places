@@ -74,7 +74,9 @@ const guideDisplayTitle = trimCountryFromTitle(guide.title);
 ---
 
 <article class="guide-card ui-card" data-guide-card data-guide-slug={guide.slug} data-search={guideSearchText}>
-  <a class="guide-card-link ui-card-link" href={`/guides/${guide.slug}/`} aria-label={`Open ${guideDisplayTitle}`}></a>
+  <a class="guide-card-link ui-card-link" href={`/guides/${guide.slug}/`}>
+    <span class="visually-hidden">Open {guideDisplayTitle}</span>
+  </a>
 
   <div class="section-stack ui-stack">
     <h3 class="ui-card-title">{guideDisplayTitle}</h3>

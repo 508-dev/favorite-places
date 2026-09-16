@@ -587,11 +587,11 @@ def _looks_like_address(value: str | None) -> bool:
 def _find_cid(node: list[JSONValue] | None) -> str | None:
     if node is None:
         return None
-    structured = _find_cid_in_value(_safe_index(node, 6))
+    structured = _find_cid_in_structured_slot(_safe_index(node, 6))
     if structured is not None:
         return structured
     for value in node:
-        candidate = _find_cid_in_value(value)
+        candidate = _find_cid_in_fallback_value(value)
         if candidate is not None:
             return candidate
     return None
@@ -637,7 +637,7 @@ def _metadata_matches_coordinate(
     )
 
 
-def _find_cid_in_value(value: JSONValue | None) -> str | None:
+def _find_cid_in_structured_slot(value: JSONValue | None) -> str | None:
     if isinstance(value, int):
         return _normalize_cid_token(str(value))
     if isinstance(value, str):
@@ -655,12 +655,36 @@ def _find_cid_in_value(value: JSONValue | None) -> str | None:
     ]
     if not numeric_texts:
         return None
-    for text in numeric_texts:
-        if not text.startswith("-"):
-            return _normalize_cid_token(text)
     if len(numeric_texts) >= 2:
         return _normalize_cid_token(numeric_texts[1])
     return _normalize_cid_token(numeric_texts[0])
+
+
+def _find_cid_in_fallback_value(value: JSONValue | None) -> str | None:
+    if isinstance(value, int | str):
+        return _normalize_fallback_cid_token(value)
+    if not isinstance(value, list):
+        return None
+    owner = _parse_list_owner(value)
+    if owner is not None and (owner.photo_url is not None or owner.profile_id is not None):
+        return None
+    numeric_texts = [
+        text
+        for text in (_clean_text(item) for item in value)
+        if text is not None and _LONG_INTEGER_PATTERN.fullmatch(text) is not None
+    ]
+    if len(numeric_texts) == 1:
+        return _normalize_fallback_cid_token(numeric_texts[0])
+    return None
+
+
+def _normalize_fallback_cid_token(value: JSONValue | None) -> str | None:
+    text = str(value) if isinstance(value, int) else _clean_text(value)
+    if text is None or _LONG_INTEGER_PATTERN.fullmatch(text) is None:
+        return None
+    if len(text.removeprefix("-")) < 15:
+        return None
+    return _normalize_cid_token(text)
 
 
 def _normalize_cid_token(value: JSONValue | None) -> str | None:

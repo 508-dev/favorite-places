@@ -35,6 +35,8 @@
     "refresh:semantic-descriptions:force": "uv run python3 scripts/build_data.py --force-semantic-descriptions",
     "refresh:semantic-enrichment": "uv run python3 scripts/build_data.py --refresh-semantic-enrichment",
     "refresh:semantic-enrichment:force": "uv run python3 scripts/build_data.py --force-semantic-enrichment",
+    "refresh:trust": "uv run python3 scripts/build_data.py --refresh-trust-signals",
+    "refresh:trust:google-fallback": "uv run python3 scripts/build_data.py --refresh-trust-signals --trust-google-fallback",
     "eval:llm": "uv run python3 scripts/evaluate_llms.py",
     "eval:llm:semantic": "uv run python3 scripts/evaluate_llms.py semantic",
     "eval:llm:dom-repair": "uv run python3 scripts/evaluate_llms.py dom-repair",
@@ -49,17 +51,17 @@
     "export:cache:json": "uv run python3 scripts/build_data.py --export-cache-json"
   },
   "dependencies": {
-    "astro": "^6.1.6",
+    "astro": "^7.1.3",
     "leaflet": "^1.9.4"
   },
   "devDependencies": {
-    "@astrojs/check": "^0.9.4",
+    "@astrojs/check": "^0.9.9",
     "@biomejs/biome": "^2.4.12",
     "@playwright/test": "^1.59.1",
     "@tailwindcss/vite": "^4.2.4",
     "@types/leaflet": "^1.9.21",
     "tailwindcss": "^4.2.4",
     "typescript": "^5.9.3",
-    "vitest": "^3.2.4"
+    "vitest": "^4.1.8"
   }
 }

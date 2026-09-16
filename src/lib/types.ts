@@ -5,7 +5,17 @@ export type FieldSource =
   | "google_places"
   | "osm"
   | "wikidata"
-  | "website";
+  | "website"
+  | "trust_signal";
+export type TrustSignalSource =
+  | "michelin"
+  | "tabelog"
+  | "timeout"
+  | "blog"
+  | "web"
+  | "brave_search"
+  | "google_search";
+export type TrustSignalConfidence = "high" | "medium" | "low";
 export type MarkerIcon =
   | "default"
   | "cafe"
@@ -19,6 +29,7 @@ export type MarkerIcon =
   | "shopping"
   | "hotel"
   | "spa";
+export type PlaceBudgetKind = "restaurant_per_person" | "hotel_per_night" | "admission_per_person";
 
 export interface PlaceField<T> {
   value: T;
@@ -41,6 +52,8 @@ export interface PlaceProvenance {
   user_rating_count?: PlaceField<number> | null;
   primary_category?: PlaceField<string> | null;
   primary_category_localized?: PlaceField<string> | null;
+  website?: PlaceField<string> | null;
+  reservation_links?: PlaceField<PlaceReservationLink[]> | null;
   tags: PlaceField<string>[];
   locality_path?: PlaceField<string[]> | null;
   neighborhood?: PlaceField<string> | null;
@@ -51,6 +64,28 @@ export interface PlaceProvenance {
   hidden?: PlaceField<boolean> | null;
   manual_rank?: PlaceField<number> | null;
   status?: PlaceField<string> | null;
+  trust_signals?: PlaceField<TrustSignal[]> | null;
+}
+
+export interface TrustSignal {
+  source: TrustSignalSource;
+  label: string;
+  tier?: string | null;
+  display_label?: string | null;
+  display_tier?: string | null;
+  award_year?: number | null;
+  is_current?: boolean | null;
+  url?: string | null;
+  title?: string | null;
+  published_at?: string | null;
+  fetched_at: string;
+  confidence: TrustSignalConfidence;
+  match_reason: string;
+}
+
+export interface PlaceReservationLink {
+  label: string;
+  url: string;
 }
 
 export interface Place {
@@ -73,6 +108,11 @@ export interface Place {
   visible_tags: string[];
   vibe_tags: string[];
   price_range: string | null;
+  budget_kind: PlaceBudgetKind | null;
+  budget_tier: number | null;
+  budget_label: string | null;
+  website?: string | null;
+  reservation_links?: PlaceReservationLink[];
   locality_path: string[];
   neighborhood: string | null;
   note: string | null;
@@ -84,6 +124,7 @@ export interface Place {
   hidden: boolean;
   manual_rank: number;
   status: string;
+  trust_signals?: TrustSignal[];
   provenance: PlaceProvenance;
 }
 

@@ -79,7 +79,7 @@ function normalizeUrl(value: string): string | null {
 }
 
 function renderAnchor(href: string, label: string): string {
-  return `<a href="${escapeHtml(href)}" target="_blank" rel="noreferrer">${label}</a>`;
+  return `<a href="${escapeHtml(href)}" target="_blank" rel="noopener noreferrer">${label}</a>`;
 }
 
 const RICH_TEXT_PATTERN = /\[([^\]\n]+)\]\((https?:\/\/[^\s)]+)\)|(https?:\/\/[^\s<]+)/gi;

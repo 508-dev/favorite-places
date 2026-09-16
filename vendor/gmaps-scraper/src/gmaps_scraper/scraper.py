@@ -12,6 +12,10 @@ from pathlib import Path
 from typing import Any, Literal, Required, TypedDict
 from urllib.parse import urljoin
 
+from gmaps_scraper.browser_humanization import (
+    BrowserWindowSize,
+    resolve_browser_window_size,
+)
 from gmaps_scraper.models import SavedList
 from gmaps_scraper.parser import JSONValue, ParseError, parse_saved_list_artifacts
 
@@ -92,6 +96,8 @@ class BrowserSessionConfig:
 
     profile_dir: Path | None = None
     proxy: str | BrowserProxyConfig | None = None
+    window_size: BrowserWindowSize = "random"
+    human_mouse: bool = False
 
 
 @dataclass(slots=True, frozen=True)
@@ -325,19 +331,28 @@ def _launch_browser_context(
     except ImportError as exc:  # pragma: no cover - dependency error path
         raise ScrapeError("CloakBrowser is not installed. Run `uv sync`.") from exc
 
+    session = browser_session or BrowserSessionConfig()
     launch_kwargs: dict[str, Any] = {
         "headless": headless,
-        "humanize": True,
+        "humanize": session.human_mouse,
         "locale": "en-US",
         "extra_http_headers": {"Accept-Language": "en-US,en;q=0.9"},
     }
-    if browser_session is not None and browser_session.proxy is not None:
-        launch_kwargs["proxy"] = browser_session.proxy
-    if browser_session is None or browser_session.profile_dir is None:
+    window_size = resolve_browser_window_size(
+        session.window_size,
+        profile_dir=session.profile_dir,
+    )
+    if window_size is not None:
+        width, height = window_size
+        launch_kwargs["args"] = [f"--window-size={width},{height}"]
+        launch_kwargs["viewport"] = {"width": width, "height": height}
+    if session.proxy is not None:
+        launch_kwargs["proxy"] = session.proxy
+    if session.profile_dir is None:
         return launch_context(**launch_kwargs)
 
-    browser_session.profile_dir.mkdir(parents=True, exist_ok=True)
-    return launch_persistent_context(browser_session.profile_dir, **launch_kwargs)
+    session.profile_dir.mkdir(parents=True, exist_ok=True)
+    return launch_persistent_context(session.profile_dir, **launch_kwargs)
 
 
 def _read_resolved_url(page: Any) -> str | None:

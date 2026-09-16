@@ -14,6 +14,37 @@ individual Google Maps place pages.
 - The latest stable patch release is `3.14.3` as of March 12, 2026, but the repo pins the `3.14` series so `uv` can use the newest available stable patch on each platform.
 - Local quality gates are `./scripts/lint.sh` and `./scripts/typecheck.sh`.
 
+## Agent Operating Rules
+
+- State assumptions when they affect the implementation. Ask only when multiple
+  reasonable interpretations would materially change the work.
+- Read before writing: inspect the target file, immediate callers, exports, and
+  obvious shared utilities before adding or changing code.
+- Keep changes minimal and scoped. Do not refactor adjacent code, reformat
+  unrelated files, or add speculative abstractions.
+- Match existing conventions for naming, formatting, error handling, tests, and
+  scraper fallbacks. When patterns conflict, choose the more recent or better
+  tested pattern, explain why, and do not blend incompatible approaches.
+- Use code for deterministic decisions such as routing, retries, status-code
+  handling, parsing, and transforms. Reserve LLM use for judgment tasks such as
+  classification, summarization, extraction repair, or English display fields
+  when policy explicitly allows it.
+- For non-trivial changes, reason about state ownership, observability,
+  coupling/blast radius, timing/order of operations, and security before
+  shipping. Surface unresolved risk instead of hiding it.
+- Tests should encode intent, not just exercise code paths. A test is weak if it
+  would keep passing after the relevant scraper behavior or business rule is
+  broken.
+- Fail loud. Do not report success if records, tests, browser steps, payloads, or
+  validations were skipped silently. Preserve diagnostics and quality flags for
+  partial or uncertain extraction.
+- Checkpoint multi-step work: keep track of what changed, what was verified, and
+  what remains. If the implementation state is no longer clear, stop and
+  restate it before continuing.
+- Ground specific claims. Numbers, rankings, source names, causal claims, and
+  performance claims must be supported by repo context, test output, cited
+  sources, or clearly labeled inference.
+
 ## Saved List Workflow
 
 1. Resolve the saved-list URL.

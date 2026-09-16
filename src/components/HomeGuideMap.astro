@@ -60,12 +60,13 @@ const mapGuides = guides.filter((guide) => Number.isFinite(guide.lat) && Number.
           </button>
         </div>
 
-        <div
+        <section
           class="guide-map"
           data-home-guide-map
           data-map-provider={mapProvider}
           data-google-maps-api-key={googleMapsApiKey}
           data-guides={JSON.stringify(mapGuides).replace(/</g, "\\u003c")}
+          aria-label="Guide locations"
         />
       </div>
 
@@ -83,6 +84,7 @@ const mapGuides = guides.filter((guide) => Number.isFinite(guide.lat) && Number.
 <script>
   import L from "leaflet";
   import "leaflet/dist/leaflet.css";
+  import { installMapAccessibility } from "../lib/mapAccessibility";
 
   interface HomeMapGuide {
     slug: string;
@@ -851,6 +853,7 @@ const mapGuides = guides.filter((guide) => Number.isFinite(guide.lat) && Number.
     } catch {
       runtime = initLeafletRuntime(element, guides);
     }
+    installMapAccessibility(panel ?? element, "Guide locations map");
     runtime.onViewChanged(syncResetButton);
     resetButton?.addEventListener("click", () => {
       runtime?.resetView();

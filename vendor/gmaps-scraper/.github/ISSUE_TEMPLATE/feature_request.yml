@@ -1,0 +1,41 @@
+name: Feature Request
+description: Propose a new scraper capability or workflow.
+title: "feature: "
+labels:
+  - enhancement
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What user, scraper, or downstream-consumer problem should this solve?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed Solution
+      description: What should change?
+    validations:
+      required: true
+  - type: textarea
+    id: output-contract
+    attributes:
+      label: Output Contract
+      description: Describe any expected JSON shape, field additions, or compatibility constraints.
+    validations:
+      required: false
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives Considered
+      description: What other approaches are available?
+    validations:
+      required: false
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional Context
+      description: Links, sanitized payloads, screenshots, examples, constraints, or non-goals.
+    validations:
+      required: false

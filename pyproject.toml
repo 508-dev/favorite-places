@@ -7,17 +7,21 @@ requires-python = ">=3.14,<3.15"
 dependencies = [
   "gmaps-scraper",
   "langfuse==4.6.1",
-  "pillow>=12.2.0,<13.0.0",
+  "pillow>=12.3.0,<13.0.0",
   "pycountry>=24.6.1,<25.0.0",
   "pydantic>=2.11.0,<3.0.0",
-  "pydantic-settings>=2.10.0,<3.0.0",
+  "pydantic-settings>=2.14.2,<3.0.0",
+  "sqlalchemy>=2.0,<3.0",
 ]
 
 [dependency-groups]
 dev = [
-  "mypy>=1.18.2,<2.0.0",
+  "pyrefly>=1.0.0,<2.0.0",
   "ruff>=0.14.1,<0.15.0",
 ]
+
+[tool.uv]
+exclude-newer = "P7D"
 
 [tool.uv.sources]
 gmaps-scraper = { path = "vendor/gmaps-scraper" }
@@ -26,16 +30,16 @@ gmaps-scraper = { path = "vendor/gmaps-scraper" }
 target-version = "py314"
 extend-exclude = ["vendor"]
 
-[tool.mypy]
-python_version = "3.14"
-files = [
+[tool.pyrefly]
+project-includes = [
   "scripts/pipeline_models.py",
   "scripts/refresh_profiles.py",
   "scripts/refresh_summary.py",
 ]
-exclude = ["^vendor/"]
-check_untyped_defs = true
-follow_imports = "silent"
-ignore_missing_imports = true
-warn_redundant_casts = true
-warn_unused_ignores = true
+project-excludes = ["**/vendor/"]
+python-version = "3.14.0"
+preset = "legacy"
+ignore-missing-imports = ["*"]
+
+[tool.pyrefly.errors]
+redundant-cast = "warn"

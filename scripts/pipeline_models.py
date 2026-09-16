@@ -163,6 +163,7 @@ class RawPlace(PipelineModel):
     lng: float | None = None
     maps_url: str
     cid: str | None = None
+    cid_aliases: list[str] = Field(default_factory=list)
     google_id: str | None = None
     maps_place_token: str | None = None
     rating: float | None = None
@@ -197,6 +198,11 @@ class RawSavedList(PipelineModel):
     places: list[RawPlace] = Field(default_factory=list)
 
 
+class PlaceReservationLink(PipelineModel):
+    label: str
+    url: str
+
+
 class EnrichmentPlace(PipelineModel):
     google_place_id: str | None = None
     google_place_resource_name: str | None = None
@@ -225,6 +231,7 @@ class EnrichmentPlace(PipelineModel):
     types: list[str] = Field(default_factory=list)
     business_status: str | None = None
     website: str | None = None
+    reservation_links: list[PlaceReservationLink] = Field(default_factory=list)
     phone: str | None = None
     plus_code: str | None = None
     address_parts: AddressParts | None = None
@@ -261,6 +268,35 @@ class EnrichmentCacheEntry(PipelineModel):
     place: EnrichmentPlace | None = None
 
 
+TrustSignalSource = Literal[
+    "michelin",
+    "tabelog",
+    "timeout",
+    "blog",
+    "web",
+    "brave_search",
+    "google_search",
+]
+
+TrustSignalConfidence = Literal["high", "medium", "low"]
+
+
+class TrustSignal(PipelineModel):
+    source: TrustSignalSource
+    label: str
+    tier: str | None = None
+    display_label: str | None = None
+    display_tier: str | None = None
+    award_year: int | None = None
+    is_current: bool | None = None
+    url: str | None = None
+    title: str | None = None
+    published_at: str | None = None
+    fetched_at: str
+    confidence: TrustSignalConfidence
+    match_reason: str
+
+
 FieldSource = Literal[
     "manual",
     "google_list",
@@ -269,6 +305,7 @@ FieldSource = Literal[
     "osm",
     "wikidata",
     "website",
+    "trust_signal",
 ]
 
 MarkerIcon = Literal[
@@ -308,6 +345,8 @@ class PlaceProvenance(PipelineModel):
     user_rating_count: PlaceField | None = None
     primary_category: PlaceField | None = None
     primary_category_localized: PlaceField | None = None
+    website: PlaceField | None = None
+    reservation_links: PlaceField | None = None
     tags: list[PlaceField] = Field(default_factory=list)
     neighborhood: PlaceField | None = None
     note: PlaceField | None = None
@@ -317,6 +356,7 @@ class PlaceProvenance(PipelineModel):
     hidden: PlaceField | None = None
     manual_rank: PlaceField | None = None
     status: PlaceField | None = None
+    trust_signals: PlaceField | None = None
 
 
 class NormalizedPlace(PipelineModel):
@@ -339,6 +379,15 @@ class NormalizedPlace(PipelineModel):
     visible_tags: list[str] = Field(default_factory=list)
     vibe_tags: list[str] = Field(default_factory=list)
     price_range: str | None = None
+    budget_kind: Literal[
+        "restaurant_per_person",
+        "hotel_per_night",
+        "admission_per_person",
+    ] | None = None
+    budget_tier: int | None = None
+    budget_label: str | None = None
+    website: str | None = None
+    reservation_links: list[PlaceReservationLink] = Field(default_factory=list)
     neighborhood: str | None = None
     note: str | None = None
     why_recommended: str | None = None
@@ -349,6 +398,7 @@ class NormalizedPlace(PipelineModel):
     hidden: bool = False
     manual_rank: int = 0
     status: str
+    trust_signals: list[TrustSignal] = Field(default_factory=list)
     provenance: PlaceProvenance = Field(default_factory=PlaceProvenance)
 
 

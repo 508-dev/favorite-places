@@ -21,8 +21,15 @@ Run the local gates before opening or updating a PR:
 ```bash
 ./scripts/lint.sh
 ./scripts/typecheck.sh
-uv run python -m unittest discover -s tests
+./scripts/test.sh
+./scripts/check-all.sh
 ```
+
+`./scripts/check-all.sh` is the same local gate in one command. It runs linting,
+type checking, and unit tests.
+
+Dependency changes should follow [docs/supply-chain.md](docs/supply-chain.md):
+keep `uv.lock` committed and prefer locked installs.
 
 ## Pull Request Expectations
 
