@@ -9042,7 +9042,7 @@ class BuildDataTests(unittest.TestCase):
             ],
         }
         place = build_data.normalize_enrichment_match(candidate)
-        self.assertEqual(place.formatted_address_en, "Place du Casino, 98000 Monaco")
+        self.assertEqual(place.formatted_address, "Place du Casino, 98000 Monaco")
         self.assertEqual(place.address_country_name, "Monaco")
         self.assertEqual(place.address_country_code, "MC")
 

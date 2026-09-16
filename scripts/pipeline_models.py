@@ -202,8 +202,6 @@ class EnrichmentPlace(PipelineModel):
     google_place_resource_name: str | None = None
     display_name: str | None = None
     formatted_address: str | None = None
-    formatted_address_en: str | None = None
-    formatted_address_local: str | None = None
     address_display_en: str | None = None
     address_display_en_source: str | None = None
     address_display_en_confidence: str | None = None

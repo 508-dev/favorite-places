@@ -4370,7 +4370,6 @@ def canonicalize_enrichment_place(place: EnrichmentPlace | None) -> EnrichmentPl
     place.primary_type, place.types = normalize_enrichment_place_type_fields(place)
     place.display_name = sanitize_place_page_display_name(place.display_name)
     place.formatted_address = sanitize_place_page_formatted_address(place.formatted_address)
-    place.formatted_address_en = sanitize_place_page_formatted_address(place.formatted_address_en)
     place.address_display_en = sanitize_place_page_formatted_address(place.address_display_en)
     place.category_display_en = sanitize_enrichment_primary_category(place.category_display_en)
     place.description = sanitize_place_page_description(place.description)
@@ -6200,6 +6199,7 @@ def enrichment_input_signature(
         "google_place_id_override": as_string(signature_google_place_id),
         "google_maps_places": google_maps_place_scraper_policy_payload(),
         "search_query_version": 2,
+        "places_api_field_mask": PLACES_FIELD_MASK,
     }
     serialized = json.dumps(payload, sort_keys=True, ensure_ascii=False)
     return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
@@ -6456,13 +6456,15 @@ def preserve_existing_enrichment(
     if not refreshed_place.formatted_address and previous_place.formatted_address:
         refreshed_place.formatted_address = previous_place.formatted_address
         append_unique_reason(preserved_fields, "address")
-    if not refreshed_place.formatted_address_en and previous_place.formatted_address_en:
-        refreshed_place.formatted_address_en = previous_place.formatted_address_en
     if not refreshed_place.address_country_name and previous_place.address_country_name:
         refreshed_place.address_country_name = previous_place.address_country_name
+    if not refreshed_place.address_country_code and previous_place.address_country_code:
         refreshed_place.address_country_code = previous_place.address_country_code
+    if not refreshed_place.address_admin_area and previous_place.address_admin_area:
         refreshed_place.address_admin_area = previous_place.address_admin_area
+    if not refreshed_place.address_locality and previous_place.address_locality:
         refreshed_place.address_locality = previous_place.address_locality
+    if not refreshed_place.address_postal_code and previous_place.address_postal_code:
         refreshed_place.address_postal_code = previous_place.address_postal_code
     if not refreshed_place.address_display_en and previous_place.address_display_en:
         refreshed_place.address_display_en = previous_place.address_display_en
@@ -11266,13 +11268,11 @@ def normalize_enrichment_match(candidate: dict[str, Any]) -> EnrichmentPlace:
     )
     raw_components = [c for c in (candidate.get("addressComponents") or []) if isinstance(c, dict)]
     api_components = extract_api_address_components(raw_components)
-    formatted_address_en = as_string(candidate.get("formattedAddress"))
     return EnrichmentPlace(
         google_place_id=as_string(candidate.get("id")),
         google_place_resource_name=as_string(candidate.get("name")),
         display_name=display_name_text(display_name),
-        formatted_address=formatted_address_en,
-        formatted_address_en=formatted_address_en,
+        formatted_address=as_string(candidate.get("formattedAddress")),
         google_maps_uri=as_string(candidate.get("googleMapsUri")),
         rating=as_float(candidate.get("rating")),
         user_rating_count=as_int(candidate.get("userRatingCount")),
