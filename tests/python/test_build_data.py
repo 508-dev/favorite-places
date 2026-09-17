@@ -11073,10 +11073,35 @@ class BuildDataTests(unittest.TestCase):
                 user_rating_count=288,
                 website="https://sistermidnightparis.com/",
                 primary_type_display_name="Cocktail bar",
+                address_country_name="France",
+                address_country_code="FR",
             ),
         )
 
         self.assertFalse(build_data.should_fallback_to_places_api(entry))
+
+    def test_should_fallback_to_places_api_for_rich_search_result_missing_address_components(self) -> None:
+        entry = EnrichmentCacheEntry(
+            fetched_at="2026-04-20T00:00:00+00:00",
+            query="Sister Midnight, 4 Rue Viollet-le-Duc, 75009 Paris, France",
+            source="google_maps_page",
+            matched=True,
+            score=45,
+            place=EnrichmentPlace(
+                display_name="Sister Midnight",
+                formatted_address="4 Rue Viollet-le-Duc, 75009 Paris, France",
+                google_maps_uri=(
+                    "https://www.google.com/maps/search/?api=1&query="
+                    "Sister+Midnight%2C+4+Rue+Viollet-le-Duc%2C+75009+Paris%2C+France"
+                ),
+                rating=4.7,
+                user_rating_count=288,
+                website="https://sistermidnightparis.com/",
+                primary_type_display_name="Cocktail bar",
+            ),
+        )
+
+        self.assertTrue(build_data.should_fallback_to_places_api(entry))
 
     def test_extract_hashtags_normalizes_accented_and_malformed_location_tags(self) -> None:
         tags = build_data.extract_hashtags("Great spots #genève #gen-ve #park")
@@ -16399,6 +16424,84 @@ class BuildDataTests(unittest.TestCase):
         self.assertEqual(guide.country_name, "Japan")
         self.assertEqual(guide.country_code, "JP")
 
+    def test_normalize_guide_ignores_stale_cache_entries_when_inferring_country(self) -> None:
+        raw = RawSavedList(
+            title="Ambiguous City",
+            places=[
+                RawPlace(
+                    name="Restaurant",
+                    address="〒900-0015 Okinawa, Naha, Kumoji, 2 Chome-19-17 RS-ONE 1F",
+                    maps_url="https://maps.google.com/?cid=1",
+                ),
+            ],
+        )
+        enrichment_cache = {
+            "current1": EnrichmentCacheEntry(
+                fetched_at="2024-01-01T00:00:00+00:00",
+                query="Restaurant Okinawa",
+                matched=True,
+                place=EnrichmentPlace(address_country_name="Japan", address_country_code="JP"),
+            ),
+            "removed1": EnrichmentCacheEntry(
+                fetched_at="2024-01-01T00:00:00+00:00",
+                query="Old Cafe Monaco",
+                matched=True,
+                place=EnrichmentPlace(address_country_name="Monaco", address_country_code="MC"),
+            ),
+            "removed2": EnrichmentCacheEntry(
+                fetched_at="2024-01-01T00:00:00+00:00",
+                query="Old Bar Monaco",
+                matched=True,
+                place=EnrichmentPlace(address_country_name="Monaco", address_country_code="MC"),
+            ),
+        }
+
+        with (
+            patch.object(build_data, "LIST_OVERRIDES_DIR", Path("/nonexistent")),
+            patch.object(build_data, "PLACE_OVERRIDES_DIR", Path("/nonexistent")),
+            patch.object(build_data, "read_json", return_value={}),
+            patch.object(build_data, "transform_guide_description_with_site_hook", side_effect=lambda d, **kw: d),
+            patch.object(build_data, "guide_author_for_ui", return_value=None),
+            patch.object(build_data, "stable_place_id", return_value="current1"),
+        ):
+            guide = build_data.normalize_guide("ambiguous-city", raw, enrichment_cache=enrichment_cache)
+
+        self.assertEqual(guide.country_name, "Japan")
+        self.assertEqual(guide.country_code, "JP")
+
+    def test_normalize_guide_does_not_pair_heuristic_country_name_with_mismatched_enrichment_code(self) -> None:
+        raw = RawSavedList(
+            title="Paris, TX",
+            places=[
+                RawPlace(
+                    name="Diner",
+                    address="1 Main St, Paris, TX, United States",
+                    maps_url="https://maps.google.com/?cid=1",
+                ),
+            ],
+        )
+        enrichment_cache = {
+            "place1": EnrichmentCacheEntry(
+                fetched_at="2024-01-01T00:00:00+00:00",
+                query="Diner Paris TX",
+                matched=True,
+                place=EnrichmentPlace(address_country_name="United States", address_country_code="US"),
+            ),
+        }
+
+        with (
+            patch.object(build_data, "LIST_OVERRIDES_DIR", Path("/nonexistent")),
+            patch.object(build_data, "PLACE_OVERRIDES_DIR", Path("/nonexistent")),
+            patch.object(build_data, "read_json", return_value={}),
+            patch.object(build_data, "transform_guide_description_with_site_hook", side_effect=lambda d, **kw: d),
+            patch.object(build_data, "guide_author_for_ui", return_value=None),
+            patch.object(build_data, "stable_place_id", return_value="place1"),
+        ):
+            guide = build_data.normalize_guide("paris-tx", raw, enrichment_cache=enrichment_cache)
+
+        self.assertEqual(guide.country_name, "TX")
+        self.assertIsNone(guide.country_code)
+
     def test_country_inference_ignores_parenthetical_title_suffix(self) -> None:
         raw = RawSavedList(
             title="Taipei, Taiwan (Example) 🇹🇼",
@@ -17664,6 +17767,62 @@ class BuildDataTests(unittest.TestCase):
         self.assertTrue(entry.place.limited_view)
         self.assertEqual(entry.place.google_maps_uri, "https://maps.google.com/?cid=1")
         self.assertEqual(entry.merged_sources, ["google_maps_page", "google_places_api"])
+
+    def test_fetch_places_enrichment_falls_back_to_api_when_page_lacks_address_components(self) -> None:
+        place = RawPlace(
+            name="Sister Midnight",
+            address="4 Rue Viollet-le-Duc, 75009 Paris, France",
+            maps_url="https://www.google.com/maps/place/Sister+Midnight",
+        )
+        page_entry = EnrichmentCacheEntry(
+            fetched_at="2026-04-16T00:00:00+00:00",
+            refresh_after="2026-04-19T00:00:00+00:00",
+            source="google_maps_page",
+            query="Sister Midnight, 4 Rue Viollet-le-Duc, 75009 Paris, France",
+            matched=True,
+            score=88,
+            place=EnrichmentPlace(
+                display_name="Sister Midnight",
+                formatted_address="4 Rue Viollet-le-Duc, 75009 Paris, France",
+                google_maps_uri=place.maps_url,
+                rating=4.7,
+                user_rating_count=288,
+                website="https://sistermidnightparis.com/",
+                primary_type_display_name="Cocktail bar",
+            ),
+        )
+        api_entry = EnrichmentCacheEntry(
+            fetched_at="2026-04-16T00:00:00+00:00",
+            refresh_after="2026-04-23T00:00:00+00:00",
+            source="google_places_api",
+            query="Sister Midnight, 4 Rue Viollet-le-Duc, 75009 Paris, France",
+            matched=True,
+            score=88,
+            place=EnrichmentPlace(
+                display_name="Sister Midnight",
+                formatted_address="4 Rue Viollet-le-Duc, 75009 Paris, France",
+                google_maps_uri="https://maps.google.com/?cid=1",
+                address_country_name="France",
+                address_country_code="FR",
+                address_locality="Paris",
+            ),
+        )
+
+        with (
+            patch.object(build_data, "fetch_place_page_enrichment", return_value=page_entry) as page_fetch,
+            patch.object(build_data, "fetch_places_api_enrichment", return_value=api_entry) as api_fetch,
+        ):
+            entry = build_data.fetch_places_enrichment(
+                place,
+                api_key="test-key",
+                strategy="scrape_then_api",
+            )
+
+        page_fetch.assert_called_once()
+        api_fetch.assert_called_once()
+        assert entry.place is not None
+        self.assertEqual(entry.place.address_country_name, "France")
+        self.assertEqual(entry.place.address_country_code, "FR")
 
     def test_fetch_places_enrichment_keeps_page_result_when_api_fallback_fails(self) -> None:
         place = RawPlace(

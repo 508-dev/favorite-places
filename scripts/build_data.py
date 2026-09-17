@@ -3257,11 +3257,24 @@ def normalize_guide(
     city_name = as_string(list_override.get("city_name")) or infer_city_name(title)
     country_name = as_string(list_override.get("country_name")) or infer_country_name(title, raw)
     country_code = as_string(list_override.get("country_code")) or infer_country_code(country_name)
+    current_primary_keys = raw_saved_list_primary_match_key_set(raw)
 
     if not country_name or not country_code:
-        enrichment_country_name, enrichment_country_code = infer_country_from_enrichment_cache(enrichment_cache)
-        country_name = country_name or enrichment_country_name
-        country_code = country_code or enrichment_country_code or infer_country_code(country_name)
+        current_enrichment_cache = raw_saved_list_reachable_enrichment_cache(
+            raw,
+            enrichment_cache,
+            current_primary_keys=current_primary_keys,
+        )
+        enrichment_country_name, enrichment_country_code = infer_country_from_enrichment_cache(
+            current_enrichment_cache
+        )
+        if not country_name:
+            country_name = enrichment_country_name
+            country_code = country_code or enrichment_country_code
+        elif not country_code and country_name == enrichment_country_name:
+            country_code = enrichment_country_code
+        if country_name and not country_code:
+            country_code = infer_country_code(country_name)
 
     description_tags = extract_hashtags(description)
     override_tags = [
@@ -3274,7 +3287,6 @@ def normalize_guide(
     normalized_places: list[NormalizedPlace] = []
     category_counter: Counter[str] = Counter()
     prefer_enrichment_names = raw.configured_source_type == "google_export_csv"
-    current_primary_keys = raw_saved_list_primary_match_key_set(raw)
 
     for place in raw.places:
         place_id = stable_place_id(place, source_type=raw.configured_source_type)
@@ -6761,6 +6773,30 @@ def raw_saved_list_primary_match_key_set(raw: RawSavedList) -> set[str]:
             source_type=raw.configured_source_type,
         )
     }
+
+
+def raw_saved_list_reachable_enrichment_cache(
+    raw: RawSavedList,
+    enrichment_cache: dict[str, EnrichmentCacheEntry],
+    *,
+    current_primary_keys: set[str] | None = None,
+) -> dict[str, EnrichmentCacheEntry]:
+    """Restrict a cache to entries reachable from current raw.places, dropping stale entries
+    left behind by places removed from the source list so they can't outvote current places."""
+    if current_primary_keys is None:
+        current_primary_keys = raw_saved_list_primary_match_key_set(raw)
+
+    reachable: dict[str, EnrichmentCacheEntry] = {}
+    for place in raw.places:
+        cache_key = raw_place_mapping_lookup_key(
+            enrichment_cache,
+            place,
+            source_type=raw.configured_source_type,
+            blocked_alias_keys=current_primary_keys,
+        )
+        if cache_key is not None:
+            reachable[cache_key] = enrichment_cache[cache_key]
+    return reachable
 
 
 def raw_saved_list_match_key_set(raw: RawSavedList, *, source_type: str | None = None) -> set[str]:
@@ -12221,6 +12257,8 @@ def should_fallback_to_places_api(entry: EnrichmentCacheEntry) -> bool:
     if place.business_status is None and place.rating is None and place.user_rating_count is None:
         if not place.primary_type_display_name:
             return True
+    if not place.address_country_name:
+        return True
     return False
 
 
