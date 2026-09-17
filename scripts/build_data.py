@@ -772,6 +772,7 @@ PLACES_FIELD_MASK = ",".join(
         "places.primaryTypeDisplayName",
         "places.types",
         "places.businessStatus",
+        "places.addressComponents",
         "places.websiteUri",
     ]
 )
@@ -3256,6 +3257,24 @@ def normalize_guide(
     city_name = as_string(list_override.get("city_name")) or infer_city_name(title)
     country_name = as_string(list_override.get("country_name")) or infer_country_name(title, raw)
     country_code = as_string(list_override.get("country_code")) or infer_country_code(country_name)
+    current_primary_keys = raw_saved_list_primary_match_key_set(raw)
+
+    if not country_name or not country_code:
+        current_enrichment_cache = raw_saved_list_reachable_enrichment_cache(
+            raw,
+            enrichment_cache,
+            current_primary_keys=current_primary_keys,
+        )
+        enrichment_country_name, enrichment_country_code = infer_country_from_enrichment_cache(
+            current_enrichment_cache
+        )
+        if not country_name:
+            country_name = enrichment_country_name
+            country_code = country_code or enrichment_country_code
+        elif not country_code and country_name == enrichment_country_name:
+            country_code = enrichment_country_code
+        if country_name and not country_code:
+            country_code = infer_country_code(country_name)
 
     description_tags = extract_hashtags(description)
     override_tags = [
@@ -3268,7 +3287,6 @@ def normalize_guide(
     normalized_places: list[NormalizedPlace] = []
     category_counter: Counter[str] = Counter()
     prefer_enrichment_names = raw.configured_source_type == "google_export_csv"
-    current_primary_keys = raw_saved_list_primary_match_key_set(raw)
 
     for place in raw.places:
         place_id = stable_place_id(place, source_type=raw.configured_source_type)
@@ -5628,6 +5646,24 @@ def infer_country_name(title: str, raw: RawSavedList) -> str | None:
     return Counter(place_countries).most_common(1)[0][0]
 
 
+def infer_country_from_enrichment_cache(
+    enrichment_cache: dict[str, EnrichmentCacheEntry],
+) -> tuple[str | None, str | None]:
+    votes: list[tuple[str, str | None]] = []
+    for entry in enrichment_cache.values():
+        if not cache_entry_has_publishable_enrichment(entry):
+            continue
+        place = entry.place
+        if place is None or not place.address_country_name:
+            continue
+        votes.append((place.address_country_name, place.address_country_code))
+    if not votes:
+        return None, None
+    counter: Counter[tuple[str, str | None]] = Counter(votes)
+    country_name, country_code = counter.most_common(1)[0][0]
+    return country_name, country_code
+
+
 def infer_country_code(country_name: str | None) -> str | None:
     if country_name is None:
         return None
@@ -6737,6 +6773,30 @@ def raw_saved_list_primary_match_key_set(raw: RawSavedList) -> set[str]:
             source_type=raw.configured_source_type,
         )
     }
+
+
+def raw_saved_list_reachable_enrichment_cache(
+    raw: RawSavedList,
+    enrichment_cache: dict[str, EnrichmentCacheEntry],
+    *,
+    current_primary_keys: set[str] | None = None,
+) -> dict[str, EnrichmentCacheEntry]:
+    """Restrict a cache to entries reachable from current raw.places, dropping stale entries
+    left behind by places removed from the source list so they can't outvote current places."""
+    if current_primary_keys is None:
+        current_primary_keys = raw_saved_list_primary_match_key_set(raw)
+
+    reachable: dict[str, EnrichmentCacheEntry] = {}
+    for place in raw.places:
+        cache_key = raw_place_mapping_lookup_key(
+            enrichment_cache,
+            place,
+            source_type=raw.configured_source_type,
+            blocked_alias_keys=current_primary_keys,
+        )
+        if cache_key is not None:
+            reachable[cache_key] = enrichment_cache[cache_key]
+    return reachable
 
 
 def raw_saved_list_match_key_set(raw: RawSavedList, *, source_type: str | None = None) -> set[str]:
@@ -9763,6 +9823,7 @@ def enrichment_input_signature(
         "google_maps_places": google_maps_place_scraper_policy_payload(),
         "contact_fields_version": ENRICHMENT_CONTACT_FIELDS_VERSION,
         "search_query_version": 2,
+        "places_api_field_mask": PLACES_FIELD_MASK,
     }
     serialized = json.dumps(payload, sort_keys=True, ensure_ascii=False)
     return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
@@ -10064,6 +10125,16 @@ def preserve_existing_enrichment(
         if not refreshed_place.formatted_address and previous_place.formatted_address:
             refreshed_place.formatted_address = previous_place.formatted_address
             append_unique_reason(preserved_fields, "address")
+        if not refreshed_place.address_country_name and previous_place.address_country_name:
+            refreshed_place.address_country_name = previous_place.address_country_name
+        if not refreshed_place.address_country_code and previous_place.address_country_code:
+            refreshed_place.address_country_code = previous_place.address_country_code
+        if not refreshed_place.address_admin_area and previous_place.address_admin_area:
+            refreshed_place.address_admin_area = previous_place.address_admin_area
+        if not refreshed_place.address_locality and previous_place.address_locality:
+            refreshed_place.address_locality = previous_place.address_locality
+        if not refreshed_place.address_postal_code and previous_place.address_postal_code:
+            refreshed_place.address_postal_code = previous_place.address_postal_code
         if not refreshed_place.address_display_en and previous_place.address_display_en:
             refreshed_place.address_display_en = previous_place.address_display_en
             refreshed_place.address_display_en_source = previous_place.address_display_en_source
@@ -12186,6 +12257,8 @@ def should_fallback_to_places_api(entry: EnrichmentCacheEntry) -> bool:
     if place.business_status is None and place.rating is None and place.user_rating_count is None:
         if not place.primary_type_display_name:
             return True
+    if not place.address_country_name:
+        return True
     return False
 
 
@@ -15550,6 +15623,30 @@ def score_text_search_candidate(raw_place: RawPlace, candidate: dict[str, Any]) 
     return score
 
 
+def extract_api_address_components(
+    components: list[dict[str, Any]],
+) -> dict[str, str | None]:
+    result: dict[str, str | None] = {
+        "country_name": None,
+        "country_code": None,
+        "admin_area": None,
+        "locality": None,
+        "postal_code": None,
+    }
+    for component in components:
+        types = component.get("types") or []
+        if "country" in types:
+            result["country_name"] = as_string(component.get("longText"))
+            result["country_code"] = as_string(component.get("shortText"))
+        elif "administrative_area_level_1" in types and result["admin_area"] is None:
+            result["admin_area"] = as_string(component.get("longText"))
+        elif "locality" in types and result["locality"] is None:
+            result["locality"] = as_string(component.get("longText"))
+        elif "postal_code" in types and result["postal_code"] is None:
+            result["postal_code"] = as_string(component.get("longText"))
+    return result
+
+
 def normalize_enrichment_match(candidate: dict[str, Any]) -> EnrichmentPlace:
     display_name = candidate.get("displayName")
     raw_primary_type_display_name = sanitize_enrichment_primary_category(
@@ -15572,6 +15669,8 @@ def normalize_enrichment_match(candidate: dict[str, Any]) -> EnrichmentPlace:
         primary_type_display_name,
         coerce_string_list(candidate.get("types")),
     )
+    raw_components = [c for c in (candidate.get("addressComponents") or []) if isinstance(c, dict)]
+    api_components = extract_api_address_components(raw_components)
     return EnrichmentPlace(
         google_place_id=as_string(candidate.get("id")),
         google_place_resource_name=as_string(candidate.get("name")),
@@ -15585,6 +15684,11 @@ def normalize_enrichment_match(candidate: dict[str, Any]) -> EnrichmentPlace:
         primary_type_display_name_localized=primary_type_display_name_localized,
         types=types,
         business_status=as_string(candidate.get("businessStatus")),
+        address_country_name=api_components["country_name"],
+        address_country_code=api_components["country_code"],
+        address_admin_area=api_components["admin_area"],
+        address_locality=api_components["locality"],
+        address_postal_code=api_components["postal_code"],
         website=as_http_url(candidate.get("websiteUri")),
     )
 
