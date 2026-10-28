@@ -1,3 +1,4 @@
+import { revealPlaceCard } from "./place-navigation.js";
 import { loadSearchIndex, searchPlaces } from "./place-search.js";
 import { buildSearchConversation, buildSearchSuggestions } from "./search-conversation.js";
 
@@ -1829,8 +1830,7 @@ if (root) {
     if (!target) {
       return;
     }
-    target.scrollIntoView({ behavior: "smooth", block: "center" });
-    target.focus({ preventScroll: true });
+    revealPlaceCard(target);
   };
 
   updateSelectedTags();
