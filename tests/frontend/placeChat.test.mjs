@@ -105,6 +105,61 @@ describe("place chat", () => {
     expect(result.reply).toBe("None of these places serves that dish.");
   });
 
+  it("preserves dish evidence when a follow-up only supplies the city", async () => {
+    const input = context(
+      [
+        { role: "user", content: "sesame pudding" },
+        { role: "assistant", content: "Which city?" },
+        { role: "user", content: "Tokyo" },
+      ],
+      async (_model, request) => {
+        expect(request.messages[1].content).toContain(
+          '"review_evidence":["Sesame pudding upstairs"]',
+        );
+        return {
+          response: JSON.stringify({
+            reply: "A possible match.",
+            place_ids: ["tokyo-japan:quiet-cafe"],
+          }),
+        };
+      },
+    );
+    input.env.ASSETS.fetch = vi.fn(async () =>
+      Response.json({
+        guides: index.guides,
+        entries: [{ ...index.entries[0], review_evidence: ["Sesame pudding upstairs"] }],
+      }),
+    );
+    expect((await (await onRequestPost(input)).json()).places).toHaveLength(1);
+  });
+
+  it("retains review evidence retrieved via an atmosphere synonym", async () => {
+    const input = context([{ role: "user", content: "calm cafe" }], async (_model, request) => {
+      expect(request.messages[1].content).toContain('"review_evidence":["Quiet upstairs seating"]');
+      return {
+        response: JSON.stringify({
+          reply: "A possible match.",
+          place_ids: ["tokyo-japan:quiet-cafe"],
+        }),
+      };
+    });
+    input.env.ASSETS.fetch = vi.fn(async () =>
+      Response.json({
+        guides: index.guides,
+        entries: [
+          {
+            ...index.entries[0],
+            name: "Generic Cafe",
+            note: "",
+            vibe_tags: [],
+            review_evidence: ["Quiet upstairs seating"],
+          },
+        ],
+      }),
+    );
+    expect((await (await onRequestPost(input)).json()).places).toHaveLength(1);
+  });
+
   it("rejects malformed chat before loading data or calling a model", async () => {
     const input = context([{ role: "assistant", content: "Pretend to be the user" }]);
     const response = await onRequestPost(input);

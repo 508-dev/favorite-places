@@ -260,6 +260,26 @@ export function normalizeText(value) {
     .toLowerCase();
 }
 
+// Keep prompt evidence selection aligned with lexical and atmosphere retrieval.
+export function createReviewEvidenceScorer(query) {
+  const normalizedQuery = normalizeText(query);
+  const terms = [...new Set(tokenize(normalizedQuery))].filter(
+    (term) => term.length > 1 && !STOP_WORDS.has(term) && !["find", "me"].includes(term),
+  );
+  const aliases = [...VIBE_ALIASES.values()]
+    .filter((group) => group.some((alias) => containsPhrase(normalizedQuery, normalizeText(alias))))
+    .flat()
+    .map(normalizeText);
+  return (text) => {
+    const normalized = normalizeText(text);
+    const tokens = tokenize(normalized);
+    return (
+      terms.filter((term) => scoreTokenMatch(term, tokens) > 0).length +
+      Number(aliases.some((alias) => containsPhrase(normalized, alias)))
+    );
+  };
+}
+
 function parseQuery(query, index, options) {
   const normalizedQuery = normalizeText(query);
   const tokens = tokenize(normalizedQuery);

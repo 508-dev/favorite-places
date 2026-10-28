@@ -2,6 +2,15 @@ import { describe, expect, it } from "vitest";
 import { relevantReviewEvidence } from "../../functions/lib/chat-review-evidence.js";
 
 describe("chat review evidence budget", () => {
+  it("keeps evidence supported by retrieval atmosphere aliases", () => {
+    expect(
+      relevantReviewEvidence(
+        { review_evidence: ["Quiet upstairs seating", "Busy downstairs"] },
+        "calm cafe",
+      ),
+    ).toEqual(["Quiet upstairs seating"]);
+  });
+
   it("selects relevant snippets with Unicode support and a fixed payload budget", () => {
     const entry = {
       review_evidence: [

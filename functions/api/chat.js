@@ -116,7 +116,12 @@ function shortlist(index, messages) {
 }
 
 function modelMessages(messages, candidates) {
-  const query = messages.filter((message) => message.role === "user").at(-1).content;
+  // Shortlisting considers the latest and preceding user request; retain the same evidence context.
+  const query = messages
+    .filter((message) => message.role === "user")
+    .slice(-2)
+    .map((message) => message.content)
+    .join(" ");
   const catalog = candidates.map((entry) => ({
     id: `${entry.guide_slug}:${entry.id}`,
     name: entry.name,
