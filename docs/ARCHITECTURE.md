@@ -384,3 +384,10 @@ Contribute reusable app changes back to the public template:
 ```bash
 git subtree push --prefix app upstream my-app-change
 ```
+
+
+### Review evidence search
+
+The shared browser/guide/chat index includes `review_evidence` from the enrichment cache: up to 12 review-topic labels and five review snippets, each at most 180 characters, deduplicated with whitespace normalized. Reviewer identity and profile metadata are excluded. Index generation needs no new scraping or LLM calls. Review text is stored once and joined into search text at runtime. Review matches have lower lexical weight than curated descriptions/tags; Unicode text and embedded Chinese, Japanese, and Korean phrase matches are supported. Explicit tag filters still use curated/generated tags.
+
+The chat prototype retrieves at most 12 candidates and sends at most two query-matching review fragments per candidate (360 characters), selected using the latest user request. The shared selector also accepts retrieval alternatives for runtimes that resolve structured intent. Only model-selected place IDs become recommendations; an empty selection stays empty, including when a review mentions the requested item negatively. Reviews are untrusted anecdotal evidence, not verified amenities. Only cached samples are searchable; lexical matching can find negative statements or miss paraphrases/translations.

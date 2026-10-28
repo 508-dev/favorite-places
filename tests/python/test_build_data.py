@@ -15819,6 +15819,34 @@ class BuildDataTests(unittest.TestCase):
         self.assertFalse(build_data.vibe_keyword_matches("barcelona cafe", "bar"))
         self.assertTrue(build_data.vibe_keyword_matches("quiet bar seating", "bar"))
 
+    def test_search_indexes_include_bounded_cached_reviews_without_identities(self) -> None:
+        raw = RawSavedList(title="Tokyo, Japan", places=[RawPlace(
+            name="Test Cafe", maps_url="https://maps.google.com/?cid=1", cid="111",
+        )])
+        place_id = build_data.stable_place_id(raw.places[0], source_type=raw.configured_source_type)
+        enrichment = EnrichmentPlace(
+            review_topics=[{"label": "sesame pudding", "count": 10}] * 15,
+            reviews=[{"text": "  Quiet upstairs seating\nwith sesame pudding. " + "x" * 220,
+                      "author": "Excluded reviewer", "profile_url": "https://private.example"}] * 8,
+        )
+        guide = build_data.normalize_guide("tokyo-japan", raw, enrichment_cache={
+            place_id: EnrichmentCacheEntry(query="Test Cafe", fetched_at="2026-10-29T00:00:00Z", place=enrichment),
+        })
+        index = build_data.build_search_index([guide])
+        entry = index["entries"][0]
+        self.assertEqual(len(entry["review_evidence"]), 2)
+        self.assertLessEqual(max(map(len, entry["review_evidence"])), 180)
+        self.assertIn("sesame pudding", entry["review_evidence"])
+        self.assertNotIn("sesame pudding", entry["search_text"])
+        self.assertIn("Quiet upstairs seating", entry["review_evidence"][1])
+        self.assertNotIn("Excluded reviewer", json.dumps(index))
+        self.assertNotIn("private.example", json.dumps(index))
+        many = EnrichmentPlace(
+            review_topics=[{"label": str(i)} for i in range(20)],
+            reviews=[{"text": str(i + 30)} for i in range(10)],
+        )
+        self.assertEqual(len(build_data.compact_search_review_evidence(many)), 17)
+
     def test_build_search_index_contains_compact_place_context(self) -> None:
         guide = build_data.normalize_guide(
             "tokyo-japan",

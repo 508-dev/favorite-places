@@ -123,7 +123,10 @@ export function prepareSearchIndex(index) {
     ...entry,
     tags: Array.isArray(entry.tags) ? entry.tags : [],
     vibe_tags: Array.isArray(entry.vibe_tags) ? entry.vibe_tags : [],
-    _searchText: normalizeText(entry.search_text || ""),
+    _searchText: normalizeText(
+      [entry.search_text || "", ...(entry.review_evidence || [])].join(" "),
+    ),
+    _reviewText: normalizeText((entry.review_evidence || []).join(" ")),
     _name: normalizeText(entry.name || ""),
     _category: normalizeText(entry.category || ""),
     _city: normalizeText(entry.city || ""),
@@ -138,7 +141,7 @@ export function prepareSearchIndex(index) {
     _guideTitleTokens: tokenize(entry.guide_title || ""),
     _neighborhoodTokens: tokenize(entry.neighborhood || ""),
     _noteTokens: tokenize([entry.note || "", entry.why_recommended || ""].join(" ")),
-    _searchTokens: tokenize(entry.search_text || ""),
+    _searchTokens: tokenize([entry.search_text || "", ...(entry.review_evidence || [])].join(" ")),
     _tagTokens: tokenizeList([
       ...(Array.isArray(entry.tags) ? entry.tags : []),
       ...(Array.isArray(entry.vibe_tags) ? entry.vibe_tags : []),
@@ -251,7 +254,7 @@ export function normalizeText(value) {
     .replace(/[\u0300-\u036f]/g, "")
     .replace(/&/g, " and ")
     .replace(/['']/g, "")
-    .replace(/[^a-z0-9]+/gi, " ")
+    .replace(/[^\p{L}\p{N}\p{M}]+/gu, " ")
     .replace(/\s+/g, " ")
     .trim()
     .toLowerCase();
@@ -330,10 +333,18 @@ function scoreEntry(entry, parsed) {
     }
   }
 
+  const reviewMatchesVibe = (vibe) =>
+    (VIBE_ALIASES.get(vibe) || []).some((alias) =>
+      containsPhrase(entry._reviewText, normalizeText(alias)),
+    );
+
   for (const vibe of parsed.vibes) {
     if (entryVibes.includes(vibe) || entryTags.includes(vibe)) {
       score += 34;
       matchedSignals.push("vibe");
+    } else if (reviewMatchesVibe(vibe)) {
+      score += 4;
+      matchedSignals.push("review");
     }
   }
 
@@ -444,7 +455,11 @@ function scoreEntry(entry, parsed) {
   const missingRequiredConstraint =
     (parsed.categories.size > 0 && matchedCategoryCount !== parsed.categories.size) ||
     parsed.vibeGroups.some(
-      (group) => !group.some((vibe) => entryVibes.includes(vibe) || entryTags.includes(vibe)),
+      (group) =>
+        !group.some(
+          (vibe) =>
+            entryVibes.includes(vibe) || entryTags.includes(vibe) || reviewMatchesVibe(vibe),
+        ),
     ) ||
     (parsed.unmatchedTerms.length > 0 &&
       matchedUnmatchedTermCount !== parsed.unmatchedTerms.length);
@@ -530,6 +545,9 @@ function consumeDisjointPhrase(query, phrase, consumedTokens) {
 }
 
 function containsPhrase(query, phrase) {
+  if (/[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]/u.test(phrase)) {
+    return query.includes(phrase);
+  }
   if (!phrase) {
     return false;
   }
@@ -543,7 +561,11 @@ function scoreTokenMatch(term, tokens) {
   if (!term || !Array.isArray(tokens) || tokens.length === 0) {
     return 0;
   }
-  if (tokens.includes(term)) {
+  if (
+    tokens.includes(term) ||
+    (/[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]/u.test(term) &&
+      tokens.some((token) => token.includes(term)))
+  ) {
     return 1;
   }
   if (term.length >= 2 && tokens.some((token) => token.startsWith(term))) {
