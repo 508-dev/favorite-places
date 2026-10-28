@@ -80,6 +80,18 @@ describe("place chat", () => {
     ]);
   });
 
+  it("retrieves candidates when a descriptive term has no exact index match", async () => {
+    const ai = vi.fn(async (_model, request) => {
+      expect(request.messages[1].content).toContain("Quiet Cafe");
+      return { response: '{"reply":"Try Quiet Cafe.","place_ids":[]}' };
+    });
+    const response = await onRequestPost(
+      context([{ role: "user", content: "Cozy cafe in Tokyo" }], ai),
+    );
+    expect(response.status).toBe(200);
+    expect(ai).toHaveBeenCalledOnce();
+  });
+
   it("rejects calls while chat is disabled", async () => {
     const input = context([{ role: "user", content: "Cafe" }]);
     input.env.CHAT_ENABLED = "false";

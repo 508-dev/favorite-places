@@ -1,4 +1,8 @@
-import { prepareSearchIndex, searchPlaces } from "../../public/scripts/place-search.js";
+import {
+  normalizeText,
+  prepareSearchIndex,
+  searchPlaces,
+} from "../../public/scripts/place-search.js";
 import { completeChat } from "../lib/chat-provider.js";
 
 const MAX_BODY_BYTES = 6000;
@@ -73,17 +77,41 @@ function shortlist(index, messages) {
   const previous = userMessages.at(-2)?.content;
   const queries = previous ? [latest, `${previous} ${latest}`, previous] : [latest];
   const candidates = new Map();
+  const scopedGuides = new Set();
+
   for (const query of queries) {
-    for (const { entry } of searchPlaces(query, { index, scope: "all" }).results.slice(
-      0,
-      MAX_CANDIDATES,
-    )) {
-      candidates.set(`${entry.guide_slug}:${entry.id}`, entry);
-      if (candidates.size >= MAX_CANDIDATES) break;
+    const search = searchPlaces(query, { index, scope: "all" });
+    search.parsed.guideSlugs.forEach((slug) => scopedGuides.add(slug));
+    for (const { entry, score } of search.results.slice(0, MAX_CANDIDATES)) {
+      const id = `${entry.guide_slug}:${entry.id}`;
+      const existing = candidates.get(id);
+      candidates.set(id, { entry, score: Math.max(existing?.score || 0, 1000 + score) });
     }
-    if (candidates.size >= MAX_CANDIDATES) break;
   }
-  return [...candidates.values()];
+
+  const terms = [
+    ...new Set(
+      normalizeText(queries.join(" "))
+        .split(" ")
+        .filter((term) => term.length > 2 && !["and", "for", "the", "with", "near"].includes(term)),
+    ),
+  ];
+  for (const term of terms) {
+    for (const { entry, score } of searchPlaces(term, { index, scope: "all" }).results.slice(
+      0,
+      30,
+    )) {
+      if (scopedGuides.size > 0 && !scopedGuides.has(entry.guide_slug)) continue;
+      const id = `${entry.guide_slug}:${entry.id}`;
+      const existing = candidates.get(id);
+      candidates.set(id, { entry, score: (existing?.score || 0) + 10 + score });
+    }
+  }
+
+  return [...candidates.values()]
+    .sort((left, right) => right.score - left.score)
+    .slice(0, MAX_CANDIDATES)
+    .map(({ entry }) => entry);
 }
 
 function modelMessages(messages, candidates) {
