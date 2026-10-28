@@ -74,7 +74,10 @@ function shortlist(index, messages) {
   const queries = previous ? [latest, `${previous} ${latest}`, previous] : [latest];
   const candidates = new Map();
   for (const query of queries) {
-    for (const { entry } of searchPlaces(query, { index, scope: "all" }).results.slice(0, MAX_CANDIDATES)) {
+    for (const { entry } of searchPlaces(query, { index, scope: "all" }).results.slice(
+      0,
+      MAX_CANDIDATES,
+    )) {
       candidates.set(`${entry.guide_slug}:${entry.id}`, entry);
       if (candidates.size >= MAX_CANDIDATES) break;
     }
@@ -113,7 +116,10 @@ function parseModelAnswer(content, candidates) {
   const candidateById = new Map(
     candidates.map((entry) => [`${entry.guide_slug}:${entry.id}`, entry]),
   );
-  const placeIds = [...new Set(parsed.place_ids.filter((id) => typeof id === "string"))].slice(0, 3);
+  const placeIds = [...new Set(parsed.place_ids.filter((id) => typeof id === "string"))].slice(
+    0,
+    3,
+  );
   const places = placeIds.map((id) => candidateById.get(id)).filter(Boolean);
   const reply = parsed.reply.trim().slice(0, 600);
   if (!reply) throw new Error("Empty chat response");
