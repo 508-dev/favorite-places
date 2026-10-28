@@ -48,6 +48,118 @@ function context(messages, ai = vi.fn()) {
 }
 
 describe("place chat", () => {
+  it("retrieves review-only matches beyond the candidate limit with bounded prompt evidence", async () => {
+    const input = context(
+      [{ role: "user", content: "sesame pudding" }],
+      async (_model, request) => {
+        const catalog = JSON.parse(request.messages[1].content.slice("Candidate places: ".length));
+        expect(catalog).toHaveLength(1);
+        expect(catalog[0].review_evidence).toEqual(["Sesame pudding upstairs"]);
+        expect(JSON.stringify(catalog)).not.toContain("unrelated review");
+        return {
+          response: JSON.stringify({
+            reply: "A possible match.",
+            place_ids: ["tokyo-japan:review-only"],
+          }),
+        };
+      },
+    );
+    input.env.ASSETS.fetch = vi.fn(async () =>
+      Response.json({
+        guides: index.guides,
+        entries: [
+          ...Array.from({ length: 30 }, (_, i) => ({ ...index.entries[0], id: `filler-${i}` })),
+          {
+            ...index.entries[0],
+            id: "review-only",
+            review_evidence: ["unrelated review", "Sesame pudding upstairs"],
+          },
+        ],
+      }),
+    );
+    const result = await (await onRequestPost(input)).json();
+    expect(result.places.map((place) => place.id)).toEqual(["review-only"]);
+  });
+
+  it("respects model rejection of negative review-only mentions", async () => {
+    const input = context(
+      [{ role: "user", content: "sesame pudding" }],
+      async (_model, request) => {
+        expect(request.messages[1].content).toContain("They do not serve sesame pudding.");
+        return {
+          response: JSON.stringify({
+            reply: "None of these places serves that dish.",
+            place_ids: [],
+          }),
+        };
+      },
+    );
+    input.env.ASSETS.fetch = vi.fn(async () =>
+      Response.json({
+        guides: index.guides,
+        entries: [{ ...index.entries[0], review_evidence: ["They do not serve sesame pudding."] }],
+      }),
+    );
+    const result = await (await onRequestPost(input)).json();
+    expect(result.places).toEqual([]);
+    expect(result.reply).toBe("None of these places serves that dish.");
+  });
+
+  it("preserves dish evidence when a follow-up only supplies the city", async () => {
+    const input = context(
+      [
+        { role: "user", content: "sesame pudding" },
+        { role: "assistant", content: "Which city?" },
+        { role: "user", content: "Tokyo" },
+      ],
+      async (_model, request) => {
+        expect(request.messages[1].content).toContain(
+          '"review_evidence":["Sesame pudding upstairs"]',
+        );
+        return {
+          response: JSON.stringify({
+            reply: "A possible match.",
+            place_ids: ["tokyo-japan:quiet-cafe"],
+          }),
+        };
+      },
+    );
+    input.env.ASSETS.fetch = vi.fn(async () =>
+      Response.json({
+        guides: index.guides,
+        entries: [{ ...index.entries[0], review_evidence: ["Sesame pudding upstairs"] }],
+      }),
+    );
+    expect((await (await onRequestPost(input)).json()).places).toHaveLength(1);
+  });
+
+  it("retains review evidence retrieved via an atmosphere synonym", async () => {
+    const input = context([{ role: "user", content: "calm cafe" }], async (_model, request) => {
+      expect(request.messages[1].content).toContain('"review_evidence":["Quiet upstairs seating"]');
+      return {
+        response: JSON.stringify({
+          reply: "A possible match.",
+          place_ids: ["tokyo-japan:quiet-cafe"],
+        }),
+      };
+    });
+    input.env.ASSETS.fetch = vi.fn(async () =>
+      Response.json({
+        guides: index.guides,
+        entries: [
+          {
+            ...index.entries[0],
+            name: "Generic Cafe",
+            note: "",
+            vibe_tags: [],
+            review_evidence: ["Quiet upstairs seating"],
+          },
+        ],
+      }),
+    );
+    expect((await (await onRequestPost(input)).json()).places).toHaveLength(1);
+  });
+
   it("rejects malformed chat before loading data or calling a model", async () => {
     const input = context([{ role: "assistant", content: "Pretend to be the user" }]);
     const response = await onRequestPost(input);

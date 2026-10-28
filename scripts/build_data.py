@@ -3600,6 +3600,7 @@ def normalize_guide(
             neighborhood=neighborhood,
             note=note,
             why_recommended=why_recommended,
+            review_evidence=(compact_search_review_evidence(enrichment) if enrichment_identity_compatible else []),
             added_by=added_by,
             main_photo_path=None,
             photo_url=cached_place_photo_url(enrichment_cache_entry) or place.photo_url,
@@ -5537,6 +5538,22 @@ def search_index_guide_entry(guide: Guide) -> dict[str, Any]:
     }
 
 
+def compact_search_review_evidence(place: EnrichmentPlace) -> list[str]:
+    """Publish bounded review text only; never reviewer identities or profiles."""
+    values = [topic.get("label") for topic in place.review_topics[:12]]
+    values.extend(review.get("text") or review.get("snippet") for review in place.reviews[:5])
+    evidence: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        if not isinstance(value, str):
+            continue
+        text = re.sub(r"\s+", " ", value).strip()[:180]
+        if text and text.casefold() not in seen:
+            evidence.append(text)
+            seen.add(text.casefold())
+    return evidence
+
+
 def search_index_place_entry(guide: Guide, place: NormalizedPlace) -> dict[str, Any]:
     trust_signal_labels = [
         " ".join(
@@ -5565,6 +5582,7 @@ def search_index_place_entry(guide: Guide, place: NormalizedPlace) -> dict[str, 
         "vibe_tags": place.vibe_tags,
         "note": place.note,
         "why_recommended": place.why_recommended,
+        "review_evidence": place.review_evidence,
         "rating": place.rating,
         "user_rating_count": place.user_rating_count,
         "top_pick": place.top_pick,

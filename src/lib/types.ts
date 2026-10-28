@@ -117,6 +117,7 @@ export interface Place {
   neighborhood: string | null;
   note: string | null;
   why_recommended: string | null;
+  review_evidence?: string[];
   added_by?: ListAuthor | null;
   main_photo_path: string | null;
   photo_url: string | null;

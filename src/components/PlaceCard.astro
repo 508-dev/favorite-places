@@ -391,6 +391,7 @@ const hasReservationOptions = reservationLinks.length > 1;
     place.name,
     place.address ?? "",
     place.why_recommended ?? "",
+    ...(place.review_evidence ?? []),
     place.note ?? "",
     place.primary_category ?? "",
     place.neighborhood ?? "",

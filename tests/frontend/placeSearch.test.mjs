@@ -259,3 +259,47 @@ describe("place search", () => {
     expect(fetchMock).toHaveBeenNthCalledWith(3, "/data/search-index-other.json");
   });
 });
+
+describe("review evidence retrieval", () => {
+  it("finds review-only dishes and atmosphere without outranking curated matches", () => {
+    const entries = [
+      {
+        id: "review",
+        name: "Cafe One",
+        category: "Cafe",
+        guide_slug: "tokyo-japan",
+        review_evidence: ["Quiet upstairs seating with sesame pudding."],
+      },
+      {
+        id: "curated",
+        name: "Cafe Two",
+        category: "Cafe",
+        guide_slug: "tokyo-japan",
+        note: "Quiet upstairs seating with sesame pudding.",
+        vibe_tags: ["quiet"],
+      },
+      { id: "unrelated", name: "Cafe Three", category: "Cafe", guide_slug: "tokyo-japan" },
+    ];
+    const prepared = prepareSearchIndex({ entries });
+    for (const query of ["sesame pudding", "quiet cafe", "upstairs seating"]) {
+      const result = searchPlaces(query, {
+        index: prepared,
+        scope: "guide",
+        guideSlug: "tokyo-japan",
+      });
+      expect(result.results.map(({ entry }) => entry.id)).toEqual(["curated", "review"]);
+    }
+  });
+});
+
+it("searches CJK phrases embedded in cached reviews", () => {
+  const prepared = prepareSearchIndex({
+    entries: [
+      { id: "match", name: "Shop One", review_evidence: ["這裡的小籠湯包很好吃"] },
+      { id: "other", name: "Shop Two", review_evidence: ["牛肉麵很好吃"] },
+    ],
+  });
+  expect(
+    searchPlaces("小籠湯包", { index: prepared }).results.map(({ entry }) => entry.id),
+  ).toEqual(["match"]);
+});

@@ -391,6 +391,7 @@ class NormalizedPlace(PipelineModel):
     neighborhood: str | None = None
     note: str | None = None
     why_recommended: str | None = None
+    review_evidence: list[str] = Field(default_factory=list)
     added_by: ListAuthor | None = None
     main_photo_path: str | None = None
     photo_url: str | None = None
