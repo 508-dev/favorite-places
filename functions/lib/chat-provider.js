@@ -11,7 +11,11 @@ export async function completeChat(env, messages) {
 
   if (provider === "cloudflare") {
     if (!env.AI?.run) throw new Error("Workers AI binding is missing");
-    const result = await env.AI.run(model, request);
+    const cloudflareRequest =
+      model === DEFAULT_CLOUDFLARE_MODEL
+        ? { ...request, chat_template_kwargs: { enable_thinking: false } }
+        : request;
+    const result = await env.AI.run(model, cloudflareRequest);
     return extractContent(result);
   }
 
@@ -43,7 +47,10 @@ function extractContent(result) {
     return JSON.stringify(content);
   }
   if (Array.isArray(content)) {
-    return content.filter((part) => part?.type === "text").map((part) => part.text).join("");
+    return content
+      .filter((part) => part?.type === "text")
+      .map((part) => part.text)
+      .join("");
   }
   throw new Error("Chat provider returned no text");
 }
