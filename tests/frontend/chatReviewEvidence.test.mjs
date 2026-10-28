@@ -2,6 +2,18 @@ import { describe, expect, it } from "vitest";
 import { relevantReviewEvidence } from "../../functions/lib/chat-review-evidence.js";
 
 describe("chat review evidence budget", () => {
+  it("retains single-character CJK terms and folds Latin accents like retrieval", () => {
+    expect(relevantReviewEvidence({ review_evidence: ["鴨料理很好吃", "茶很好喝"] }, "鴨")).toEqual(
+      ["鴨料理很好吃"],
+    );
+    expect(relevantReviewEvidence({ review_evidence: ["鴨料理很好吃", "茶很好喝"] }, "茶")).toEqual(
+      ["茶很好喝"],
+    );
+    expect(relevantReviewEvidence({ review_evidence: ["Lovely café upstairs"] }, "cafe")).toEqual([
+      "Lovely café upstairs",
+    ]);
+  });
+
   it("keeps evidence supported by retrieval atmosphere aliases", () => {
     expect(
       relevantReviewEvidence(

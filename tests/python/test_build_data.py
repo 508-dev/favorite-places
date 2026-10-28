@@ -11773,6 +11773,8 @@ class BuildDataTests(unittest.TestCase):
                 matched=True,
                 place=EnrichmentPlace(
                     display_name="Michael's",
+                    review_topics=[{"label": "steakhouse"}],
+                    reviews=[{"text": "Great steakhouse cuts."}],
                     description="Long-running steakhouse with fine dining and a polished bar.",
                     search_result_description="Classic steakhouse in Las Vegas.",
                     semantic_description="An enduring Henderson steakhouse offering fine dining with classic cuts.",
@@ -11791,6 +11793,9 @@ class BuildDataTests(unittest.TestCase):
             )
 
         self.assertIsNone(guide.places[0].why_recommended)
+
+        self.assertEqual(guide.places[0].review_evidence, [])
+        self.assertEqual(build_data.build_search_index([guide])["entries"][0]["review_evidence"], [])
 
     def test_normalize_guide_uses_search_result_description_when_full_description_missing(self) -> None:
         raw = RawSavedList(

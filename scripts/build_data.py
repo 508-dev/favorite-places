@@ -3600,7 +3600,7 @@ def normalize_guide(
             neighborhood=neighborhood,
             note=note,
             why_recommended=why_recommended,
-            review_evidence=compact_search_review_evidence(enrichment),
+            review_evidence=(compact_search_review_evidence(enrichment) if enrichment_identity_compatible else []),
             added_by=added_by,
             main_photo_path=None,
             photo_url=cached_place_photo_url(enrichment_cache_entry) or place.photo_url,

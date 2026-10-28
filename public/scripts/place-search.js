@@ -264,7 +264,11 @@ export function normalizeText(value) {
 export function createReviewEvidenceScorer(query) {
   const normalizedQuery = normalizeText(query);
   const terms = [...new Set(tokenize(normalizedQuery))].filter(
-    (term) => term.length > 1 && !STOP_WORDS.has(term) && !["find", "me"].includes(term),
+    (term) =>
+      (term.length > 1 ||
+        /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]/u.test(term)) &&
+      !STOP_WORDS.has(term) &&
+      !["find", "me"].includes(term),
   );
   const aliases = [...VIBE_ALIASES.values()]
     .filter((group) => group.some((alias) => containsPhrase(normalizedQuery, normalizeText(alias))))

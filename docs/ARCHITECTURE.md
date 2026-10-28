@@ -393,3 +393,5 @@ The shared browser/guide/chat index includes `review_evidence` from the enrichme
 The chat prototype retrieves at most 12 candidates and sends at most two query-matching review fragments per candidate (360 characters), selected using the latest and preceding user requests, consistently with shortlisting. The shared selector also accepts retrieval alternatives for runtimes that resolve structured intent. Only model-selected place IDs become recommendations; an empty selection stays empty, including when a review mentions the requested item negatively. Reviews are untrusted anecdotal evidence, not verified amenities. Only cached samples are searchable; lexical matching can find negative statements or miss paraphrases/translations.
 
 Review snippet selection shares lexical normalization, token matching, and atmosphere aliases with search, so synonym matches such as “calm” → “quiet” retain their evidence.
+
+Review evidence is exported only when the cached enrichment identity is compatible with the saved place, using the same identity guard as recommendation copy. Single-character CJK queries are retained during evidence selection.
