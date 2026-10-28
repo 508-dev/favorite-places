@@ -43,6 +43,7 @@ jobs:
           filters: |
             frontend:
               - "src/**"
+              - "functions/**"
               - "public/**"
               - "astro.config.*"
               - "package.json"

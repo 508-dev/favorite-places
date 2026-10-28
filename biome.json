@@ -5,6 +5,7 @@
       "*.json",
       "*.mjs",
       "src/**",
+      "functions/**",
       "public/scripts/**",
       "scripts/**",
       "tests/e2e/**",

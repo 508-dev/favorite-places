@@ -53,6 +53,7 @@ App-owned code:
 - `src/lib/`
 - `src/styles/`
 - `scripts/`
+- `functions/`: optional Cloudflare Pages chat endpoint
 
 ## Template Surface
 
@@ -252,6 +253,16 @@ Why:
 - `uv sync` installs Python dependencies, including the vendored scraper from `vendor/gmaps-scraper`
 - `bun run build:data` generates Astro input JSON
 - `bun run build` builds the static site
+
+### Optional place chat prototype
+
+Place chat is kept in this repository because it consumes this site's generated place index and displays this site's place cards. It adds one Pages Function at `/api/chat`; the rest of the site remains static. Other static hosts can still build the site with chat disabled. A separate backend repository would be useful only if several sites need the same deployed service or independently managed releases.
+
+Set `PUBLIC_CHAT_ENABLED=true` during the Astro build to show the home-page chat, and set `CHAT_ENABLED=true` in Pages runtime variables to accept requests. For the default provider, add a Workers AI binding named `AI` in the Pages project and redeploy. The default model is `@cf/zai-org/glm-4.7-flash`; override it with `CHAT_MODEL`. To use another provider, set `CHAT_PROVIDER=openai-compatible`, `CHAT_MODEL`, `CHAT_API_BASE_URL`, and an encrypted `CHAT_API_KEY` secret. The API request and response stay the same across providers.
+
+The Function loads `/data/search-index.json` from Pages assets, retrieves at most 12 candidate places, and sends a short conversation plus that shortlist to the model. It accepts only place IDs from the shortlist in the response. The browser renders those IDs as links to the existing guides. Requests are limited to seven short messages and model replies to 320 output tokens. The endpoint returns a service error if the model or index is unavailable; visitors can still use regular search.
+
+For a public rollout with a hard zero-dollar inference ceiling, keep Workers AI on the free plan: requests stop when its daily free allocation is exhausted. On a paid plan or with another provider, configure a provider or gateway spend limit and an edge request limit before enabling `CHAT_ENABLED`. The prototype itself does not store a shared spend counter. Local Pages Function testing uses `wrangler pages dev dist --ai AI`; an AI binding calls the live service even in local development. `bun run dev` serves only the static Astro site and does not run Pages Functions.
 
 ## Environment Variables
 
