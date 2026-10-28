@@ -369,8 +369,23 @@ const homeJsonLd = [
   </section>
   )}
 
+  {import.meta.env.PUBLIC_CHAT_ENABLED === "true" && (
+    <section class="section ui-section place-chat" data-place-chat>
+      <SectionHeading eyebrow="Ask the guide" title="Find a place together" />
+      <p class="small-copy ui-copy ui-copy--sm">Tell me what you are looking for, then refine the suggestions in a follow-up.</p>
+      <div class="place-chat-thread" data-place-chat-thread role="log" aria-live="polite" aria-label="Place chat"></div>
+      <form class="place-chat-form" data-place-chat-form>
+        <label class="visually-hidden" for="place-chat-input">Ask for a place</label>
+        <input class="ui-input" id="place-chat-input" name="message" type="text" maxlength="500" placeholder="A quiet café in Tokyo to linger in..." required data-place-chat-input />
+        <button class="button place-chat-submit" type="submit" data-place-chat-submit>Ask</button>
+      </form>
+      <p class="small-copy ui-copy ui-copy--sm place-chat-status" data-place-chat-status role="status"></p>
+    </section>
+  )}
+
   {homeAfterGuidesHtml && <div class="template-block rich-copy" set:html={homeAfterGuidesHtml} />}
 
+  {import.meta.env.PUBLIC_CHAT_ENABLED === "true" && <script is:inline type="module" src="/scripts/place-chat.js"></script>}
   {siteConfig.home.showGuideBrowser && <script is:inline type="module" src="/scripts/home-browser.js"></script>}
   {siteConfig.home.showGuideBrowser && <script is:inline type="module" src="/scripts/scroll-jump.js"></script>}
 </Layout>

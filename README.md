@@ -312,7 +312,17 @@ Use a restricted browser key for `GOOGLE_MAPS_JS_API_KEY`. Do not expose `GOOGLE
 
 ## Deploy
 
-This is a static Astro site, so it can deploy to Cloudflare Pages, GitHub Pages, or similar static hosts.
+This is a static Astro site, so it can deploy to Cloudflare Pages, GitHub Pages, or similar static hosts. An optional Cloudflare Pages Function powers place chat when enabled; static search works without it.
+
+### Place chat prototype
+
+The homepage chat searches the generated place index, sends at most 12 matching saved places and recent messages to a small chat model, then validates the returned place IDs before rendering links. It only recommends places already in the guides. The UI and endpoint are off by default.
+
+On Cloudflare Pages, add a Workers AI binding named `AI`, set `PUBLIC_CHAT_ENABLED=true` for the build, and set `CHAT_ENABLED=true` for the Function. The default model is `@cf/zai-org/glm-4.7-flash`; change it with `CHAT_MODEL`. The Function returns a 503 when the binding is missing or inference fails, and the existing search remains available. Preview the Function with Wrangler Pages dev and an `AI` binding; Astro dev alone does not run Pages Functions. Requests to Workers AI during local testing use the Cloudflare account's allocation.
+
+For another provider, set `CHAT_PROVIDER=openai-compatible`, `CHAT_MODEL`, `CHAT_API_BASE_URL`, and a server-only `CHAT_API_KEY`. Use a dedicated key with a provider-side budget before making this public. Request size, message history, candidate count, and output length are bounded in code; they do not provide a spending cap. Cloudflare's Workers Free plan stops Workers AI calls at its daily free allocation. A paid plan or another provider requires its own budget controls. Do not put provider keys in `PUBLIC_` variables.
+
+External place discovery is outside this prototype. If added, it should run only after a deliberate user action, with a separate provider adapter, a fixed result limit, caching, and a hard quota or prepaid budget. Keep discovered places labeled separately from curated guide places and avoid adding them to the source index automatically.
 
 For Cloudflare Pages, use the custom build path documented in [Architecture](docs/ARCHITECTURE.md#cloudflare-pages). Do not rely on Cloudflare's automatic Python dependency detection for this repo.
 
