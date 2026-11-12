@@ -1,5 +1,6 @@
 ---
 
+import { serializeHomeBrowserHash } from "../../../public/scripts/home-browser-state.js";
 import AuthorByline from "../../components/AuthorByline.astro";
 import GuideMap from "../../components/GuideMap.astro";
 import Layout from "../../components/Layout.astro";
@@ -305,7 +306,13 @@ const guideJsonLd = [
     <div class="hero-grid ui-hero-grid">
       <div class="section-stack ui-stack">
         <a class="utility-link ui-back-link" href="/">← {siteConfig.guide.backLinkLabel}</a>
-        <p class="eyebrow ui-eyebrow">{guide.country_name}</p>
+        <p class="eyebrow ui-eyebrow">
+          {displayCountryName && (
+            <a href={`/${serializeHomeBrowserHash({ country: displayCountryName })}`} aria-label={`All guides in ${displayCountryName}`}>
+              {displayCountryName}
+            </a>
+          )}
+        </p>
         <h1 class="ui-display">{guide.title}</h1>
         {
           guideDescriptionHtml ? (
