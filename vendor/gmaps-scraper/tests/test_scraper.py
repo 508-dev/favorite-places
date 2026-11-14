@@ -357,6 +357,7 @@ class HttpArtifactTests(unittest.TestCase):
 
         session = fake_requests.sessions[0]
         self.assertEqual(session.kwargs["impersonate"], "chrome")
+        self.assertEqual(session.kwargs["headers"], {"Accept-Language": "en-US,en;q=0.9"})
         self.assertEqual(session.calls[0][0], "https://maps.app.goo.gl/example")
         self.assertEqual(
             session.calls[1][0],

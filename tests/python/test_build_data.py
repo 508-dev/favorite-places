@@ -17452,7 +17452,7 @@ class BuildDataTests(unittest.TestCase):
         source = SourceConfig(
             slug="tokyo-japan",
             type="google_list_url",
-            url="https://maps.app.goo.gl/tokyo",
+            url="https://www.google.com/maps/@/data=!2stokyo?hl=ja&gl=jp",
         )
 
         class DummySavedListResult:
@@ -17476,6 +17476,10 @@ class BuildDataTests(unittest.TestCase):
                 payload = build_data.scrape_google_list_url(source, headed=False)
 
         self.assertEqual(payload.title, "Tokyo")
+        self.assertEqual(
+            scrape.call_args.args[0],
+            "https://www.google.com/maps/@/data=!2stokyo?hl=en&gl=us",
+        )
         kwargs = scrape.call_args.kwargs
         self.assertTrue(kwargs["headless"])
         self.assertEqual(kwargs["collection_mode"], "curl")
@@ -17488,7 +17492,7 @@ class BuildDataTests(unittest.TestCase):
         source = SourceConfig(
             slug="tokyo-japan",
             type="google_list_url",
-            url="https://maps.app.goo.gl/tokyo",
+            url="https://www.google.com/maps/@/data=!2stokyo?hl=ja&gl=jp",
         )
 
         class DummySavedListResult:
@@ -17524,6 +17528,11 @@ class BuildDataTests(unittest.TestCase):
 
         self.assertEqual(payload.title, "Tokyo")
         self.assertEqual(scrape.call_count, 2)
+        for call in scrape.call_args_list:
+            self.assertEqual(
+                call.args[0],
+                "https://www.google.com/maps/@/data=!2stokyo?hl=en&gl=us",
+            )
         self.assertEqual(scrape.call_args_list[0].kwargs["collection_mode"], "curl")
         self.assertEqual(scrape.call_args_list[1].kwargs["collection_mode"], "browser")
         clear_state.assert_called_once()
