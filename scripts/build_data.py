@@ -2313,6 +2313,7 @@ def scrape_google_list_url(source: SourceConfig, *, headed: bool) -> RawSavedLis
     if not source_url:
         raise RuntimeError(f"Configured source {source.slug} is missing a URL.")
 
+    source_url = localize_google_maps_scrape_url(source_url)
     proxy = current_scraper_proxy()
     session_state, browser_session, http_session = build_scraper_sessions(proxy)
     try:

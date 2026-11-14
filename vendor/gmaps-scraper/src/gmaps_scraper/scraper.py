@@ -223,6 +223,7 @@ def collect_http_artifacts(
         "impersonate": _HTTP_IMPERSONATE,
         "allow_redirects": True,
         "default_headers": True,
+        "headers": {"Accept-Language": "en-US,en;q=0.9"},
         "timeout": timeout_seconds,
     }
     cookie_jar = _load_http_cookie_jar(http_session)

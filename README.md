@@ -245,6 +245,10 @@ Set `LANGFUSE_PUBLIC_KEY` and `LANGFUSE_SECRET_KEY` to log uncached LLM calls to
 
 Manual overrides always win over machine-enriched fields.
 
+Saved-list scraping requests English through HTTP headers and `hl=en&gl=us` on full Google Maps URLs. Short links keep their original URL so their redirect tokens remain intact. Google can still return saved place names and addresses in another language, even when the list page and preload endpoint request English; forcing another refresh may return the same text.
+
+For a persistent English place name, add a `name` override to your site pack's `overrides/places/<guide-slug>.json`, keyed by the place's generated `id` (for example, `"gid:g-example": { "name": "English Place Name" }`). Rebuild with `bun run build:data`. This preserves the raw Google text and keeps the display name stable across future refreshes. Address/category display translations from enrichment remain separate from raw fields.
+
 ## Common Environment Variables
 
 ```bash
