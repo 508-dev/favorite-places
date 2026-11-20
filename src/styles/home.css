@@ -1,8 +1,27 @@
 @layer components {
+  body:has(.home-welcome, .home-browser) > .ui-site-header {
+    flex-direction: row;
+    align-items: center;
+    gap: 0.4rem 1rem;
+    padding: 0.45rem clamp(0.45rem, 2vw, 1.5rem);
+  }
+
+  body:has(.home-welcome, .home-browser) .ui-site-title img {
+    width: auto;
+    max-width: min(32vw, 11rem);
+    max-height: 4.5rem;
+    object-fit: contain;
+  }
+
+  body:has(.home-welcome, .home-browser) .ui-site-nav {
+    justify-content: flex-end;
+    gap: 0.4rem;
+  }
+
   .home-welcome {
     display: grid;
     gap: 0.75rem;
-    padding: clamp(1.15rem, 4vw, 3rem);
+    padding: clamp(1.15rem, 4vw, 2.3rem);
     border: 1px solid #ecdfcf;
     border-radius: 1.25rem;
     background: #fbf4e9;
@@ -27,6 +46,10 @@
     align-items: center;
     gap: 0.65rem 1.2rem;
     margin-top: 0.3rem;
+  }
+
+  .home-welcome-actions .ui-copy {
+    font-size: 0.85rem;
   }
 
   .home-browse-link {
@@ -122,9 +145,12 @@
     outline-offset: 3px;
   }
 
-  .home-browser [data-home-browse-heading],
-  .home-browser [data-country-block] {
+  .home-browser [data-home-browse-heading] {
     scroll-margin-top: 1rem;
+  }
+
+  .home-browser [data-country-block] {
+    scroll-margin-top: 8rem;
   }
 
   .home-controls {
@@ -182,6 +208,10 @@
   }
 
   @media (max-width: 719px) {
+    .home-browser [data-country-block] {
+      scroll-margin-top: 1rem;
+    }
+
     .home-postcards {
       grid-template-columns: minmax(0, 1fr);
     }
