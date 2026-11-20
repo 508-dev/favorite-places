@@ -1,0 +1,207 @@
+@layer components {
+  .home-welcome {
+    display: grid;
+    gap: 0.75rem;
+    padding: clamp(1.15rem, 4vw, 3rem);
+    border: 1px solid #ecdfcf;
+    border-radius: 1.25rem;
+    background: #fbf4e9;
+  }
+
+  .home-welcome .ui-display,
+  .home-featured h2,
+  .home-postcard strong,
+  .home-browser [data-home-browse-heading] h2 {
+    font-family: Georgia, "Times New Roman", serif;
+    font-weight: 700;
+    letter-spacing: -0.025em;
+  }
+
+  .home-welcome .ui-display {
+    font-size: clamp(2.25rem, 5.5vw, 4.25rem);
+  }
+
+  .home-welcome-actions {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.65rem 1.2rem;
+    margin-top: 0.3rem;
+  }
+
+  .home-browse-link {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    min-height: 2.75rem;
+    padding: 0.45rem 0.95rem;
+    border-radius: 999px;
+    background: var(--accent-strong);
+    color: white;
+    font-weight: 700;
+    text-decoration: none;
+  }
+
+  .home-browse-link:hover {
+    text-decoration: underline;
+  }
+
+  .home-browser {
+    margin-top: clamp(1.25rem, 3vw, 2.5rem);
+  }
+
+  .home-featured {
+    margin-bottom: clamp(1.6rem, 4vw, 3.1rem);
+  }
+
+  .home-postcards {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 14rem), 1fr));
+    gap: clamp(0.65rem, 1.5vw, 1.1rem);
+    margin: 0.8rem 0 0;
+    padding: 0;
+    list-style: none;
+  }
+
+  .home-postcard {
+    display: grid;
+    height: 100%;
+    overflow: hidden;
+    border: 1px solid #e9dbca;
+    border-radius: 1rem;
+    background: #fffaf2;
+    color: var(--ink);
+    text-decoration: none;
+  }
+
+  .home-postcard:hover,
+  .home-postcard[aria-current="true"] {
+    border-color: var(--accent-strong);
+    box-shadow: 0 0 0 1px var(--accent-strong);
+  }
+
+  .home-postcard img {
+    width: 100%;
+    height: auto;
+    aspect-ratio: 2.5;
+    object-fit: cover;
+    background: #eee0d0;
+  }
+
+  .home-postcard-caption {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-content: center;
+    column-gap: 0.6rem;
+    padding: 0.65rem 0.9rem;
+    line-height: 1.3;
+  }
+
+  .home-postcard strong {
+    font-size: clamp(1.15rem, 2vw, 1.5rem);
+    overflow-wrap: anywhere;
+  }
+
+  .home-postcard-caption > span:first-of-type {
+    grid-column: 1;
+    color: var(--muted);
+    font-size: 0.85rem;
+  }
+
+  .home-postcard-arrow {
+    grid-area: 1 / 2 / span 2;
+    align-self: center;
+    color: var(--accent-strong);
+    font-size: 1.25rem;
+  }
+
+  .home-postcard:focus-visible,
+  .home-browse-link:focus-visible,
+  .home-browser [data-home-browse-heading]:focus-visible {
+    outline: 2px solid var(--accent-strong);
+    outline-offset: 3px;
+  }
+
+  .home-browser [data-home-browse-heading],
+  .home-browser [data-country-block] {
+    scroll-margin-top: 1rem;
+  }
+
+  .home-controls {
+    margin: 0.75rem 0 1rem;
+    border-radius: 1rem;
+  }
+
+  .home-control-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1.5fr) minmax(10rem, 1fr) auto;
+    gap: 0.75rem;
+    align-items: end;
+  }
+
+  .home-controls select {
+    width: 100%;
+    cursor: pointer;
+  }
+
+  .home-controls .home-nearby {
+    display: inline-flex;
+    justify-content: center;
+    width: auto;
+    gap: 0.45rem;
+    padding-inline: 0.7rem;
+    font-size: 0.85rem;
+    font-weight: 700;
+    white-space: nowrap;
+  }
+
+  .home-control-status {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.2rem 0.85rem;
+    margin-top: 0.6rem;
+  }
+
+  .home-control-status p:empty {
+    display: none;
+  }
+
+  .home-browser .home-map-panel[data-collapsed="true"] {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+  }
+
+  .home-about {
+    display: grid;
+    gap: 0.7rem;
+    margin-top: 2rem;
+    padding-top: 1.25rem;
+    border-top: 1px solid var(--line);
+  }
+
+  @media (max-width: 719px) {
+    .home-postcards {
+      grid-template-columns: minmax(0, 1fr);
+    }
+
+    .home-postcard {
+      grid-template-columns: minmax(5rem, 32%) minmax(0, 1fr);
+      min-height: 4rem;
+    }
+
+    .home-postcard img {
+      height: 100%;
+      aspect-ratio: auto;
+    }
+
+    .home-control-row {
+      grid-template-columns: minmax(0, 1fr) auto;
+    }
+
+    .home-control-row > :first-child {
+      grid-column: 1 / -1;
+    }
+  }
+}

@@ -19,7 +19,7 @@ test("filters guides by country and renders global place search results", async 
   ).toBeVisible();
   await page.locator("[data-home-search-input]").clear();
 
-  await page.locator('[data-country-filter][data-country="taiwan"]').click();
+  await page.locator("[data-country-select]").selectOption("taiwan");
 
   await expect(page.locator("[data-home-results-count]")).toHaveText("1 guide across 1 country");
   await expect(page.locator('[data-guide-card][data-guide-slug="taipei-taiwan"]')).toBeVisible();
@@ -53,4 +53,37 @@ test("filters guides by country and renders global place search results", async 
   await expect(
     page.locator('[data-search-view-toggle][data-search-view="individual"]'),
   ).toHaveAttribute("aria-pressed", "true");
+});
+
+test("featured postcards and the country dropdown share a filter", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto("/");
+
+  const taiwan = page.getByRole("link", { name: "Taiwan 1 guide" });
+  await expect(taiwan.locator("img")).toBeVisible();
+  expect(
+    await taiwan.locator("img").evaluate((img: HTMLImageElement) => img.naturalWidth),
+  ).toBeGreaterThan(0);
+  await expect(page.getByRole("button", { name: "Show map" })).toHaveAttribute(
+    "aria-expanded",
+    "false",
+  );
+
+  await taiwan.focus();
+  await page.keyboard.press("Enter");
+  await expect(page.locator("#browse-guides")).toBeFocused();
+  await expect(page.locator("[data-country-select]")).toHaveValue("taiwan");
+  await expect(taiwan).toHaveAttribute("aria-current", "true");
+  await expect(page).toHaveURL(/#taiwan$/);
+  await expect(page.locator("[data-country-block]:visible")).toHaveCount(1);
+
+  await page.reload();
+  await expect(page.locator("[data-country-select]")).toHaveValue("taiwan");
+  await page.getByRole("button", { name: "Show map" }).click();
+  await expect(page.locator("[data-home-guide-map]")).toBeVisible();
+  await expect(page.locator("[data-home-map-summary]")).toContainText("1 guide in Taiwan");
+
+  await page.locator("[data-country-select]").selectOption("");
+  await expect(page.locator("[data-country-block]:visible")).toHaveCount(3);
+  await expect(taiwan).not.toHaveAttribute("aria-current");
 });

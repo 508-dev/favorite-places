@@ -31,10 +31,9 @@ const mapGuides = guides.filter((guide) => Number.isFinite(guide.lat) && Number.
 
 {
   mapGuides.length > 0 && (
-    <aside class="map-panel home-map-panel" data-home-map-panel data-collapsed="false" aria-label="Guide map">
+    <aside class="map-panel home-map-panel" data-home-map-panel data-collapsed="true" aria-label="Guide map">
       <div class="home-map-head">
         <div>
-          <p class="eyebrow">Map view</p>
           <h3 class="section-title">Guide locations</h3>
         </div>
         <div class="home-map-head-copy">
@@ -53,10 +52,10 @@ const mapGuides = guides.filter((guide) => Number.isFinite(guide.lat) && Number.
             class="map-inline-toggle"
             type="button"
             data-home-map-toggle
-            aria-expanded="true"
-            aria-label="Hide map"
+            aria-expanded="false"
+            aria-label="Show map"
           >
-            Hide map
+            Show map
           </button>
         </div>
 
@@ -919,7 +918,6 @@ const mapGuides = guides.filter((guide) => Number.isFinite(guide.lat) && Number.
 
   const initPanels = () => {
     const storedCollapsed = window.localStorage.getItem(HOME_MAP_COLLAPSED_KEY);
-    const defaultCollapsed = storedCollapsed === "true";
 
     document.querySelectorAll<HTMLElement>("[data-home-map-panel]").forEach((panel) => {
       if (panel.dataset.panelInitialized === "true") {
@@ -927,7 +925,8 @@ const mapGuides = guides.filter((guide) => Number.isFinite(guide.lat) && Number.
       }
 
       panel.dataset.panelInitialized = "true";
-      setPanelCollapsed(panel, defaultCollapsed, false);
+      const collapsed = (storedCollapsed ?? panel.dataset.collapsed) === "true";
+      setPanelCollapsed(panel, collapsed, false);
       panel.querySelector<HTMLButtonElement>("[data-home-map-toggle]")?.addEventListener("click", () => {
         setPanelCollapsed(panel, panel.dataset.collapsed !== "true");
       });

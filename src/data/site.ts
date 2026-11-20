@@ -21,6 +21,8 @@ interface HomeConfig {
   guidesHeading: string;
   guidesLinkText: string | null;
   searchPlaceholder: string;
+  featuredCountryImages: Record<string, string>;
+  featuredCountryExclusions: string[];
   showHero: boolean;
   showHeroStats: boolean;
   showGuideBrowser: boolean;
@@ -159,9 +161,11 @@ const defaultSiteConfig: SiteConfig = {
     highlightsHeading: "About these guides",
     highlights: [],
     guidesEyebrow: "Guides",
-    guidesHeading: "Browse by country",
+    guidesHeading: "Find a guide",
     guidesLinkText: null,
-    searchPlaceholder: "Search a city, country, or guide",
+    searchPlaceholder: "Try a city, country, or food",
+    featuredCountryImages: {},
+    featuredCountryExclusions: [],
     showHero: true,
     showHeroStats: true,
     showGuideBrowser: true,
@@ -171,8 +175,8 @@ const defaultSiteConfig: SiteConfig = {
     searchLabel: "Search",
     showingLabel: "Showing",
     nearMeLabel: "Near me",
-    countriesLabel: "Countries",
-    allCountriesLabel: "All",
+    countriesLabel: "Country",
+    allCountriesLabel: "All countries",
     emptyStateText: "No matching guides. Try a broader search or choose all countries.",
     searchResultsEyebrow: "Search results",
     searchResultsHeading: "Matching places",
