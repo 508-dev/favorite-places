@@ -61,6 +61,8 @@ Edit:
 - `site/content/templates/` for optional trusted HTML insertion points
 - `site/public/` for logos, favicons, and site-owned assets
 
+The homepage features up to three countries ranked by guide count. It includes default postcard art. To customize the illustrations, put your images in `site/public/` and set `home.featuredCountryImages` in `site/config.ts`, for example `{ "new-zealand": "/postcards/new-zealand.webp" }`. Use lowercase, hyphenated country names as keys. Set `home.featuredCountryExclusions` to an array of country names to keep them out of the featured cards. They remain available in the country dropdown and guide directory.
+
 After `site/` exists, it is the default. You only need `FAVORITE_PLACES_SITE_DIR` when previewing `site.example`, using a private sibling site pack, or using a later `app/ + site/` layout.
 
 ## Add Sources

@@ -5,7 +5,6 @@ import { buildSearchConversation, buildSearchSuggestions } from "./search-conver
 
 const GROUP_LIMIT = 5;
 const INDIVIDUAL_RESULT_LIMIT = 24;
-const FLAG_SUFFIX_PATTERN = /(?:\s*[\u{1F1E6}-\u{1F1FF}]{2})+$/u;
 
 const root = document.querySelector("[data-home-browser-root]");
 
@@ -13,7 +12,10 @@ if (root) {
   const countrySectionsVisible = root.dataset.countrySectionsVisible !== "false";
   const searchInput = root.querySelector("[data-home-search-input]");
   const countryBlocks = Array.from(root.querySelectorAll("[data-country-block]"));
-  const countryButtons = Array.from(root.querySelectorAll("[data-country-filter]"));
+  const countrySelect = root.querySelector("[data-country-select]");
+  const countryOptions = Array.from(countrySelect?.options || []);
+  const featuredLinks = Array.from(root.querySelectorAll("[data-featured-country]"));
+  const browseHeading = root.querySelector("[data-home-browse-heading]");
   const resultsCount = root.querySelector("[data-home-results-count]");
   const emptyState = root.querySelector("[data-home-empty-state]");
   const locationButton = root.querySelector("[data-location-target]");
@@ -29,9 +31,7 @@ if (root) {
   const groupedResultsList = root.querySelector("[data-grouped-search-list]");
   const globalResultsEmpty = root.querySelector("[data-global-search-empty]");
   const searchViewToggles = Array.from(root.querySelectorAll("[data-search-view-toggle]"));
-  const validCountries = countryButtons
-    .map((button) => button.dataset.country || "")
-    .filter((country) => Boolean(country));
+  const validCountries = countryBlocks.map((block) => block.dataset.country || "");
 
   let activeCountry = "";
   let locationMatchCountry = "";
@@ -53,11 +53,8 @@ if (root) {
       return "";
     }
 
-    const button = countryButtons.find(
-      (candidate) => (candidate.dataset.country || "") === country,
-    );
-    const label = button?.querySelector("span")?.textContent || country;
-    return label.replace(FLAG_SUFFIX_PATTERN, "").trim();
+    const option = countryOptions.find((candidate) => candidate.value === country);
+    return option?.dataset.label || country;
   };
 
   const syncUrlState = () => {
@@ -66,7 +63,10 @@ if (root) {
       query: searchInput?.value || "",
       view: searchResultView,
     });
-    if (window.location.hash === nextHash) {
+    if (
+      window.location.hash === nextHash ||
+      (!nextHash && window.location.hash === "#browse-guides")
+    ) {
       return;
     }
 
@@ -132,9 +132,7 @@ if (root) {
     }
 
     locationButton.dataset.active = active ? "true" : "false";
-    const label = active ? "Clear nearby guides" : "Show nearby guides";
-    locationButton.title = label;
-    locationButton.setAttribute("aria-label", label);
+    locationButton.setAttribute("aria-pressed", String(active));
   };
 
   const formatDistanceKm = (distanceKm) => {
@@ -526,27 +524,22 @@ if (root) {
     updateSearchViewButtons();
   };
 
-  const updateCountryButtons = (matchingGuidesByCountry, totalMatchingGuides, searching) => {
-    countryButtons.forEach((button) => {
-      const country = button.dataset.country || "";
-      const count = country ? matchingGuidesByCountry.get(country) || 0 : totalMatchingGuides;
-      const countLabel = button.querySelector(".country-filter-count");
-      const shouldHide =
-        (searching || Boolean(nearbyGuideState)) &&
-        Boolean(country) &&
-        country !== activeCountry &&
-        count === 0;
+  const updateCountryControls = (matchingGuidesByCountry) => {
+    for (const option of countryOptions) {
+      if (!option.value) continue;
+      const count = matchingGuidesByCountry.get(option.value) || 0;
+      const { label, flag } = option.dataset;
+      option.textContent = `${label}${flag ? ` ${flag}` : ""} (${pluralize(count, "guide")})`;
+    }
+    if (countrySelect) countrySelect.value = activeCountry;
 
-      button.dataset.active = country === activeCountry ? "true" : "false";
-      button.dataset.locationMatch = country && country === locationMatchCountry ? "true" : "false";
-      button.setAttribute("aria-pressed", country === activeCountry ? "true" : "false");
-      button.disabled = Boolean(country) && country !== activeCountry && count === 0;
-      button.hidden = shouldHide;
-
-      if (countLabel) {
-        countLabel.textContent = String(count);
+    for (const link of featuredLinks) {
+      if (link.dataset.featuredCountry === activeCountry) {
+        link.setAttribute("aria-current", "true");
+      } else {
+        link.removeAttribute("aria-current");
       }
-    });
+    }
   };
 
   const update = () => {
@@ -573,7 +566,6 @@ if (root) {
     const visibleGuideSlugs = [];
     let visibleGuideCount = 0;
     let visibleCountryCount = 0;
-    let totalMatchingGuides = 0;
 
     countryBlocks.forEach((block) => {
       const country = block.dataset.country || "";
@@ -596,7 +588,6 @@ if (root) {
 
       block.dataset.locationMatch = country && country === locationMatchCountry ? "true" : "false";
       matchingGuidesByCountry.set(country, matchingCards.length);
-      totalMatchingGuides += matchingCards.length;
 
       const selectedCountryMatches = !activeCountry || country === activeCountry;
       let blockVisibleGuideCount = 0;
@@ -621,7 +612,7 @@ if (root) {
       }
     });
 
-    updateCountryButtons(matchingGuidesByCountry, totalMatchingGuides, Boolean(rawQuery));
+    updateCountryControls(matchingGuidesByCountry);
 
     if (resultsCount) {
       resultsCount.textContent = nearbyGuideState
@@ -649,28 +640,18 @@ if (root) {
     syncUrlState();
   };
 
-  const selectCountry = (country, { scroll = false } = {}) => {
+  const selectCountry = (country) => {
     activeCountry = country;
     nearbyGuideState = null;
     locationMatchCountry = "";
     setLocationButtonActive(false);
     setLocationStatus("");
-
     update();
+  };
 
-    if (scroll) {
-      const button = countryButtons.find(
-        (candidate) => (candidate.dataset.country || "") === country,
-      );
-      const block = countryBlocks.find(
-        (candidate) => (candidate.dataset.country || "") === country,
-      );
-
-      button?.scrollIntoView({ behavior: "smooth", block: "nearest", inline: "center" });
-      if (countrySectionsVisible) {
-        block?.scrollIntoView({ behavior: "smooth", block: "start" });
-      }
-    }
+  const focusBrowser = () => {
+    browseHeading?.focus({ preventScroll: true });
+    browseHeading?.scrollIntoView({ block: "start" });
   };
 
   const selectNearbyGuides = (state, { scroll = false } = {}) => {
@@ -710,12 +691,25 @@ if (root) {
 
   searchInput?.addEventListener("input", update);
 
-  countryButtons.forEach((button) => {
-    button.addEventListener("click", () => {
-      const country = button.dataset.country || "";
-      selectCountry(country === activeCountry ? "" : country);
-    });
+  countrySelect?.addEventListener("change", () => selectCountry(countrySelect.value));
+
+  const followBrowseLink = (event, country) => {
+    if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey)
+      return;
+    event.preventDefault();
+    if (searchInput) searchInput.value = "";
+    selectCountry(country);
+    focusBrowser();
+  };
+
+  document.querySelector("[data-home-browse-link]")?.addEventListener("click", (event) => {
+    followBrowseLink(event, "");
   });
+  for (const link of featuredLinks) {
+    link.addEventListener("click", (event) =>
+      followBrowseLink(event, link.dataset.featuredCountry),
+    );
+  }
 
   searchViewToggles.forEach((toggle) => {
     toggle.addEventListener("click", () => {

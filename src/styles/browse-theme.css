@@ -1,0 +1,188 @@
+@layer components {
+  html.browse-theme {
+    background: #f5eee3;
+  }
+
+  .browse-theme body {
+    --bg: #f5eee3;
+    --bg-strong: #f5eee3;
+    --surface: #fffcf7;
+    --surface-strong: #f1e8da;
+    --ink: #2b2620;
+    --muted: #6e6458;
+    --line: #e7dccb;
+    --accent: #c4312d;
+    --accent-strong: #a0281f;
+    --accent-soft: rgba(196, 49, 45, 0.08);
+    --browse-serif: "Source Serif 4", Georgia, "Times New Roman", serif;
+    --radius-lg: 1.1rem;
+    --radius-md: 0.75rem;
+    --browse-shadow: 0 1px 2px rgba(60, 40, 20, 0.04), 0 8px 24px -12px rgba(60, 40, 20, 0.14);
+    --browse-shadow-lift:
+      0 2px 4px rgba(60, 40, 20, 0.05), 0 18px 40px -16px rgba(60, 40, 20, 0.28);
+    --browse-gutter: 1.25rem;
+    --browse-width: min(calc(100% - 2 * var(--browse-gutter)), 76rem);
+
+    background:
+      radial-gradient(60rem 28rem at 85% -6rem, rgba(232, 176, 120, 0.18), transparent 70%),
+      radial-gradient(48rem 24rem at -10% 10rem, rgba(196, 49, 45, 0.05), transparent 70%), #f5eee3;
+  }
+
+  .browse-theme body > .ui-site-header {
+    width: 100%;
+    flex-direction: row;
+    align-items: center;
+    gap: 0.4rem 1rem;
+    padding: 0.65rem max(var(--browse-gutter), (100% - 76rem) / 2);
+    background: #353e49;
+  }
+
+  .browse-theme body .ui-site-title img {
+    width: auto;
+    max-width: none;
+    height: 5rem;
+    margin: -0.9rem -1.1rem;
+    object-fit: contain;
+  }
+
+  .browse-theme body .ui-site-title-text {
+    color: #fff;
+    font-family: var(--browse-serif);
+    font-size: 1.4rem;
+    font-weight: 600;
+    letter-spacing: -0.015em;
+  }
+
+  .browse-theme body .ui-site-nav {
+    justify-content: flex-end;
+    gap: 0.25rem;
+    font-family: var(--font-sans);
+    font-size: 0.9rem;
+    font-weight: 700;
+    letter-spacing: 0;
+    text-transform: none;
+  }
+
+  .browse-theme body .ui-site-nav a {
+    min-height: 2.4rem;
+    padding-inline: 0.9rem;
+    border: 1px solid rgb(255 255 255 / 22%);
+    border-radius: 999px;
+    background: transparent;
+    box-shadow: none;
+    color: #fff;
+  }
+
+  .browse-theme body .ui-site-nav a:hover,
+  .browse-theme body .ui-site-nav a:focus-visible {
+    background: rgb(255 255 255 / 14%);
+  }
+
+  /* Page shell becomes an open column instead of a floating sheet */
+  .browse-theme body > .ui-page-shell {
+    width: var(--browse-width);
+    padding: 0 0 4rem;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    box-shadow: none;
+  }
+
+  /* Shared heading voice */
+  .browse-theme :is(.ui-display, .ui-section-title, .section-title, .ui-card-title),
+  .browse-theme .home-postcard strong {
+    font-family: var(--browse-serif);
+    font-optical-sizing: auto;
+    font-weight: 550;
+    letter-spacing: -0.015em;
+    color: var(--ink);
+  }
+
+  .browse-theme .ui-eyebrow {
+    margin: 0;
+    font-family: var(--font-sans);
+    font-size: 0.78rem;
+    font-weight: 700;
+    letter-spacing: 0.14em;
+    color: var(--accent);
+  }
+
+  .guide-welcome.hero {
+    padding: clamp(1.25rem, 4vw, 2.75rem) 0 clamp(1.5rem, 4vw, 2.5rem);
+  }
+
+  .guide-welcome .ui-display {
+    margin: 0;
+    font-size: clamp(2.25rem, 5.6vw, 4.25rem);
+    font-weight: 500;
+    line-height: 1.05;
+  }
+
+  .guide-welcome .hero-grid > .section-stack:only-child {
+    justify-self: start;
+    width: 100%;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    box-shadow: none;
+  }
+
+  .guide-welcome .hero-meta .ui-pill {
+    border-radius: 999px;
+  }
+
+  .guide-welcome .hero-grid > .guide-welcome-aside {
+    padding: 0.9rem 1rem;
+    border: 1px solid var(--line);
+    border-radius: var(--radius-lg);
+    background: var(--surface);
+    box-shadow: var(--browse-shadow);
+  }
+
+  .guide-welcome .hero-grid > .guide-welcome-aside .social-card {
+    width: 100%;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    box-shadow: none;
+  }
+
+  .browse-theme [data-guide-root] .controls-panel,
+  :where(.browse-theme) .place-card {
+    background-color: var(--surface);
+    box-shadow: var(--browse-shadow);
+  }
+
+  :where(.browse-theme) .place-card:is(:hover, :focus-within, [data-map-active="true"]) {
+    box-shadow: var(--browse-shadow-lift);
+  }
+
+  .browse-theme :is(.guide-welcome, [data-guide-root]) .ui-tag-pill {
+    border-radius: 999px;
+  }
+
+  @media (max-width: 719px) {
+    .browse-theme body {
+      --browse-gutter: 0.875rem;
+    }
+
+    .browse-theme body > .ui-site-header {
+      display: flex;
+      padding-block: 0.55rem;
+    }
+
+    .browse-theme body .ui-site-title img {
+      height: 4.2rem;
+    }
+
+    .browse-theme body .ui-site-nav {
+      width: auto;
+      font-size: 0.85rem;
+    }
+
+    .browse-theme body .ui-site-nav a {
+      flex: 0 0 auto;
+      padding-inline: 0.75rem;
+    }
+  }
+}

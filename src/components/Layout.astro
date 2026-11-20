@@ -1,12 +1,14 @@
 ---
 
 import "../styles/global.css";
+import "../styles/browse-theme.css";
 import "favorite-places:site-theme";
 import { siteConfig } from "../data/site";
 import { serializeJsonLdForHtml } from "../lib/seo";
 
 interface Props {
   title: string;
+  browseTheme?: boolean;
   description?: string;
   canonicalPath?: string;
   image?: string | null;
@@ -15,7 +17,9 @@ interface Props {
   jsonLd?: Record<string, unknown> | Array<Record<string, unknown>>;
 }
 
-const { title, description, canonicalPath, image, openGraphType, robots, jsonLd } = Astro.props;
+const { title, browseTheme = false, description, canonicalPath, image, openGraphType, robots, jsonLd } = Astro.props;
+const brandHref = siteConfig.logo?.href ?? "/";
+const headerLinks = siteConfig.navLinks.filter(({ href }) => brandHref !== "/" || href !== "/");
 const metaDescription = description ?? siteConfig.siteDescription;
 const siteUrl = Astro.site ?? new URL("/", Astro.url);
 const canonicalUrl = new URL(canonicalPath ?? Astro.url.pathname, siteUrl).toString();
@@ -26,7 +30,7 @@ const jsonLdEntries = (Array.isArray(jsonLd) ? jsonLd : jsonLd ? [jsonLd] : []).
 ---
 
 <!doctype html>
-<html lang="en">
+<html lang="en" class:list={[browseTheme && "browse-theme"]}>
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
@@ -63,7 +67,7 @@ const jsonLdEntries = (Array.isArray(jsonLd) ? jsonLd : jsonLd ? [jsonLd] : []).
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
-      href="https://fonts.googleapis.com/css2?family=Lato:wght@400;700;900&family=Raleway:wght@600;700&display=swap"
+      href="https://fonts.googleapis.com/css2?family=Lato:wght@400;700;900&family=Raleway:wght@600;700&family=Source+Serif+4:opsz,wght@8..60,400..700&display=swap"
       rel="stylesheet"
     />
   </head>
@@ -71,7 +75,7 @@ const jsonLdEntries = (Array.isArray(jsonLd) ? jsonLd : jsonLd ? [jsonLd] : []).
     <header class="ui-site-header">
       {
         siteConfig.logo ? (
-          <a class="ui-site-title" href={siteConfig.logo.href} aria-label={siteConfig.logo.alt}>
+          <a class="ui-site-title" href={brandHref} aria-label={siteConfig.logo.alt}>
             <img
               src={siteConfig.logo.src}
               alt={siteConfig.logo.alt}
@@ -80,14 +84,16 @@ const jsonLdEntries = (Array.isArray(jsonLd) ? jsonLd : jsonLd ? [jsonLd] : []).
             />
           </a>
         ) : (
-          <a class="ui-site-title ui-site-title-text" href="/" aria-label={siteConfig.siteName}>
+          <a class="ui-site-title ui-site-title-text" href={brandHref} aria-label={siteConfig.siteName}>
             {siteConfig.siteName}
           </a>
         )
       }
-      <nav class="ui-site-nav" aria-label="Primary">
-        {siteConfig.navLinks.map((link) => <a href={link.href}>{link.label}</a>)}
-      </nav>
+      {headerLinks.length > 0 && (
+        <nav class="ui-site-nav" aria-label="Primary">
+          {headerLinks.map((link) => <a href={link.href}>{link.label}</a>)}
+        </nav>
+      )}
     </header>
     <main class="ui-page-shell">
       <slot />

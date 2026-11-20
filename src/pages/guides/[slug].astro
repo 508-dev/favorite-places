@@ -296,13 +296,14 @@ const guideJsonLd = [
 ---
 
 <Layout
+  browseTheme
   title={`${guide.title} · ${siteConfig.siteName}`}
   description={guideMetaDescription}
   canonicalPath={`/guides/${guide.slug}/`}
   openGraphType="article"
   jsonLd={guideJsonLd}
 >
-  <section class="hero ui-hero">
+  <section class="hero ui-hero guide-welcome">
     <div class="hero-grid ui-hero-grid">
       <div class="section-stack ui-stack">
         <a class="utility-link ui-back-link" href="/">← {siteConfig.guide.backLinkLabel}</a>
@@ -335,7 +336,7 @@ const guideJsonLd = [
       {(guideAsideHtml ||
         guideSidebarFallback.length > 0 ||
         (siteConfig.guide.showGuideTags && displayGuideTags.length > 0)) && (
-        <div class="section-stack ui-stack">
+        <div class="section-stack ui-stack guide-welcome-aside">
           {guideAsideHtml ? (
             <div class="small-copy ui-copy ui-copy--sm rich-copy" set:html={guideAsideHtml} />
           ) : (
