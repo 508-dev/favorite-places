@@ -1,12 +1,14 @@
 ---
 
 import "../styles/global.css";
+import "../styles/browse-theme.css";
 import "favorite-places:site-theme";
 import { siteConfig } from "../data/site";
 import { serializeJsonLdForHtml } from "../lib/seo";
 
 interface Props {
   title: string;
+  browseTheme?: boolean;
   description?: string;
   canonicalPath?: string;
   image?: string | null;
@@ -15,7 +17,7 @@ interface Props {
   jsonLd?: Record<string, unknown> | Array<Record<string, unknown>>;
 }
 
-const { title, description, canonicalPath, image, openGraphType, robots, jsonLd } = Astro.props;
+const { title, browseTheme = false, description, canonicalPath, image, openGraphType, robots, jsonLd } = Astro.props;
 const brandHref = siteConfig.logo?.href ?? "/";
 const headerLinks = siteConfig.navLinks.filter(({ href }) => brandHref !== "/" || href !== "/");
 const metaDescription = description ?? siteConfig.siteDescription;
@@ -28,7 +30,7 @@ const jsonLdEntries = (Array.isArray(jsonLd) ? jsonLd : jsonLd ? [jsonLd] : []).
 ---
 
 <!doctype html>
-<html lang="en">
+<html lang="en" class:list={[browseTheme && "browse-theme"]}>
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
@@ -65,7 +67,7 @@ const jsonLdEntries = (Array.isArray(jsonLd) ? jsonLd : jsonLd ? [jsonLd] : []).
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
-      href="https://fonts.googleapis.com/css2?family=Lato:wght@400;700;900&family=Raleway:wght@600;700&display=swap"
+      href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400..650&family=Lato:wght@400;700;900&family=Raleway:wght@600;700&display=swap"
       rel="stylesheet"
     />
   </head>

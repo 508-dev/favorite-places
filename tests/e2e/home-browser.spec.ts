@@ -132,3 +132,21 @@ test("uses the header brand as the way back to the guide collection", async ({ p
   await expect(page).toHaveURL("/");
   await expect(header.locator('a[href="/"]')).toHaveCount(1);
 });
+
+test("shares the homepage theme with individual guides", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto("/");
+  const homeFont = await page
+    .getByRole("heading", { level: 1 })
+    .evaluate((heading) => getComputedStyle(heading).fontFamily);
+  const homeBackground = await page
+    .locator("body")
+    .evaluate((body) => getComputedStyle(body).backgroundColor);
+
+  await page.goto("/guides/tokyo-japan/");
+  await expect(page.getByRole("banner")).toHaveCSS("background-color", "rgb(53, 62, 73)");
+  await expect(page.getByRole("heading", { level: 1 })).toHaveCSS("font-family", homeFont);
+  await expect(page.locator("body")).toHaveCSS("background-color", homeBackground);
+  await expect(page.locator("[data-place-card]").first()).toBeVisible();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
+});

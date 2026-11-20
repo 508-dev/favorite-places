@@ -1,23 +1,4 @@
 @layer components {
-  body:has(.home-welcome, .home-browser) > .ui-site-header {
-    flex-direction: row;
-    align-items: center;
-    gap: 0.4rem 1rem;
-    padding: 0.45rem clamp(0.45rem, 2vw, 1.5rem);
-  }
-
-  body:has(.home-welcome, .home-browser) .ui-site-title img {
-    width: auto;
-    max-width: min(32vw, 11rem);
-    max-height: 4.5rem;
-    object-fit: contain;
-  }
-
-  body:has(.home-welcome, .home-browser) .ui-site-nav {
-    justify-content: flex-end;
-    gap: 0.4rem;
-  }
-
   .home-welcome {
     display: grid;
     gap: 0.75rem;
@@ -25,15 +6,6 @@
     border: 1px solid #ecdfcf;
     border-radius: 1.25rem;
     background: #fbf4e9;
-  }
-
-  .home-welcome .ui-display,
-  .home-featured h2,
-  .home-postcard strong,
-  .home-browser [data-home-browse-heading] h2 {
-    font-family: Georgia, "Times New Roman", serif;
-    font-weight: 700;
-    letter-spacing: -0.025em;
   }
 
   .home-welcome .ui-display {
