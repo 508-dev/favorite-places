@@ -119,3 +119,16 @@ test("keeps contributor footers aligned when guide descriptions have different l
   expect(footerBottoms).toHaveLength(2);
   expect(new Set(footerBottoms).size).toBe(1);
 });
+
+test("uses the header brand as the way back to the guide collection", async ({ page }) => {
+  await page.goto("/guides/tokyo-japan/");
+
+  const header = page.getByRole("banner");
+  const brand = header.getByRole("link", { name: "Favorite Places Demo", exact: true });
+  await expect(header.locator('a[href="/"]')).toHaveCount(1);
+  await expect(header.getByRole("link", { name: "About", exact: true })).toBeVisible();
+  await brand.click();
+
+  await expect(page).toHaveURL("/");
+  await expect(header.locator('a[href="/"]')).toHaveCount(1);
+});

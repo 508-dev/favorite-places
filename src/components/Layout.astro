@@ -16,6 +16,8 @@ interface Props {
 }
 
 const { title, description, canonicalPath, image, openGraphType, robots, jsonLd } = Astro.props;
+const brandHref = siteConfig.logo?.href ?? "/";
+const headerLinks = siteConfig.navLinks.filter(({ href }) => brandHref !== "/" || href !== "/");
 const metaDescription = description ?? siteConfig.siteDescription;
 const siteUrl = Astro.site ?? new URL("/", Astro.url);
 const canonicalUrl = new URL(canonicalPath ?? Astro.url.pathname, siteUrl).toString();
@@ -71,7 +73,7 @@ const jsonLdEntries = (Array.isArray(jsonLd) ? jsonLd : jsonLd ? [jsonLd] : []).
     <header class="ui-site-header">
       {
         siteConfig.logo ? (
-          <a class="ui-site-title" href={siteConfig.logo.href} aria-label={siteConfig.logo.alt}>
+          <a class="ui-site-title" href={brandHref} aria-label={siteConfig.logo.alt}>
             <img
               src={siteConfig.logo.src}
               alt={siteConfig.logo.alt}
@@ -80,14 +82,16 @@ const jsonLdEntries = (Array.isArray(jsonLd) ? jsonLd : jsonLd ? [jsonLd] : []).
             />
           </a>
         ) : (
-          <a class="ui-site-title ui-site-title-text" href="/" aria-label={siteConfig.siteName}>
+          <a class="ui-site-title ui-site-title-text" href={brandHref} aria-label={siteConfig.siteName}>
             {siteConfig.siteName}
           </a>
         )
       }
-      <nav class="ui-site-nav" aria-label="Primary">
-        {siteConfig.navLinks.map((link) => <a href={link.href}>{link.label}</a>)}
-      </nav>
+      {headerLinks.length > 0 && (
+        <nav class="ui-site-nav" aria-label="Primary">
+          {headerLinks.map((link) => <a href={link.href}>{link.label}</a>)}
+        </nav>
+      )}
     </header>
     <main class="ui-page-shell">
       <slot />
