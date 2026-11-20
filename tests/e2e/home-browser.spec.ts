@@ -11,9 +11,9 @@ test("filters guides by country and renders global place search results", async 
   ).toBeVisible();
 
   const taiwanOption = page.locator('[data-country-select] option[value="taiwan"]');
-  await expect(taiwanOption).toHaveText("Taiwan 🇹🇼 (1)");
+  await expect(taiwanOption).toHaveText("Taiwan 🇹🇼 (1 guide)");
   await page.locator("[data-home-search-input]").fill("no matching destination");
-  await expect(taiwanOption).toHaveText("Taiwan 🇹🇼 (0)");
+  await expect(taiwanOption).toHaveText("Taiwan 🇹🇼 (0 guides)");
 
   await page.locator("[data-home-search-input]").fill("bar");
   await expect(page.locator("[data-home-results-count]")).toHaveText("3 guides across 3 countries");
@@ -139,6 +139,7 @@ test("shares the homepage theme with individual guides", async ({ page }) => {
   const homeFont = await page
     .getByRole("heading", { level: 1 })
     .evaluate((heading) => getComputedStyle(heading).fontFamily);
+  expect(homeFont).toContain("Source Serif 4");
   const homeBackground = await page
     .locator("body")
     .evaluate((body) => getComputedStyle(body).backgroundColor);

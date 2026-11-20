@@ -14,7 +14,7 @@
     --accent: #c4312d;
     --accent-strong: #a0281f;
     --accent-soft: rgba(196, 49, 45, 0.08);
-    --browse-serif: Fraunces, Georgia, "Times New Roman", serif;
+    --browse-serif: "Source Serif 4", Georgia, "Times New Roman", serif;
     --radius-lg: 1.1rem;
     --radius-md: 0.75rem;
     --browse-shadow: 0 1px 2px rgba(60, 40, 20, 0.04), 0 8px 24px -12px rgba(60, 40, 20, 0.14);

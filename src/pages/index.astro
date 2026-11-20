@@ -249,7 +249,7 @@ const homeJsonLd = [
                 <option value="">{siteConfig.home.allCountriesLabel}</option>
                 {guidesByCountry.map(({ countryName, countryGuides, countryFlag }) => (
                   <option value={countryName.toLowerCase()} data-label={countryName} data-flag={countryFlag}>
-                    {countryFlag ? `${countryName} ${countryFlag}` : countryName} ({countryGuides.length})
+                    {countryFlag ? `${countryName} ${countryFlag}` : countryName} ({countryGuides.length} {countryGuides.length === 1 ? "guide" : "guides"})
                   </option>
                 ))}
               </select>
