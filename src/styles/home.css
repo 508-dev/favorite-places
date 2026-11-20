@@ -48,8 +48,28 @@
     margin-top: 0.3rem;
   }
 
-  .home-welcome-actions .ui-copy {
-    font-size: 0.85rem;
+  .home-stats {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.45rem;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+    color: var(--muted);
+    font-size: 0.9rem;
+  }
+
+  .home-stats li {
+    padding: 0.25rem 0.7rem;
+    border: 1px solid var(--line);
+    border-radius: 999px;
+    background: var(--surface);
+    white-space: nowrap;
+  }
+
+  .home-stats strong {
+    color: var(--ink);
+    font-weight: 700;
   }
 
   .home-browse-link {

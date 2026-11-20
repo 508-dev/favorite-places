@@ -179,9 +179,11 @@ const homeJsonLd = [
           <a class="home-browse-link" href="#browse-guides" data-home-browse-link>Browse all guides <span aria-hidden="true">↓</span></a>
         )}
         {siteConfig.home.showHeroStats && (
-          <p class="ui-copy ui-copy--sm">
-            {guides.length.toLocaleString("en")} {guides.length === 1 ? "guide" : "guides"} · {countryCount.toLocaleString("en")} {countryCount === 1 ? "country" : "countries"} · {placeCount.toLocaleString("en")} saved {placeCount === 1 ? "place" : "places"}
-          </p>
+          <ul class="home-stats">
+            <li><strong>{guides.length.toLocaleString("en")}</strong> {guides.length === 1 ? "guide" : "guides"}</li>
+            <li><strong>{countryCount.toLocaleString("en")}</strong> {countryCount === 1 ? "country" : "countries"}</li>
+            <li><strong>{placeCount.toLocaleString("en")}</strong> saved {placeCount === 1 ? "place" : "places"}</li>
+          </ul>
         )}
       </div>
     </section>
