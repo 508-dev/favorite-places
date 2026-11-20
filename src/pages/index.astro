@@ -22,10 +22,16 @@ const countryEntries = Object.entries(
   }, {}),
 ).sort(([left], [right]) => left.localeCompare(right));
 const flagPattern = /[\u{1F1E6}-\u{1F1FF}]{2}/gu;
+const countryCodeToFlag = (countryCode: string | null) =>
+  countryCode && /^[a-z]{2}$/i.test(countryCode)
+    ? countryCode
+        .toUpperCase()
+        .replace(/./g, (character) => String.fromCodePoint(127397 + character.charCodeAt(0)))
+    : "";
 const getCountryFlag = (countryGuides: typeof guides) => {
   const flagCounts = countryGuides.reduce<Record<string, number>>((accumulator, guide) => {
     const flags = [...guide.title.matchAll(flagPattern)].map(([flag]) => flag);
-    const flag = flags.at(-1);
+    const flag = flags.at(-1) || countryCodeToFlag(guide.country_code);
 
     if (flag) {
       accumulator[flag] = (accumulator[flag] ?? 0) + 1;
@@ -99,12 +105,6 @@ const normalizeCityMarkerKey = (cityName: string) =>
     .replace(/&/g, " and ")
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-+|-+$/g, "");
-const countryCodeToFlag = (countryCode: string | null) =>
-  countryCode
-    ? countryCode
-        .toUpperCase()
-        .replace(/./g, (character) => String.fromCodePoint(127397 + character.charCodeAt(0)))
-    : "";
 const cityInitials = (cityName: string) =>
   cityName
     .split(/[\s-]+/)
@@ -244,9 +244,9 @@ const homeJsonLd = [
               <label class="control-label ui-control-label" for="guide-country">{siteConfig.home.countriesLabel}</label>
               <select class="ui-input" id="guide-country" data-country-select>
                 <option value="">{siteConfig.home.allCountriesLabel}</option>
-                {guidesByCountry.map(({ countryName, countryGuides }) => (
-                  <option value={countryName.toLowerCase()} data-label={countryName}>
-                    {countryName} ({countryGuides.length})
+                {guidesByCountry.map(({ countryName, countryGuides, countryFlag }) => (
+                  <option value={countryName.toLowerCase()} data-label={countryName} data-flag={countryFlag}>
+                    {countryFlag ? `${countryName} ${countryFlag}` : countryName} ({countryGuides.length})
                   </option>
                 ))}
               </select>

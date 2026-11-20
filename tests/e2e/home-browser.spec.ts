@@ -10,6 +10,11 @@ test("filters guides by country and renders global place search results", async 
     page.locator('[data-guide-card][data-guide-slug="hong-kong-wanderlog-example"]'),
   ).toBeVisible();
 
+  const taiwanOption = page.locator('[data-country-select] option[value="taiwan"]');
+  await expect(taiwanOption).toHaveText("Taiwan 🇹🇼 (1)");
+  await page.locator("[data-home-search-input]").fill("no matching destination");
+  await expect(taiwanOption).toHaveText("Taiwan 🇹🇼 (0)");
+
   await page.locator("[data-home-search-input]").fill("bar");
   await expect(page.locator("[data-home-results-count]")).toHaveText("3 guides across 3 countries");
   await expect(page.locator('[data-guide-card][data-guide-slug="tokyo-japan"]')).toBeVisible();
@@ -64,10 +69,11 @@ test("featured postcards and the country dropdown share a filter", async ({ page
   expect(
     await taiwan.locator("img").evaluate((img: HTMLImageElement) => img.naturalWidth),
   ).toBeGreaterThan(0);
-  await expect(page.getByRole("button", { name: "Show map" })).toHaveAttribute(
+  await expect(page.getByRole("button", { name: "Hide map" })).toHaveAttribute(
     "aria-expanded",
-    "false",
+    "true",
   );
+  await expect(page.locator("[data-home-guide-map]")).toBeVisible();
 
   await taiwan.focus();
   await page.keyboard.press("Enter");
@@ -77,8 +83,10 @@ test("featured postcards and the country dropdown share a filter", async ({ page
   await expect(page).toHaveURL(/#taiwan$/);
   await expect(page.locator("[data-country-block]:visible")).toHaveCount(1);
 
+  await page.getByRole("button", { name: "Hide map" }).click();
   await page.reload();
   await expect(page.locator("[data-country-select]")).toHaveValue("taiwan");
+  await expect(page.locator("[data-home-guide-map]")).toBeHidden();
   await page.getByRole("button", { name: "Show map" }).click();
   await expect(page.locator("[data-home-guide-map]")).toBeVisible();
   await expect(page.locator("[data-home-map-summary]")).toContainText("1 guide in Taiwan");
@@ -86,4 +94,28 @@ test("featured postcards and the country dropdown share a filter", async ({ page
   await page.locator("[data-country-select]").selectOption("");
   await expect(page.locator("[data-country-block]:visible")).toHaveCount(3);
   await expect(taiwan).not.toHaveAttribute("aria-current");
+});
+
+test("keeps contributor footers aligned when guide descriptions have different lengths", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await page.goto("/");
+
+  // The sample site has one guide per country. Put two cards in one row for this layout check.
+  const cards = page.locator("[data-guide-card]");
+  await cards.evaluateAll(([first, second]) => {
+    first.parentElement?.append(second);
+    const description = second.querySelector(".ui-copy");
+    if (description) description.textContent = "A longer guide description. ".repeat(18);
+  });
+
+  const firstGrid = page.locator("[data-country-block] .card-grid").first();
+  const footerBottoms = await firstGrid
+    .locator(".guide-card-footer")
+    .evaluateAll((footers) =>
+      footers.map((footer) => Math.round(footer.getBoundingClientRect().bottom)),
+    );
+  expect(footerBottoms).toHaveLength(2);
+  expect(new Set(footerBottoms).size).toBe(1);
 });

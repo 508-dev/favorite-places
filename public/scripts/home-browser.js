@@ -528,7 +528,8 @@ if (root) {
     for (const option of countryOptions) {
       if (!option.value) continue;
       const count = matchingGuidesByCountry.get(option.value) || 0;
-      option.textContent = `${option.dataset.label} (${count})`;
+      const { label, flag } = option.dataset;
+      option.textContent = `${label}${flag ? ` ${flag}` : ""} (${count})`;
     }
     if (countrySelect) countrySelect.value = activeCountry;
 
