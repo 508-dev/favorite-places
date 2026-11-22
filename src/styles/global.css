@@ -602,6 +602,21 @@
     line-height: 1.25;
   }
 
+  a.search-country-card-head {
+    text-decoration: none;
+  }
+
+  a.search-country-card-head:hover h4,
+  a.search-country-card-head:focus-visible h4 {
+    color: var(--accent);
+    text-decoration: underline;
+  }
+
+  a.search-country-card-head:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 4px;
+  }
+
   .search-country-card-title {
     display: grid;
     gap: 0.2rem;

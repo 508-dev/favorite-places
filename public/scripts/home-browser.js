@@ -282,8 +282,11 @@ if (root) {
     const card = document.createElement("article");
     card.className = "search-country-card";
 
-    const header = document.createElement("div");
+    const header = document.createElement(group.guideSlug ? "a" : "div");
     header.className = "search-country-card-head";
+    if (group.guideSlug) {
+      header.setAttribute("href", `/guides/${group.guideSlug}/`);
+    }
 
     const titleBlock = document.createElement("div");
     titleBlock.className = "search-country-card-title";
