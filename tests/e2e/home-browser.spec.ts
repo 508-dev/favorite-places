@@ -60,6 +60,23 @@ test("filters guides by country and renders global place search results", async 
   ).toHaveAttribute("aria-pressed", "true");
 });
 
+test("opens the full guide from a grouped search header", async ({ page }) => {
+  await page.goto("/");
+  await page.locator("[data-country-select]").selectOption("taiwan");
+  await page.locator("[data-home-search-input]").fill("museum");
+
+  const groups = page.locator("[data-grouped-search-list]");
+  const place = groups.getByRole("link", { name: /Museum of Contemporary Art Taipei/ });
+  await expect(place).toHaveAttribute("href", /^\/guides\/taipei-taiwan\/\?place=[^&]+&q=museum$/);
+
+  const header = groups.getByRole("link", { name: /Taipei.*match/ });
+  await expect(header).toHaveAttribute("href", "/guides/taipei-taiwan/");
+  await header.focus();
+  await page.keyboard.press("Enter");
+
+  await expect(page).toHaveURL(/\/guides\/taipei-taiwan\/$/);
+});
+
 test("featured postcards and the country dropdown share a filter", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto("/");
