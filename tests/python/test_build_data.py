@@ -1415,6 +1415,80 @@ class BuildDataTests(unittest.TestCase):
         self.assertEqual(len(merged.places), 1)
         self.assertEqual(merged.places[0].name, "Retained Tea House")
 
+    def test_preserve_existing_raw_saved_list_restores_places_displaced_by_google_cap(self) -> None:
+        source = SourceConfig(
+            slug="taipei-taiwan",
+            type="google_list_url",
+            url="https://maps.app.goo.gl/taipei",
+        )
+        existing_places = [
+            RawPlace(
+                name=f"Taipei Place {index}",
+                address=f"{index} Test St, Taipei",
+                lat=25.0,
+                lng=121.5,
+                maps_url=f"https://maps.google.com/?cid=123456789{index}",
+                cid=f"123456789{index}",
+            )
+            for index in range(5)
+        ]
+        existing_payload = RawSavedList(
+            title="Taipei, Taiwan",
+            configured_source_type="google_list_url",
+            source_signature=build_data.raw_source_signature(source),
+            places=existing_places,
+        )
+        refreshed_payload = RawSavedList(
+            title="Taipei, Taiwan",
+            configured_source_type="google_list_url",
+            source_signature=build_data.raw_source_signature(source),
+            places=[
+                *existing_places[:2],
+                RawPlace(
+                    name=existing_places[2].name,
+                    lat=26.0,
+                    lng=122.0,
+                    maps_url="https://maps.google.com/maps/search/?api=1&query=Taipei+Place+2",
+                ),
+                RawPlace(
+                    name="New Taipei Place",
+                    maps_url="https://maps.google.com/?cid=new-taipei-place",
+                    cid="new-taipei-place",
+                ),
+            ],
+        )
+
+        with patch.object(build_data, "GOOGLE_SAVED_LIST_SCRAPE_CAPS", (4,)):
+            with StringIO() as stdout, redirect_stdout(stdout):
+                merged = build_data.preserve_existing_raw_saved_list(
+                    source=source,
+                    slug="taipei-taiwan",
+                    existing_payload=existing_payload,
+                    refreshed_payload=refreshed_payload,
+                )
+                repeated = build_data.preserve_existing_raw_saved_list(
+                    source=source,
+                    slug="taipei-taiwan",
+                    existing_payload=merged,
+                    refreshed_payload=refreshed_payload,
+                )
+                output = stdout.getvalue()
+
+        self.assertEqual(
+            [place.name for place in merged.places],
+            [
+                "Taipei Place 0",
+                "Taipei Place 1",
+                "Taipei Place 2",
+                "New Taipei Place",
+                "Taipei Place 3",
+                "Taipei Place 4",
+            ],
+        )
+        self.assertEqual(repeated.places, merged.places)
+        self.assertEqual(merged.places[2].cid, existing_places[2].cid)
+        self.assertIn("Restoring 2 established places", output)
+
     def test_preserve_existing_raw_saved_list_can_allow_intentional_identity_collapse(self) -> None:
         source = SourceConfig(
             slug="bangor-maine-usa",
@@ -5695,13 +5769,13 @@ class BuildDataTests(unittest.TestCase):
             (
                 "tokyo-japan",
                 "cid:9055794338847426964",
-                "cid:6924437575605096209",
-                None,
                 "AFURI Harajuku",
                 "missing-cache-entry",
                 {},
                 "Tokyo",
                 "Japan",
+                {},
+                None,
             )
         )
 
@@ -6048,6 +6122,51 @@ class BuildDataTests(unittest.TestCase):
 
         self.assertIsNone(merged.places[0].cid)
         self.assertEqual(merged.places[1].cid, duplicate_cid)
+
+    def test_preserve_existing_raw_saved_list_matches_google_id_before_bad_shared_cid(self) -> None:
+        duplicate_cid = "945416459406974027"
+        existing_payload = RawSavedList(
+            configured_source_type="google_list_url",
+            places=[
+                RawPlace(
+                    name="Hotel Lobby Cafe",
+                    address="1 Lobby St",
+                    maps_url="https://maps.google.com/?cid=111",
+                    cid=duplicate_cid,
+                    google_id="/g/11lobby",
+                ),
+                RawPlace(
+                    name="Hotel Rooftop Bar",
+                    address="2 Rooftop Ave",
+                    maps_url="https://maps.google.com/?cid=222",
+                    cid=duplicate_cid,
+                    google_id="/g/11rooftop",
+                ),
+            ],
+        )
+        refreshed_payload = RawSavedList(
+            configured_source_type="google_list_url",
+            places=[
+                RawPlace(
+                    name="Hotel Rooftop Bar",
+                    maps_url="https://maps.google.com/?cid=333",
+                    cid=duplicate_cid,
+                    google_id="/g/11rooftop",
+                )
+            ],
+        )
+
+        merged = build_data.preserve_existing_raw_saved_list(
+            slug="tokyo-japan",
+            existing_payload=existing_payload,
+            refreshed_payload=refreshed_payload,
+        )
+
+        self.assertEqual(merged.places[0].address, "2 Rooftop Ave")
+        self.assertEqual(
+            build_data.stable_place_id(merged.places[0], source_type=merged.configured_source_type),
+            "gid:g-11rooftop",
+        )
 
     def test_preserve_existing_raw_saved_list_clears_duplicate_cid_before_preserving_fields(
         self,
@@ -10831,6 +10950,126 @@ class BuildDataTests(unittest.TestCase):
             f"/place-photos/cid-123-{photo_hash}.jpg",
         )
 
+    def test_populate_place_photos_for_guides_uses_legacy_cid_cache_for_gid_place_without_refresh(
+        self,
+    ) -> None:
+        guide = Guide(
+            slug="tokyo-japan",
+            title="Tokyo, Japan",
+            country_name="Japan",
+            city_name="Tokyo",
+            generated_at="2026-04-20T00:00:00+00:00",
+            place_count=1,
+            places=[
+                NormalizedPlace(
+                    id="gid:g-11open-kitchen",
+                    name="Open Kitchen",
+                    maps_url="https://maps.google.com/?cid=123",
+                    cid="123",
+                    google_id="/g/11open-kitchen",
+                    status="active",
+                )
+            ],
+        )
+        photo_url = "https://lh3.googleusercontent.com/p/example=s680-w680-h510"
+        photo_hash = hashlib.sha256(photo_url.encode("utf-8")).hexdigest()[:12]
+
+        with TemporaryDirectory() as tmpdir:
+            photo_dir = Path(tmpdir)
+            existing_path = photo_dir / f"gid-g-11open-kitchen-{photo_hash}.jpg"
+            existing_path.parent.mkdir(parents=True, exist_ok=True)
+            existing_path.write_bytes(b"existing-image")
+
+            with (
+                patch.object(build_data, "PLACE_PHOTOS_DIR", photo_dir),
+                patch.object(build_data, "sync_place_photo", side_effect=AssertionError("should not refresh")),
+            ):
+                build_data.populate_place_photos_for_guides(
+                    [guide],
+                    enrichment_caches={
+                        "tokyo-japan": {
+                            "cid:123": EnrichmentCacheEntry(
+                                fetched_at="2026-04-20T00:00:00+00:00",
+                                query="Open Kitchen",
+                                matched=True,
+                                place=EnrichmentPlace(main_photo_url=photo_url),
+                            )
+                        }
+                    },
+                    refresh_photos=False,
+                    photo_workers=4,
+                    startup_jitter_seconds=8,
+                )
+
+        self.assertEqual(
+            guide.places[0].main_photo_path,
+            f"/place-photos/gid-g-11open-kitchen-{photo_hash}.jpg",
+        )
+
+    def test_populate_place_photos_for_guides_refresh_uses_legacy_cid_cache_for_gid_place(
+        self,
+    ) -> None:
+        guide = Guide(
+            slug="tokyo-japan",
+            title="Tokyo, Japan",
+            country_name="Japan",
+            city_name="Tokyo",
+            generated_at="2026-04-20T00:00:00+00:00",
+            place_count=1,
+            places=[
+                NormalizedPlace(
+                    id="gid:g-11open-kitchen",
+                    name="Open Kitchen",
+                    maps_url="https://maps.google.com/?cid=123",
+                    cid="123",
+                    google_id="/g/11open-kitchen",
+                    status="active",
+                )
+            ],
+        )
+        photo_url = "https://lh3.googleusercontent.com/p/example=s680-w680-h510"
+        calls: list[tuple[str, str, str | None, float]] = []
+
+        def fake_sync_place_photo(
+            slug: str,
+            place_id: str,
+            *,
+            photo_url: str | None,
+            startup_jitter_seconds: float = 0,
+        ) -> str:
+            calls.append((slug, place_id, photo_url, startup_jitter_seconds))
+            return f"/place-photos/{place_id}.webp"
+
+        with (
+            patch.object(build_data, "sync_place_photo", side_effect=fake_sync_place_photo),
+            patch("builtins.print"),
+        ):
+            build_data.populate_place_photos_for_guides(
+                [guide],
+                enrichment_caches={
+                    "tokyo-japan": {
+                        "cid:123": EnrichmentCacheEntry(
+                            fetched_at="2026-04-20T00:00:00+00:00",
+                            query="Open Kitchen",
+                            matched=True,
+                            place=EnrichmentPlace(main_photo_url=photo_url),
+                        )
+                    }
+                },
+                refresh_photos=True,
+                photo_workers=4,
+                startup_jitter_seconds=8,
+            )
+
+        self.assertEqual(
+            calls,
+            [("tokyo-japan", "gid:g-11open-kitchen", photo_url, 0)],
+        )
+        self.assertEqual(
+            guide.places[0].main_photo_path,
+            "/place-photos/gid:g-11open-kitchen.webp",
+        )
+
     def test_populate_place_photos_for_guides_keeps_existing_photo_when_url_changes_and_refresh_is_disabled(
         self,
     ) -> None:
@@ -11080,7 +11319,7 @@ class BuildDataTests(unittest.TestCase):
 
         self.assertFalse(build_data.should_fallback_to_places_api(entry))
 
-    def test_should_fallback_to_places_api_for_rich_search_result_missing_address_components(self) -> None:
+    def test_should_not_fallback_to_places_api_for_rich_search_result_missing_address_components(self) -> None:
         entry = EnrichmentCacheEntry(
             fetched_at="2026-04-20T00:00:00+00:00",
             query="Sister Midnight, 4 Rue Viollet-le-Duc, 75009 Paris, France",
@@ -11101,7 +11340,7 @@ class BuildDataTests(unittest.TestCase):
             ),
         )
 
-        self.assertTrue(build_data.should_fallback_to_places_api(entry))
+        self.assertFalse(build_data.should_fallback_to_places_api(entry))
 
     def test_extract_hashtags_normalizes_accented_and_malformed_location_tags(self) -> None:
         tags = build_data.extract_hashtags("Great spots #genève #gen-ve #park")
@@ -11134,6 +11373,44 @@ class BuildDataTests(unittest.TestCase):
             build_data.stable_place_id(place),
             "slug:gen-ve-cafe-46-2044-6-1432",
         )
+
+    def test_stable_place_id_prefers_google_id_over_cid(self) -> None:
+        first_place = RawPlace(
+            name="Hotel Lobby Cafe",
+            maps_url="https://maps.google.com/?cid=111",
+            cid="111",
+            google_id="/g/11lobby",
+        )
+        second_place = RawPlace(
+            name="Hotel Rooftop Bar",
+            maps_url="https://maps.google.com/?cid=111",
+            cid="111",
+            google_id="/g/11rooftop",
+        )
+
+        self.assertEqual(build_data.stable_place_id(first_place), "gid:g-11lobby")
+        self.assertEqual(build_data.stable_place_id(second_place), "gid:g-11rooftop")
+
+    def test_committed_raw_guides_have_unique_stable_place_ids(self) -> None:
+        duplicates: list[str] = []
+
+        for raw_path in sorted(build_data.RAW_DIR.glob("*.json")):
+            raw = RawSavedList.model_validate_json(raw_path.read_text(encoding="utf-8"))
+            seen: dict[str, str] = {}
+            for place in raw.places:
+                place_id = build_data.stable_place_id(
+                    place,
+                    source_type=raw.configured_source_type,
+                )
+                previous_name = seen.get(place_id)
+                if previous_name is not None:
+                    duplicates.append(
+                        f"{raw_path.stem}:{place_id} [{previous_name}] [{place.name}]"
+                    )
+                else:
+                    seen[place_id] = place.name or "Saved place"
+
+        self.assertEqual(duplicates, [])
 
     def test_normalize_guide_expands_location_aliases_in_list_tags(self) -> None:
         raw = RawSavedList(
@@ -14095,6 +14372,69 @@ class BuildDataTests(unittest.TestCase):
             "Phố cổ Hà Nội",
         )
 
+    def test_refine_semantic_neighborhood_keeps_more_specific_semantic_label(self) -> None:
+        self.assertEqual(
+            build_data.refine_semantic_neighborhood_with_address_localities(
+                "40 Myangat",
+                ["myangat"],
+            ),
+            "40 Myangat",
+        )
+
+    def test_normalize_guide_semantic_classification_suppresses_address_fragment_locality(self) -> None:
+        raw = RawSavedList(
+            title="Ulaanbaatar, Mongolia",
+            places=[
+                RawPlace(
+                    name="Agnista Restaurant",
+                    address="₮10,000–50,000 per person",
+                    maps_url="https://maps.google.com/?cid=111",
+                    cid="111",
+                ),
+            ],
+        )
+        place_id = build_data.stable_place_id(raw.places[0])
+        enrichment_cache = {
+            place_id: EnrichmentCacheEntry(
+                fetched_at="2026-08-16T00:00:00+00:00",
+                query="Agnista Restaurant, Ulaanbaatar, Mongolia",
+                matched=True,
+                source="google_maps_page",
+                place=EnrichmentPlace(
+                    display_name="Agnista Restaurant",
+                    formatted_address="₮10,000–50,000 per person",
+                    primary_type_display_name="Vegan restaurant",
+                    semantic_tags=["vegan", "plant-based"],
+                    semantic_types=["vegan-restaurant"],
+                    semantic_vibe_tags=["cozy"],
+                    semantic_source="llm",
+                ),
+            ),
+        }
+
+        with TemporaryDirectory() as tmpdir:
+            tmpdir_path = Path(tmpdir)
+            list_overrides_dir = tmpdir_path / "lists"
+            place_overrides_dir = tmpdir_path / "places"
+            list_overrides_dir.mkdir()
+            place_overrides_dir.mkdir()
+
+            with (
+                patch.object(build_data, "LIST_OVERRIDES_DIR", list_overrides_dir),
+                patch.object(build_data, "PLACE_OVERRIDES_DIR", place_overrides_dir),
+                patch.object(build_data, "google_maps_place_semantic_llm_enabled", return_value=True),
+            ):
+                guide = build_data.normalize_guide(
+                    "ulaanbaatar-mongolia",
+                    raw,
+                    enrichment_cache=enrichment_cache,
+                )
+
+        normalized = guide.places[0]
+        self.assertIsNone(normalized.neighborhood)
+        self.assertNotIn("per-person", normalized.tags)
+        self.assertNotIn("per-person", normalized.visible_tags)
+
     def test_apply_semantic_enrichment_display_cases_llm_neighborhood_slug(self) -> None:
         enrichment = EnrichmentPlace(
             display_name="Wine Bar",
@@ -15846,6 +16186,10 @@ class BuildDataTests(unittest.TestCase):
         self.assertIn("Quiet upstairs seating", entry["review_evidence"][1])
         self.assertNotIn("Excluded reviewer", json.dumps(index))
         self.assertNotIn("private.example", json.dumps(index))
+        with TemporaryDirectory() as temporary, patch.object(build_data, "PUBLIC_DATA_DIR", Path(temporary)):
+            build_data.write_chat_indexes(index)
+            chat = json.loads((Path(temporary) / "chat/tokyo-japan.json").read_text())
+            self.assertEqual(chat["entries"][0]["review_evidence"], entry["review_evidence"])
         many = EnrichmentPlace(
             review_topics=[{"label": str(i)} for i in range(20)],
             reviews=[{"text": str(i + 30)} for i in range(10)],
@@ -15881,6 +16225,17 @@ class BuildDataTests(unittest.TestCase):
         self.assertIn("quiet", index["entries"][0]["vibe_tags"])
         self.assertIn("laptop-friendly", index["entries"][0]["vibe_tags"])
         self.assertIn("tokyo", index["entries"][0]["search_text"])
+
+    def test_chat_indexes_split_the_catalog_from_each_guides_places(self) -> None:
+        index = {"guides": [{"slug": "tokyo-japan"}, {"slug": "taipei-taiwan"}],
+                 "entries": [{"guide_slug": "tokyo-japan", "name": "Tokyo Cafe"},
+                             {"guide_slug": "taipei-taiwan", "name": "Taipei Dumplings"}]}
+        with TemporaryDirectory() as temporary, patch.object(build_data, "PUBLIC_DATA_DIR", Path(temporary)):
+            build_data.write_chat_indexes(index)
+            catalog = json.loads((Path(temporary) / "chat/guides.json").read_text())
+            tokyo = json.loads((Path(temporary) / "chat/tokyo-japan.json").read_text())
+            self.assertNotIn("entries", catalog)
+            self.assertEqual(tokyo["entries"], [index["entries"][0]])
 
     def test_normalize_guide_uses_stable_generated_at_from_inputs(self) -> None:
         raw = RawSavedList(
@@ -15925,6 +16280,8 @@ class BuildDataTests(unittest.TestCase):
                     maps_url="https://maps.example/rated",
                     rating=4.8,
                     user_rating_count=321,
+                    main_photo_path="/place-photos/coffee.webp",
+                    price_range="¥¥",
                     status="active",
                 ),
                 NormalizedPlace(
@@ -15943,6 +16300,9 @@ class BuildDataTests(unittest.TestCase):
 
         self.assertEqual(entries["rated"]["rating"], 4.8)
         self.assertEqual(entries["rated"]["user_rating_count"], 321)
+        self.assertEqual(entries["rated"]["photo_url"], "/place-photos/coffee.webp")
+        self.assertEqual(entries["rated"]["price_range"], "¥¥")
+        self.assertIsNone(entries["unrated"]["photo_url"])
         self.assertIn("rating", entries["unrated"])
         self.assertIsNone(entries["unrated"]["rating"])
         self.assertIn("user_rating_count", entries["unrated"])
@@ -17749,6 +18109,11 @@ class BuildDataTests(unittest.TestCase):
                 formatted_address="Tokyo, Japan",
                 google_maps_uri=place.maps_url,
                 limited_view=True,
+                address_parts=["Tokyo", "Japan"],
+                phone="+81 3-1234-5678",
+                price_range="¥10,000–15,000",
+                admission_price="¥1,000",
+                room_price="¥20,000",
                 description="A polished kaiseki counter with seasonal menus.",
                 about_sections=[{"title": "Amenities", "items": [{"label": "Restroom"}]}],
             ),
@@ -17764,6 +18129,8 @@ class BuildDataTests(unittest.TestCase):
                 display_name="Jimbocho Den",
                 formatted_address="Tokyo, Japan",
                 google_maps_uri="https://maps.google.com/?cid=1",
+                address_country_name="Japan",
+                address_country_code="JP",
                 primary_type="restaurant",
                 primary_type_display_name="Restaurant",
             ),
@@ -17806,11 +18173,18 @@ class BuildDataTests(unittest.TestCase):
             entry.place.about_sections,
             [{"title": "Amenities", "items": [{"label": "Restroom"}]}],
         )
+        self.assertEqual(entry.place.address_parts, ["Tokyo", "Japan"])
+        self.assertEqual(entry.place.phone, "+81 3-1234-5678")
+        self.assertEqual(entry.place.price_range, "¥10,000–15,000")
+        self.assertEqual(entry.place.admission_price, "¥1,000")
+        self.assertEqual(entry.place.room_price, "¥20,000")
+        self.assertEqual(entry.place.address_country_name, "Japan")
+        self.assertEqual(entry.place.address_country_code, "JP")
         self.assertTrue(entry.place.limited_view)
         self.assertEqual(entry.place.google_maps_uri, "https://maps.google.com/?cid=1")
         self.assertEqual(entry.merged_sources, ["google_maps_page", "google_places_api"])
 
-    def test_fetch_places_enrichment_falls_back_to_api_when_page_lacks_address_components(self) -> None:
+    def test_fetch_places_enrichment_keeps_a_rich_page_result_without_address_components(self) -> None:
         place = RawPlace(
             name="Sister Midnight",
             address="4 Rue Viollet-le-Duc, 75009 Paris, France",
@@ -17833,26 +18207,9 @@ class BuildDataTests(unittest.TestCase):
                 primary_type_display_name="Cocktail bar",
             ),
         )
-        api_entry = EnrichmentCacheEntry(
-            fetched_at="2026-04-16T00:00:00+00:00",
-            refresh_after="2026-04-23T00:00:00+00:00",
-            source="google_places_api",
-            query="Sister Midnight, 4 Rue Viollet-le-Duc, 75009 Paris, France",
-            matched=True,
-            score=88,
-            place=EnrichmentPlace(
-                display_name="Sister Midnight",
-                formatted_address="4 Rue Viollet-le-Duc, 75009 Paris, France",
-                google_maps_uri="https://maps.google.com/?cid=1",
-                address_country_name="France",
-                address_country_code="FR",
-                address_locality="Paris",
-            ),
-        )
-
         with (
             patch.object(build_data, "fetch_place_page_enrichment", return_value=page_entry) as page_fetch,
-            patch.object(build_data, "fetch_places_api_enrichment", return_value=api_entry) as api_fetch,
+            patch.object(build_data, "fetch_places_api_enrichment") as api_fetch,
         ):
             entry = build_data.fetch_places_enrichment(
                 place,
@@ -17861,10 +18218,8 @@ class BuildDataTests(unittest.TestCase):
             )
 
         page_fetch.assert_called_once()
-        api_fetch.assert_called_once()
-        assert entry.place is not None
-        self.assertEqual(entry.place.address_country_name, "France")
-        self.assertEqual(entry.place.address_country_code, "FR")
+        api_fetch.assert_not_called()
+        self.assertIs(entry, page_entry)
 
     def test_fetch_places_enrichment_keeps_page_result_when_api_fallback_fails(self) -> None:
         place = RawPlace(
@@ -19021,6 +19376,25 @@ class BuildDataTests(unittest.TestCase):
         )
 
         self.assertEqual(
+            build_data.place_input_signature(first_place),
+            build_data.place_input_signature(second_place),
+        )
+
+    def test_place_input_signature_prefers_google_id_over_bad_shared_cid(self) -> None:
+        first_place = RawPlace(
+            name="Hotel Lobby Cafe",
+            maps_url="https://maps.google.com/?cid=111",
+            cid="111",
+            google_id="/g/11lobby",
+        )
+        second_place = RawPlace(
+            name="Hotel Rooftop Bar",
+            maps_url="https://maps.google.com/?cid=111",
+            cid="111",
+            google_id="/g/11rooftop",
+        )
+
+        self.assertNotEqual(
             build_data.place_input_signature(first_place),
             build_data.place_input_signature(second_place),
         )
@@ -20378,9 +20752,37 @@ class BuildDataTests(unittest.TestCase):
             raw,
         )
 
-        self.assertEqual(pruned_count, 1)
-        self.assertEqual(list(pruned_payload), ["cid:14063537238082844765"])
-        self.assertIs(pruned_payload["cid:14063537238082844765"], current_entry)
+        self.assertEqual(pruned_count, 2)
+        self.assertEqual(list(pruned_payload), ["gid:g-11c59xr4t8"])
+        self.assertIs(pruned_payload["gid:g-11c59xr4t8"], current_entry)
+
+    def test_prune_places_cache_to_raw_places_migrates_unique_legacy_cid_to_google_id(self) -> None:
+        raw = RawSavedList(
+            configured_source_type="google_list_url",
+            title="Tokyo",
+            places=[
+                RawPlace(
+                    name="Hotel Lobby Cafe",
+                    maps_url="https://maps.google.com/?cid=111",
+                    cid="111",
+                    google_id="/g/11lobby",
+                )
+            ],
+        )
+        legacy_entry = EnrichmentCacheEntry(
+            fetched_at="2026-04-20T00:00:00+00:00",
+            query="Hotel Lobby Cafe",
+            matched=True,
+        )
+
+        pruned_payload, changed_count = build_data.prune_places_cache_to_raw_places(
+            {"cid:111": legacy_entry},
+            raw,
+        )
+
+        self.assertEqual(changed_count, 1)
+        self.assertEqual(list(pruned_payload), ["gid:g-11lobby"])
+        self.assertIs(pruned_payload["gid:g-11lobby"], legacy_entry)
 
     def test_prune_places_cache_to_raw_places_migrates_cid_alias_rows(self) -> None:
         raw = RawSavedList(
@@ -20406,7 +20808,7 @@ class BuildDataTests(unittest.TestCase):
             matched=True,
         )
 
-        pruned_payload, pruned_count = build_data.prune_places_cache_to_raw_places(
+        pruned_payload, changed_count = build_data.prune_places_cache_to_raw_places(
             {
                 "cid:6924437575605096209": alias_entry,
                 "cid:123": stale_entry,
@@ -20414,9 +20816,42 @@ class BuildDataTests(unittest.TestCase):
             raw,
         )
 
-        self.assertEqual(pruned_count, 2)
+        self.assertEqual(changed_count, 2)
         self.assertEqual(list(pruned_payload), ["cid:9055794338847426964"])
         self.assertIs(pruned_payload["cid:9055794338847426964"], alias_entry)
+
+    def test_prune_places_cache_to_raw_places_does_not_migrate_ambiguous_legacy_cid(self) -> None:
+        raw = RawSavedList(
+            configured_source_type="google_list_url",
+            title="Tokyo",
+            places=[
+                RawPlace(
+                    name="Hotel Lobby Cafe",
+                    maps_url="https://maps.google.com/?cid=111",
+                    cid="111",
+                    google_id="/g/11lobby",
+                ),
+                RawPlace(
+                    name="Hotel Rooftop Bar",
+                    maps_url="https://maps.google.com/?cid=111",
+                    cid="111",
+                    google_id="/g/11rooftop",
+                ),
+            ],
+        )
+        shared_entry = EnrichmentCacheEntry(
+            fetched_at="2026-04-20T00:00:00+00:00",
+            query="Shared CID",
+            matched=True,
+        )
+
+        pruned_payload, changed_count = build_data.prune_places_cache_to_raw_places(
+            {"cid:111": shared_entry},
+            raw,
+        )
+
+        self.assertEqual(changed_count, 1)
+        self.assertEqual(pruned_payload, {})
 
     def test_prune_places_cache_to_raw_places_drops_all_rows_for_empty_guide(self) -> None:
         raw = RawSavedList(title="Empty", places=[])

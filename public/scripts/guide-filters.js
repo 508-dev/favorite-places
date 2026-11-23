@@ -1,3 +1,4 @@
+import { APPLY_FILTERS_ACTION, createFilterAction } from "./chat-actions.js";
 import { revealPlaceCard } from "./place-navigation.js";
 import { loadSearchIndex, searchPlaces } from "./place-search.js";
 import { buildSearchConversation, buildSearchSuggestions } from "./search-conversation.js";
@@ -310,6 +311,44 @@ export function cardMatchesFilters(
     matchesRating &&
     matchesReviewCount
   );
+}
+
+// Convert only known, unambiguous criteria. Keep residual search and precise scopes editable.
+export function resolveChatFilterControls(
+  action,
+  { cards, types = [], areas = [], parsedQuery } = {},
+) {
+  const query = action.filters.query;
+  const normalized = getTagComparisonValue(query);
+  const singular = (value) => value.replace(/s$/, "");
+  const exactTypes = types.filter((type) => singular(type) === singular(normalized));
+  const category =
+    parsedQuery?.categories?.length === 1 &&
+    !parsedQuery.unmatchedTerms.length &&
+    !parsedQuery.vibes.length
+      ? parsedQuery.categories[0]
+      : "";
+  const type = exactTypes.length === 1 ? exactTypes[0] : types.includes(category) ? category : "";
+  const scopeIds = action.scope ? new Set(action.scope.place_ids) : null;
+  const area =
+    action.scope &&
+    areas.find((option) => {
+      if (getTagComparisonValue(option.label) !== getTagComparisonValue(action.scope.label))
+        return false;
+      const matches = cards.filter((card) =>
+        getCardAreaComparisonValues(card).includes(option.value),
+      );
+      return (
+        matches.length === scopeIds.size &&
+        matches.every((card) => scopeIds.has(card.dataset.placeId))
+      );
+    });
+  return {
+    query: type ? "" : query,
+    type,
+    area: area?.value || "",
+    scope: area ? null : action.scope || null,
+  };
 }
 
 export function countMatchingCards(
@@ -708,7 +747,19 @@ if (root) {
   let hasHandledLocationRequest = false;
   let directLocationRequestInFlight = false;
   let directLocationFallbackTimer = null;
-  const highlightedPlaceId = initialParams.get("place") || "";
+  let highlightedPlaceId = initialParams.get("place") || "";
+  let chatFilterUndo = null;
+  let chatAreaPlaceIds = null;
+  let chatAreaLabel = "";
+  const chatFilterNotice = document.createElement("div");
+  chatFilterNotice.className = "guide-chat-filters";
+  chatFilterNotice.hidden = true;
+  const chatFilterLabel = document.createElement("span");
+  const undoChatFilters = document.createElement("button");
+  undoChatFilters.type = "button";
+  undoChatFilters.textContent = "Undo";
+  chatFilterNotice.append(chatFilterLabel, undoChatFilters);
+  root.querySelector("[data-guide-controls]")?.prepend(chatFilterNotice);
   let autocompleteTags = [];
   let highlightedAutocompleteIndex = -1;
 
@@ -887,29 +938,52 @@ if (root) {
   };
 
   const updateSelectedTags = () => {
-    if (!selectedTagsRow) {
-      return;
+    if (!selectedTagsRow) return;
+    const chips = [];
+    const add = (key, label, value = "") => chips.push({ key, label, value });
+    const query = searchInput?.value.trim() || "";
+    if (query) add("query", `Search: ${query}`);
+    if (activeArea)
+      add(
+        "area",
+        `Area: ${areaButtons.find((button) => button.dataset.area === activeArea)?.dataset.areaLabel || activeArea}`,
+      );
+    if (chatAreaPlaceIds) add("chat-area", `Near: ${chatAreaLabel}`);
+    if (activeType)
+      add(
+        "type",
+        `Type: ${typeButtons.find((button) => button.dataset.type === activeType)?.querySelector("span")?.textContent || activeType}`,
+      );
+    for (const selection of activeBudgetSelections) {
+      const [kind, tier] = selection.split(":");
+      add("budget", `${budgetKindLabels[kind] || "Price"}: ${tierLabel(tier)}`, selection);
     }
-
-    if (selectedTags.length === 0) {
-      selectedTagsRow.hidden = true;
-      selectedTagsRow.innerHTML = "";
-      return;
-    }
-
-    selectedTagsRow.hidden = false;
-    selectedTagsRow.innerHTML = selectedTags
-      .map(
-        (tag) => `
-          <span class="selected-tag-chip">
-            <span class="selected-tag-chip-label">#${escapeHtml(tag)}</span>
-            <button class="selected-tag-chip-remove" type="button" data-remove-tag="${escapeHtml(tag)}" aria-label="Remove #${escapeHtml(tag)}">
-              ×
-            </button>
-          </span>
-        `,
-      )
-      .join("");
+    if (activeMinRating) add("rating", `${activeMinRating}+ stars`);
+    if (activeMinReviews) add("reviews", `${activeMinReviews}+ reviews`);
+    if (mapFramePlaceIds) add("map", "Map area");
+    for (const tag of selectedTags) add("tag", `#${tag}`, tag);
+    selectedTagsRow.hidden = !chips.length;
+    selectedTagsRow.setAttribute("role", "group");
+    selectedTagsRow.setAttribute("aria-label", "Active filters");
+    selectedTagsRow.replaceChildren(
+      ...chips.map(({ key, label, value }) => {
+        const chip = document.createElement("span");
+        chip.className = "selected-tag-chip";
+        const text = document.createElement("span");
+        text.className = "selected-tag-chip-label";
+        text.textContent = label;
+        const remove = document.createElement("button");
+        remove.className = "selected-tag-chip-remove";
+        remove.type = "button";
+        remove.dataset.removeFilter = key;
+        remove.dataset.filterValue = value;
+        if (key === "tag") remove.dataset.removeTag = value;
+        remove.setAttribute("aria-label", `Remove ${label}`);
+        remove.textContent = "×";
+        chip.append(text, remove);
+        return chip;
+      }),
+    );
   };
 
   const closeAutocomplete = () => {
@@ -1191,6 +1265,17 @@ if (root) {
   };
 
   const update = (source = "list-filter") => {
+    if (chatFilterUndo && !["chat-filters", "chat-filters-undo", "search-index"].includes(source)) {
+      if (chatAreaPlaceIds) chatFilterLabel.textContent = "Filters applied from chat";
+      else {
+        chatFilterUndo = null;
+        chatFilterNotice.hidden = true;
+      }
+    }
+    updateSelectedTags();
+    const effectivePlaceIds = chatAreaPlaceIds
+      ? new Set([...chatAreaPlaceIds].filter((id) => !mapFramePlaceIds || mapFramePlaceIds.has(id)))
+      : mapFramePlaceIds;
     const query = searchInput ? getSanitizedQuery(searchInput.value) : "";
     const normalizedQuery = query.toLowerCase();
     const sort = sortSelect?.value || "curated";
@@ -1222,7 +1307,7 @@ if (root) {
         activeMinReviews,
         activeTypeValue: activeType,
         activeTypeSeedValues: activeTypeSeeds,
-        mapFramePlaceIds,
+        mapFramePlaceIds: effectivePlaceIds,
         normalizedQuery,
         searchResultIds,
         selectedTagValues: selectedTags,
@@ -1239,6 +1324,7 @@ if (root) {
       activeBudgetSelections,
       activeMinRating,
       activeMinReviews,
+      // Choosing an area replaces a chat scope; count those choices without it.
       mapFramePlaceIds,
       normalizedQuery,
       searchResultIds,
@@ -1249,7 +1335,7 @@ if (root) {
       activeBudgetSelections,
       activeMinRating,
       activeMinReviews,
-      mapFramePlaceIds,
+      mapFramePlaceIds: effectivePlaceIds,
       normalizedQuery,
       searchResultIds,
       selectedTagValues: selectedTags,
@@ -1261,7 +1347,7 @@ if (root) {
       activeMinReviews,
       activeTypeValue: activeType,
       activeTypeSeedValues: activeTypeSeeds,
-      mapFramePlaceIds,
+      mapFramePlaceIds: effectivePlaceIds,
       normalizedQuery,
       searchResultIds,
       selectedTagValues: selectedTags,
@@ -1272,7 +1358,7 @@ if (root) {
       activeTypeSeedValues: activeTypeSeeds,
       activeMinRating,
       activeMinReviews,
-      mapFramePlaceIds,
+      mapFramePlaceIds: effectivePlaceIds,
       normalizedQuery,
       searchResultIds,
       selectedTagValues: selectedTags,
@@ -1289,7 +1375,7 @@ if (root) {
       activeBudgetSelections,
       activeMinRating,
       activeMinReviews,
-      mapFramePlaceIds,
+      mapFramePlaceIds: effectivePlaceIds,
       normalizedQuery,
       selectedTagValues: selectedTags,
       totalCardCount: cards.length,
@@ -1376,7 +1462,7 @@ if (root) {
       activeMinReviews,
       activeTypeValue: activeType,
       activeTypeSeedValues: activeTypeSeeds,
-      mapFramePlaceIds,
+      mapFramePlaceIds: effectivePlaceIds,
       normalizedQuery,
       searchResultIds,
       selectedTagValues: selectedTags,
@@ -1401,7 +1487,7 @@ if (root) {
       activeMinRating,
       activeTypeValue: activeType,
       activeTypeSeedValues: activeTypeSeeds,
-      mapFramePlaceIds,
+      mapFramePlaceIds: effectivePlaceIds,
       normalizedQuery,
       searchResultIds,
       selectedTagValues: selectedTags,
@@ -1526,6 +1612,11 @@ if (root) {
     } else {
       urlParams.delete("q");
     }
+    if (activeType) {
+      urlParams.set("type", activeType);
+    } else {
+      urlParams.delete("type");
+    }
     urlParams.delete("tag");
     selectedTags.forEach((tag) => urlParams.append("tag", tag));
     const nextSearch = urlParams.toString();
@@ -1621,6 +1712,8 @@ if (root) {
     button.addEventListener("click", () => {
       const nextArea = normalizeTag(button.dataset.area || "");
       activeArea = activeArea === nextArea ? "" : nextArea;
+      chatAreaPlaceIds = null;
+      chatAreaLabel = "";
       update();
     });
   });
@@ -1726,13 +1819,41 @@ if (root) {
       return;
     }
 
-    const button = event.target.closest("[data-remove-tag]");
-    if (!(button instanceof HTMLElement)) {
-      return;
+    const button = event.target.closest("[data-remove-filter]");
+    if (!(button instanceof HTMLElement)) return;
+    switch (button.dataset.removeFilter) {
+      case "query":
+        if (searchInput) searchInput.value = "";
+        break;
+      case "area":
+        activeArea = "";
+        break;
+      case "chat-area":
+        chatAreaPlaceIds = null;
+        chatAreaLabel = "";
+        break;
+      case "type":
+        activeType = "";
+        break;
+      case "budget":
+        activeBudgetSelections = activeBudgetSelections.filter(
+          (value) => value !== button.dataset.filterValue,
+        );
+        break;
+      case "rating":
+        activeMinRating = 0;
+        break;
+      case "reviews":
+        activeMinReviews = 0;
+        break;
+      case "map":
+        clearMapFrameFilter();
+        break;
+      case "tag":
+        removeTag(button.dataset.filterValue || "");
+        break;
     }
-
-    const tag = button.dataset.removeTag || "";
-    removeTag(tag);
+    updateSuggestions();
     update();
     searchInput?.focus();
   });
@@ -1816,6 +1937,11 @@ if (root) {
       searchInput.value = initialQuery;
     }
 
+    const initialType = initialParams.get("type");
+    if (initialType && typeButtons.some((button) => button.dataset.type === initialType)) {
+      activeType = initialType;
+    }
+
     getInitialSelectedTags({
       allTags,
       params: initialParams,
@@ -1833,17 +1959,155 @@ if (root) {
     revealPlaceCard(target);
   };
 
+  root.addEventListener("guide:show-place", (event) => {
+    const target = cards.find((card) => card.dataset.placeId === event.detail?.placeId);
+    if (!target) return;
+    highlightedPlaceId = event.detail.placeId;
+    if (target.hidden) {
+      if (chatAreaPlaceIds && !chatAreaPlaceIds.has(target.dataset.placeId))
+        chatAreaPlaceIds = null;
+      activeArea = "";
+      activeType = "";
+      activeBudgetSelections = [];
+      activeMinRating = 0;
+      activeMinReviews = 0;
+      selectedTags = [];
+      if (searchInput) searchInput.value = "";
+      updateSelectedTags();
+      updateSuggestions();
+      if (mapFramePlaceIds) clearMapFrameFilter();
+    }
+    update("chat-place");
+    requestAnimationFrame(scrollToHighlightedPlace);
+  });
+
+  root.addEventListener("guide:apply-filters", (event) => {
+    const proposed = event.detail?.action;
+    if (
+      proposed?.id !== APPLY_FILTERS_ACTION ||
+      proposed.version !== 1 ||
+      proposed.guide_slug !== guideSlug
+    )
+      return;
+    const action = createFilterAction(proposed.filters, {
+      guideSlug,
+      tags: allTags,
+      scope: proposed.scope,
+      placeIds: cards.map((card) => card.dataset.placeId),
+    });
+    if (!action) return;
+    const { tags, min_rating: rating } = action.filters;
+    const controls = resolveChatFilterControls(action, {
+      cards,
+      types: typeButtons.map((button) => normalizeTag(button.dataset.type)).filter(Boolean),
+      areas: areaButtons
+        .map((button) => ({
+          value: normalizeTag(button.dataset.area),
+          label: button.dataset.areaLabel || "",
+        }))
+        .filter((area) => area.value),
+      parsedQuery: searchIndex
+        ? searchPlaces(action.filters.query, { index: searchIndex, scope: "guide", guideSlug })
+            .parsed
+        : null,
+    });
+    const { query } = controls;
+    const searchResultIds = searchIndex
+      ? new Set(
+          searchPlaces(query, { index: searchIndex, scope: "guide", guideSlug }).results.map(
+            ({ entry }) => entry.id,
+          ),
+        )
+      : null;
+    const count = cards.filter((card) =>
+      cardMatchesFilters(card, {
+        normalizedQuery: query.toLowerCase(),
+        searchResultIds,
+        selectedTagValues: tags,
+        activeMinRating: rating,
+        activeAreaValue: controls.area,
+        activeTypeValue: controls.type,
+        activeTypeSeedValues: typeSeeds[controls.type] || [],
+        mapFramePlaceIds: controls.scope ? new Set(controls.scope.place_ids) : null,
+      }),
+    ).length;
+    if (!count) {
+      root.dispatchEvent(
+        new CustomEvent("guide:filters-result", { detail: { applied: false, count: 0 } }),
+      );
+      return;
+    }
+    chatFilterUndo = {
+      query: searchInput?.value || "",
+      area: activeArea,
+      type: activeType,
+      budgets: [...activeBudgetSelections],
+      rating: activeMinRating,
+      reviews: activeMinReviews,
+      tags: [...selectedTags],
+      mapFrame: mapFramePlaceIds,
+      highlightedPlaceId,
+      sort: sortSelect?.value || "curated",
+      chatAreaPlaceIds,
+      chatAreaLabel,
+    };
+    highlightedPlaceId = "";
+    activeArea = controls.area;
+    activeType = controls.type;
+    activeBudgetSelections = [];
+    activeMinRating = rating;
+    activeMinReviews = 0;
+    selectedTags = [...tags];
+    mapFramePlaceIds = null;
+    chatAreaPlaceIds = controls.scope ? new Set(controls.scope.place_ids) : null;
+    chatAreaLabel = controls.scope?.label || "";
+    if (searchInput) searchInput.value = query;
+    if (sortSelect) sortSelect.value = "rating";
+    updateSelectedTags();
+    updateSuggestions();
+    update("chat-filters");
+    chatFilterLabel.textContent = "Filters applied from chat";
+    chatFilterNotice.hidden = false;
+    root.dispatchEvent(
+      new CustomEvent("guide:filters-result", { detail: { applied: true, count } }),
+    );
+    chatFilterNotice.scrollIntoView({ behavior: "smooth", block: "center" });
+  });
+
+  undoChatFilters.addEventListener("click", () => {
+    if (!chatFilterUndo) return;
+    const previous = chatFilterUndo;
+    if (searchInput) searchInput.value = previous.query;
+    activeArea = previous.area;
+    activeType = previous.type;
+    activeBudgetSelections = previous.budgets;
+    activeMinRating = previous.rating;
+    activeMinReviews = previous.reviews;
+    selectedTags = previous.tags;
+    mapFramePlaceIds = previous.mapFrame;
+    highlightedPlaceId = previous.highlightedPlaceId;
+    if (sortSelect) sortSelect.value = previous.sort;
+    chatAreaPlaceIds = previous.chatAreaPlaceIds;
+    chatAreaLabel = previous.chatAreaLabel;
+    chatFilterUndo = null;
+    chatFilterNotice.hidden = true;
+    updateSelectedTags();
+    updateSuggestions();
+    update("chat-filters-undo");
+  });
+
   updateSelectedTags();
   updateSuggestions();
   applyDeepLink();
   consumeCompletedTags();
   updateAutocomplete();
   update();
+  if (highlightedPlaceId) requestAnimationFrame(scrollToHighlightedPlace);
 
   loadSearchIndex()
     .then((index) => {
       searchIndex = index;
-      update();
+      update("search-index");
       requestAnimationFrame(scrollToHighlightedPlace);
     })
     .catch(() => {

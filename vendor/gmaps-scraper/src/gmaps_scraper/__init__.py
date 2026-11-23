@@ -1,5 +1,7 @@
 """Google Maps scraping helpers."""
 
+import logging
+
 from gmaps_scraper.display_fields import (
     PlaceDisplayFieldRepairer,
     repair_place_display_fields,
@@ -20,10 +22,13 @@ from gmaps_scraper.models import (
     PlaceDetails,
     PlaceExtractionDiagnostics,
     PlaceLLMRepairRequest,
+    PlaceOpeningHours,
     PlaceReview,
     PlaceScrapeResult,
     ReviewTopic,
     SavedList,
+    SavedListExtractionDiagnostics,
+    SavedListScrapeResult,
 )
 from gmaps_scraper.parser import ParseError, parse_saved_list_artifacts
 from gmaps_scraper.place_scraper import (
@@ -39,6 +44,7 @@ from gmaps_scraper.scraper import (
     HttpSessionConfig,
     ScrapeError,
     scrape_saved_list,
+    scrape_saved_lists,
 )
 from gmaps_scraper.selector_recipes import (
     default_place_selector_recipe,
@@ -54,6 +60,8 @@ from gmaps_scraper.url_tools import (
     has_placelist_marker,
     localize_maps_url,
 )
+
+logging.getLogger(__name__).addHandler(logging.NullHandler())
 
 __all__ = [
     "PLACELIST_URL_MARKER",
@@ -72,10 +80,13 @@ __all__ = [
     "PlaceLLMRepairRequest",
     "PlaceLLMRepairer",
     "PlaceLLMTask",
+    "PlaceOpeningHours",
     "PlaceReview",
     "PlaceScrapeResult",
     "ReviewTopic",
     "SavedList",
+    "SavedListExtractionDiagnostics",
+    "SavedListScrapeResult",
     "ScrapeError",
     "cached_place_repairer",
     "build_maps_search_url",
@@ -96,5 +107,6 @@ __all__ = [
     "scrape_place",
     "scrape_places",
     "scrape_saved_list",
+    "scrape_saved_lists",
     "write_default_place_selector_recipe",
 ]

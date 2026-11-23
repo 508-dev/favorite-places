@@ -3,17 +3,20 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 import statistics
 import time
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from decimal import Decimal, InvalidOperation
 from hashlib import sha256
 from importlib import resources
 from pathlib import Path
 from typing import Any, Literal, cast
 from urllib.parse import parse_qs, unquote, urlparse
 
+from gmaps_scraper._logging import url_log_fields
 from gmaps_scraper.models import (
     PLACE_LLM_DISPLAY_TRANSLATION_FIELDS,
     PLACE_LLM_DOM_REPAIR_FIELDS,
@@ -24,6 +27,7 @@ from gmaps_scraper.models import (
     PlaceDetails,
     PlaceExtractionDiagnostics,
     PlaceLLMRepairRequest,
+    PlaceOpeningHours,
     PlaceReservationLink,
     PlaceReview,
     PlaceScrapeResult,
@@ -34,8 +38,11 @@ from gmaps_scraper.scraper import (
     BrowserSessionConfig,
     HttpSessionConfig,
     ScrapeError,
+    _browser_session_for_parallel_worker,
     _extract_preloaded_fetch_url,
+    _get_with_retry,
     _handle_google_consent,
+    _http_session_for_parallel_worker,
     _import_curl_requests,
     _launch_browser_context,
     _load_http_cookie_jar,
@@ -47,9 +54,31 @@ from gmaps_scraper.scraper import (
 from gmaps_scraper.translation_memory import TranslationMemory, needs_display_en
 from gmaps_scraper.url_tools import extract_list_id
 
+_logger = logging.getLogger(__name__)
+
+
 _TITLE_SELECTORS = ("h1.DUwDvf", "h1.lfPIob", "div[role='main'] h1")
 _TITLE_SELECTOR = ", ".join(_TITLE_SELECTORS)
-_PLACE_LLM_PROMPT_VERSION = "gmaps-place-repair-v1"
+# Domain suffixes published at https://www.google.com/supported_domains.
+_GOOGLE_DOMAIN_SUFFIXES = frozenset(
+    """
+    ad ae al am as at az ba be bf bg bi bj bs bt by ca cat cd cf cg ch ci cl cm cn com cv
+    cz de dj dk dm dz ee es fi fm fr ga ge gg gl gm gr gy hn hr ht hu ie im iq is it je jo ki
+    kg kz la li lk lt lu lv md me mg mk ml mn mu mv mw ne nl no nr nu pl pn ps pt ro rs ru rw
+    sc se sh si sk sm sn so sr st td tg tl tm tn to tt vu ws
+    co.ao co.bw co.ck co.cr co.id co.il co.in co.jp co.ke co.kr co.ls co.ma co.mz co.nz
+    co.th co.tz co.ug co.uk co.uz co.ve co.vi co.za co.zm co.zw
+    com.af com.ag com.ar com.au com.bd com.bh com.bn com.bo com.br com.bz com.co com.cu
+    com.cy com.do com.ec com.eg com.et com.fj com.gh com.gi com.gt com.hk com.jm com.kh
+    com.kw com.lb com.ly com.mm com.mt com.mx com.my com.na com.ng com.ni com.np com.om
+    com.pa com.pe com.pg com.ph com.pk com.pr com.py com.qa com.sa com.sb com.sg com.sl
+    com.sv com.tj com.tr com.tw com.ua com.uy com.vc com.vn
+    """.split()
+)
+_CANONICAL_COORDINATE_PATTERN = re.compile(
+    r"!3d(-?\d+(?:\.\d+)?)!4d(-?\d+(?:\.\d+)?)"
+)
+_PLACE_LLM_PROMPT_VERSION = "gmaps-place-repair-v2"
 _TRANSLATION_MEMORY = TranslationMemory.default()
 type PlaceLLMRepairer = Callable[[PlaceLLMRepairRequest], Mapping[str, object] | None]
 type PlaceLLMTask = Literal["dom_repair", "display_translation"]
@@ -1145,6 +1174,7 @@ def scrape_place(
     llm_tasks: Sequence[PlaceLLMTask] = _DEFAULT_LLM_TASKS,
     collect_reviews: bool = True,
     collect_about: bool = True,
+    skip_preview_if_dom_complete: bool = False,
     screenshot_path: Path | None = None,
     overview_screenshot_path: Path | None = None,
 ) -> PlaceDetails:
@@ -1164,6 +1194,7 @@ def scrape_place(
         http_session=http_session,
         collect_reviews=collect_reviews,
         collect_about=collect_about,
+        skip_preview_if_dom_complete=skip_preview_if_dom_complete,
         screenshot_path=screenshot_path,
         overview_screenshot_path=overview_screenshot_path,
     )
@@ -1189,6 +1220,7 @@ def scrape_places(
     llm_tasks: Sequence[PlaceLLMTask] = _DEFAULT_LLM_TASKS,
     collect_reviews: bool = True,
     collect_about: bool = True,
+    skip_preview_if_dom_complete: bool = False,
     max_concurrency: int = 1,
     max_retries: int = 1,
     retry_backoff_ms: int = 2_000,
@@ -1222,6 +1254,7 @@ def scrape_places(
             llm_tasks=llm_tasks,
             collect_reviews=collect_reviews,
             collect_about=collect_about,
+            skip_preview_if_dom_complete=skip_preview_if_dom_complete,
             max_retries=max_retries,
             retry_backoff_ms=retry_backoff_ms,
             stagger_ms=stagger_ms,
@@ -1241,6 +1274,7 @@ def scrape_places(
         llm_tasks=llm_tasks,
         collect_reviews=collect_reviews,
         collect_about=collect_about,
+        skip_preview_if_dom_complete=skip_preview_if_dom_complete,
         max_concurrency=max_concurrency,
         max_retries=max_retries,
         retry_backoff_ms=retry_backoff_ms,
@@ -1292,6 +1326,10 @@ def _build_place_details_from_snapshot(
             (preview_snapshot, "preview"),
             (search_result_snapshot, "search_result"),
         )
+    merged_snapshot = _prefer_resolved_place_url_coordinates(
+        merged_snapshot,
+        resolved_url=resolved_url,
+    )
     details = _build_place_details(
         place_url,
         resolved_url=resolved_url,
@@ -1326,6 +1364,11 @@ def _build_place_details_from_snapshot(
             )
         )
     except Exception as exc:
+        _logger.warning(
+            "Place repair failed error_type=%s",
+            type(exc).__name__,
+            extra=url_log_fields(place_url, resolved_url),
+        )
         details.diagnostics.llm_error = str(exc)
         details.diagnostics.prompt_version = _PLACE_LLM_PROMPT_VERSION
         return details
@@ -1372,6 +1415,7 @@ def _scrape_places_sequential(
     llm_tasks: Sequence[PlaceLLMTask],
     collect_reviews: bool,
     collect_about: bool,
+    skip_preview_if_dom_complete: bool = False,
     max_retries: int,
     retry_backoff_ms: int,
     stagger_ms: int,
@@ -1399,6 +1443,7 @@ def _scrape_places_sequential(
                     llm_tasks=llm_tasks,
                     collect_reviews=collect_reviews,
                     collect_about=collect_about,
+                    skip_preview_if_dom_complete=skip_preview_if_dom_complete,
                     max_retries=max_retries,
                     retry_backoff_ms=retry_backoff_ms,
                     retry_quality_flags=retry_quality_flags,
@@ -1432,6 +1477,7 @@ def _scrape_places_parallel(
     llm_tasks: Sequence[PlaceLLMTask],
     collect_reviews: bool,
     collect_about: bool,
+    skip_preview_if_dom_complete: bool = False,
     max_concurrency: int,
     max_retries: int,
     retry_backoff_ms: int,
@@ -1472,6 +1518,7 @@ def _scrape_places_parallel(
             llm_tasks=llm_tasks,
             collect_reviews=collect_reviews,
             collect_about=collect_about,
+            skip_preview_if_dom_complete=skip_preview_if_dom_complete,
             max_retries=max_retries,
             retry_backoff_ms=retry_backoff_ms,
             stagger_ms=stagger_ms,
@@ -1506,38 +1553,6 @@ def _scrape_places_parallel(
     return [result for result in results if result is not None]
 
 
-def _browser_session_for_parallel_worker(
-    browser_session: BrowserSessionConfig | None,
-    *,
-    worker_index: int,
-) -> BrowserSessionConfig | None:
-    if browser_session is None or browser_session.profile_dir is None:
-        return browser_session
-    return BrowserSessionConfig(
-        profile_dir=browser_session.profile_dir / f"worker-{worker_index + 1}",
-        proxy=browser_session.proxy,
-        window_size=browser_session.window_size,
-        human_mouse=browser_session.human_mouse,
-    )
-
-
-def _http_session_for_parallel_worker(
-    http_session: HttpSessionConfig | None,
-    *,
-    worker_index: int,
-) -> HttpSessionConfig | None:
-    if http_session is None or http_session.cookie_jar_path is None:
-        return http_session
-    cookie_jar_path = http_session.cookie_jar_path
-    return HttpSessionConfig(
-        cookie_jar_path=(
-            cookie_jar_path.parent
-            / f"{cookie_jar_path.stem}.worker-{worker_index + 1}{cookie_jar_path.suffix}"
-        ),
-        proxy=http_session.proxy,
-    )
-
-
 def _scrape_place_with_context_and_retries(
     place_url: str,
     *,
@@ -1550,6 +1565,7 @@ def _scrape_place_with_context_and_retries(
     llm_tasks: Sequence[PlaceLLMTask],
     collect_reviews: bool,
     collect_about: bool,
+    skip_preview_if_dom_complete: bool = False,
     max_retries: int,
     retry_backoff_ms: int,
     retry_quality_flags: Sequence[str],
@@ -1570,6 +1586,7 @@ def _scrape_place_with_context_and_retries(
                 http_session=http_session,
                 collect_reviews=collect_reviews,
                 collect_about=collect_about,
+                skip_preview_if_dom_complete=skip_preview_if_dom_complete,
                 screenshot_path=screenshot_path,
                 overview_screenshot_path=overview_screenshot_path,
             )
@@ -1584,7 +1601,11 @@ def _scrape_place_with_context_and_retries(
             last_error = str(exc)
         else:
             last_place = place
-            if not _should_retry_place_result(place, retry_quality_flags):
+            if not _should_retry_place_result(
+                place,
+                retry_quality_flags,
+                preview_skipped=_to_bool(snapshot.get("preview_skipped")),
+            ):
                 return PlaceScrapeResult(
                     source_url=place_url,
                     place=place,
@@ -1593,8 +1614,18 @@ def _scrape_place_with_context_and_retries(
             last_error = "quality flags: " + ", ".join(
                 place.diagnostics.quality_flags if place.diagnostics is not None else []
             )
-        if attempts <= max_retries and retry_backoff_ms > 0:
-            time.sleep((retry_backoff_ms * attempts) / 1000)
+        if attempts <= max_retries:
+            delay_ms = max(0, retry_backoff_ms * attempts)
+            _logger.warning(
+                "Retrying place scrape attempt=%s next_attempt=%s delay_ms=%s",
+                attempts,
+                attempts + 1,
+                delay_ms,
+                extra=url_log_fields(place_url),
+            )
+            if delay_ms:
+                time.sleep(delay_ms / 1000)
+    _logger.error("Place scrape exhausted attempts=%s", attempts, extra=url_log_fields(place_url))
     return PlaceScrapeResult(
         source_url=place_url,
         place=last_place,
@@ -1606,10 +1637,15 @@ def _scrape_place_with_context_and_retries(
 def _should_retry_place_result(
     place: PlaceDetails,
     retry_quality_flags: Sequence[str],
+    *,
+    preview_skipped: bool,
 ) -> bool:
     if not retry_quality_flags or place.diagnostics is None:
         return False
     retry_flags = set(retry_quality_flags)
+    if preview_skipped:
+        # A validated overview can lack facts normally supplied by the preview.
+        retry_flags.discard("thin_place_result")
     return any(flag in retry_flags for flag in place.diagnostics.quality_flags)
 
 
@@ -1623,6 +1659,7 @@ def collect_place_snapshot(
     http_session: HttpSessionConfig | None = None,
     collect_reviews: bool = True,
     collect_about: bool = True,
+    skip_preview_if_dom_complete: bool = False,
     screenshot_path: Path | None = None,
     overview_screenshot_path: Path | None = None,
 ) -> dict[str, object]:
@@ -1640,6 +1677,7 @@ def collect_place_snapshot(
             http_session=http_session,
             collect_reviews=collect_reviews,
             collect_about=collect_about,
+            skip_preview_if_dom_complete=skip_preview_if_dom_complete,
             screenshot_path=screenshot_path,
             overview_screenshot_path=overview_screenshot_path,
         )
@@ -1656,9 +1694,13 @@ def _collect_place_snapshot_with_context(
     http_session: HttpSessionConfig | None,
     collect_reviews: bool,
     collect_about: bool,
+    skip_preview_if_dom_complete: bool = False,
     screenshot_path: Path | None,
     overview_screenshot_path: Path | None,
 ) -> dict[str, object]:
+    _logger.debug(
+        "Starting place collection timeout_ms=%s", timeout_ms, extra=url_log_fields(place_url)
+    )
     page = None
     try:
         page = context.new_page()
@@ -1705,12 +1747,19 @@ def _collect_place_snapshot_with_context(
             about_snapshot = _collect_about_panel_snapshot(page, timeout_ms=timeout_ms)
             if about_snapshot:
                 dom_snapshot = {**dom_snapshot, **about_snapshot}
-        preview_snapshot = _collect_preview_place_enrichment(
-            place_url,
-            resolved_url=resolved_url,
-            timeout_ms=timeout_ms,
-            http_session=http_session,
+        preview_skipped = (
+            skip_preview_if_dom_complete
+            and isinstance(dom_snapshot, Mapping)
+            and _has_complete_place_overview(dom_snapshot, resolved_url=resolved_url)
         )
+        preview_snapshot: dict[str, object] = {}
+        if not preview_skipped:
+            preview_snapshot = _collect_preview_place_enrichment(
+                place_url,
+                resolved_url=resolved_url,
+                timeout_ms=timeout_ms,
+                http_session=http_session,
+            )
     except Exception as exc:  # pragma: no cover - browser error path
         raise ScrapeError(f"Failed to scrape place page: {exc}") from exc
     finally:
@@ -1727,7 +1776,34 @@ def _collect_place_snapshot_with_context(
         "dom": dict(dom_snapshot),
         "search_result": search_result_snapshot or {},
         "preview": preview_snapshot,
+        "preview_skipped": preview_skipped,
     }
+
+
+def _has_complete_place_overview(
+    snapshot: Mapping[str, object],
+    *,
+    resolved_url: str | None,
+) -> bool:
+    if not resolved_url or not _looks_like_google_maps_place_url(resolved_url):
+        return False
+    if _to_bool(snapshot.get("limited_view")):
+        return False
+
+    name = _clean_structured_name_text(snapshot.get("name"))
+    return (
+        name is not None
+        and not _looks_like_ui_action_label(name)
+        and _clean_address_text(snapshot.get("address")) is not None
+        and _normalize_phone_candidate(snapshot.get("phone")) is not None
+        and _normalize_website(snapshot.get("website")) is not None
+        and (
+            _extract_canonical_place_coordinates(resolved_url) is not None
+            or _valid_coordinates(
+                _parse_float(snapshot.get("lat")), _parse_float(snapshot.get("lng"))
+            )
+        )
+    )
 
 
 def _place_screenshot_path(
@@ -1926,10 +2002,38 @@ def _looks_like_google_maps_place_url(value: str) -> bool:
     parsed = urlparse(value)
     if parsed.scheme not in {"http", "https"}:
         return False
-    host = (parsed.hostname or "").lower()
-    if re.fullmatch(r"(?:www\.|maps\.)?google\.[a-z]{2,}(?:\.[a-z]{2,})?", host) is None:
+    if not _is_google_maps_host(parsed.hostname or ""):
         return False
     return parsed.path.startswith("/maps/place/")
+
+
+def _is_google_maps_host(host: str) -> bool:
+    domain = host.removesuffix(".")
+    if domain.startswith(("www.", "maps.")):
+        domain = domain.split(".", 1)[1]
+    label, _, suffix = domain.partition(".")
+    return label == "google" and suffix in _GOOGLE_DOMAIN_SUFFIXES
+
+
+def _prefer_resolved_place_url_coordinates(
+    snapshot: Mapping[str, object],
+    *,
+    resolved_url: str | None,
+) -> dict[str, object]:
+    coordinates = _extract_canonical_place_coordinates(resolved_url)
+    if coordinates is None:
+        return dict(snapshot)
+
+    merged = dict(snapshot)
+    raw_field_sources = snapshot.get("field_sources")
+    field_sources = (
+        dict(raw_field_sources) if isinstance(raw_field_sources, Mapping) else {}
+    )
+    merged["lat"], merged["lng"] = coordinates
+    field_sources["lat"] = "resolved_url"
+    field_sources["lng"] = "resolved_url"
+    merged["field_sources"] = field_sources
+    return merged
 
 
 def _collect_review_panel_snapshot(page: Any, *, timeout_ms: int) -> dict[str, object]:
@@ -2021,12 +2125,16 @@ def _build_place_details(
     category_display_en, category_display_en_source, category_display_en_confidence = (
         _derive_category_display_en(category, snapshot)
     )
-    lat = _parse_float(snapshot.get("lat"))
-    if lat is None:
-        lat = _extract_coordinate_from_url(resolved_url or source_url, index=0)
-    lng = _parse_float(snapshot.get("lng"))
-    if lng is None:
-        lng = _extract_coordinate_from_url(resolved_url or source_url, index=1)
+    canonical_coordinates = _extract_canonical_place_coordinates(resolved_url)
+    if canonical_coordinates is not None:
+        lat, lng = canonical_coordinates
+    else:
+        lat = _parse_float(snapshot.get("lat"))
+        if lat is None:
+            lat = _extract_coordinate_from_url(resolved_url or source_url, index=0)
+        lng = _parse_float(snapshot.get("lng"))
+        if lng is None:
+            lng = _extract_coordinate_from_url(resolved_url or source_url, index=1)
     address = _clean_address_text(snapshot.get("address")) or _extract_address_from_lines(
         combined_lines
     )
@@ -2066,6 +2174,11 @@ def _build_place_details(
         source_url=source_url,
         resolved_url=resolved_url,
         google_place_id=_normalize_google_place_id(snapshot.get("google_place_id")),
+        cid=(
+            _extract_maps_cid(resolved_url)
+            or _normalize_place_cid(snapshot.get("cid"))
+            or _extract_maps_cid(source_url)
+        ),
         name=name,
         secondary_name=_clean_name_text(snapshot.get("secondary_name"))
         or _extract_secondary_name(combined_lines, name=name),
@@ -2087,6 +2200,7 @@ def _build_place_details(
         address_display_en_confidence=address_display_en_confidence,
         located_in=_clean_text(snapshot.get("located_in")),
         status=_clean_text(snapshot.get("status")) or _extract_status_from_lines(combined_lines),
+        opening_hours=_normalize_opening_hours(snapshot.get("opening_hours")),
         website=_normalize_website(snapshot.get("website")),
         reservation_links=_normalize_reservation_links(snapshot.get("reservation_links")),
         phone=_normalize_phone_candidate(snapshot.get("phone"))
@@ -2250,6 +2364,8 @@ def _merge_llm_place_fields(
         if _is_missing_value(value):
             continue
         if not _is_missing_value(current_fields.get(key)):
+            continue
+        if key == "cid" and _normalize_place_cid(value) is None:
             continue
         if key == "review_topics":
             value = _filter_llm_review_topics_by_evidence(value, snapshot.get("review_topics"))
@@ -2541,6 +2657,9 @@ def _build_place_diagnostics(
     if raw_address is not None and details.address is None:
         quality_flags.append("address_rejected")
 
+    if not details.opening_hours and not _is_missing_value(snapshot.get("opening_hours")):
+        quality_flags.append("opening_hours_incomplete")
+
     raw_name = _clean_text(snapshot.get("name"))
     if (
         details.name is None
@@ -2621,6 +2740,7 @@ def _place_detail_values(details: PlaceDetails) -> dict[str, object]:
         "lng": details.lng,
         "limited_view": details.limited_view,
         "google_place_id": details.google_place_id,
+        "cid": details.cid,
         "review_topics": [topic.to_dict() for topic in details.review_topics],
         "reviews": [review.to_dict() for review in details.reviews],
         "about_sections": [section.to_dict() for section in details.about_sections],
@@ -2725,7 +2845,7 @@ def _collect_preview_place_enrichment(
 
     try:
         with curl_requests.Session(**session_kwargs) as session:
-            page_response = session.get(base_url)
+            page_response = _get_with_retry(session, base_url, timeout=timeout_seconds)
             _raise_for_status(page_response)
             page_html = _response_text(page_response)
             preload_url = _extract_preloaded_fetch_url(
@@ -2735,10 +2855,17 @@ def _collect_preview_place_enrichment(
             )
             if preload_url is None:
                 return {}
-            preload_response = session.get(preload_url, referer=base_url)
+            preload_response = _get_with_retry(
+                session, preload_url, timeout=timeout_seconds, referer=base_url
+            )
             _raise_for_status(preload_response)
             payload_text = _response_text(preload_response)
-    except Exception:
+    except Exception as exc:
+        _logger.warning(
+            "Place preview fetch failed error_type=%s",
+            type(exc).__name__,
+            extra=url_log_fields(place_url, resolved_url),
+        )
         return {}
     finally:
         _save_http_cookie_jar(http_session, cookie_jar)
@@ -2795,6 +2922,9 @@ def _extract_preview_place_enrichment(payload_text: str) -> dict[str, object]:
     google_place_id = _extract_preview_google_place_id(root)
     if google_place_id is not None:
         enrichment["google_place_id"] = google_place_id
+        cid = _extract_preview_cid(root, google_place_id=google_place_id)
+        if cid is not None:
+            enrichment["cid"] = cid
 
     return enrichment
 
@@ -3484,35 +3614,89 @@ def _normalize_google_place_id(value: object) -> str | None:
 
 _GOOGLE_PLACE_ID_PATTERN = re.compile(r"ChIJ[0-9A-Za-z_-]{10,}")
 _MAPS_ENTITY_TOKEN_PATTERN = re.compile(r"0x[0-9a-fA-F]+:0x[0-9a-fA-F]+")
+_MAPS_URL_ENTITY_TOKEN_PATTERN = re.compile(rf"!1s({_MAPS_ENTITY_TOKEN_PATTERN.pattern})(?=!|$)")
 _KNOWLEDGE_GRAPH_MID_PATTERN = re.compile(r"^/m/[A-Za-z0-9_-]+$")
 
 
+def _normalize_place_cid(value: object) -> str | None:
+    if not isinstance(value, str) or re.fullmatch(r"[0-9]{1,20}", value) is None:
+        return None
+    cid = int(value)
+    return str(cid) if 0 < cid < 1 << 64 else None
+
+
+def _cid_from_maps_entity_token(token: str) -> str | None:
+    _, _, low_bits = token.partition(":0x")
+    if not 1 <= len(low_bits) <= 16:
+        return None
+    return _normalize_place_cid(str(int(low_bits, 16)))
+
+
+def _extract_maps_cid(url: str | None) -> str | None:
+    if url is None:
+        return None
+    try:
+        parsed = urlparse(url)
+    except ValueError:
+        return None
+    host = parsed.hostname or ""
+    if parsed.scheme not in {"http", "https"} or not _is_google_maps_host(host):
+        return None
+
+    if parsed.path.startswith("/maps/place/"):
+        _, _, data = unquote(parsed.path).partition("/data=")
+        tokens = set(_MAPS_URL_ENTITY_TOKEN_PATTERN.findall(data))
+        if len(tokens) == 1 and (cid := _cid_from_maps_entity_token(tokens.pop())) is not None:
+            return cid
+    elif parsed.path.rstrip("/") != "/maps" and not (
+        host.startswith("maps.google.") and parsed.path in {"", "/"}
+    ):
+        return None
+
+    values = parse_qs(parsed.query, keep_blank_values=True).get("cid", [])
+    return _normalize_place_cid(values[0]) if len(values) == 1 else None
+
+
+def _extract_preview_cid(root: list[object], *, google_place_id: str) -> str | None:
+    candidates = {
+        cid
+        for node in _iter_lists(root)
+        if _preview_place_ids(node) == {google_place_id}
+        for value in node
+        if isinstance(value, str) and _MAPS_ENTITY_TOKEN_PATTERN.fullmatch(value)
+        if (cid := _cid_from_maps_entity_token(value)) is not None
+    }
+    return candidates.pop() if len(candidates) == 1 else None
+
+
+def _preview_place_ids(node: list[object]) -> set[str]:
+    return {
+        value
+        for value in node
+        if isinstance(value, str) and _GOOGLE_PLACE_ID_PATTERN.fullmatch(value)
+    }
+
+
 def _extract_preview_google_place_id(root: list[object]) -> str | None:
-    unique_place_ids: list[str] = []
-    seen_place_ids: set[str] = set()
+    unique_place_ids: set[str] = set()
 
     for node in _iter_lists(root):
-        strings = [value for value in node if isinstance(value, str)]
-        if not strings:
+        place_ids = _preview_place_ids(node)
+        unique_place_ids.update(place_ids)
+        if len(place_ids) != 1:
             continue
 
-        place_ids = [value for value in strings if _GOOGLE_PLACE_ID_PATTERN.fullmatch(value)]
-        if not place_ids:
-            continue
-
-        for place_id in place_ids:
-            if place_id not in seen_place_ids:
-                unique_place_ids.append(place_id)
-                seen_place_ids.add(place_id)
-
-        if any(_MAPS_ENTITY_TOKEN_PATTERN.fullmatch(value) for value in strings) or any(
-            _KNOWLEDGE_GRAPH_MID_PATTERN.fullmatch(value) for value in strings
+        if any(
+            isinstance(value, str)
+            and (
+                _MAPS_ENTITY_TOKEN_PATTERN.fullmatch(value)
+                or _KNOWLEDGE_GRAPH_MID_PATTERN.fullmatch(value)
+            )
+            for value in node
         ):
-            return place_ids[0]
+            return place_ids.pop()
 
-    if len(unique_place_ids) == 1:
-        return unique_place_ids[0]
-    return None
+    return unique_place_ids.pop() if len(unique_place_ids) == 1 else None
 
 
 def _extract_address_parts(value: object) -> AddressParts | None:
@@ -3558,6 +3742,33 @@ def _normalize_review_topics(value: object) -> list[ReviewTopic]:
         ):
             topics[existing_index] = topic
     return topics
+
+
+def _normalize_opening_hours(value: object) -> list[PlaceOpeningHours]:
+    if not isinstance(value, list) or len(value) != 7:
+        return []
+    schedule: list[PlaceOpeningHours] = []
+    seen_days: set[str] = set()
+    for row in value:
+        if not isinstance(row, Mapping):
+            return []
+        day = _clean_text(row.get("day"))
+        raw_hours = row.get("hours")
+        if day is None or day.casefold() in seen_days or not isinstance(raw_hours, list):
+            return []
+        hours = [item.strip() for item in raw_hours if isinstance(item, str) and item.strip()]
+        if not hours or len(hours) != len(raw_hours):
+            return []
+        is_open_24h = None
+        if len(hours) == 1:
+            label = " ".join(hours[0].casefold().split())
+            if label in {"open 24 hours", "24 時間営業", "24時間営業"}:
+                is_open_24h = True
+            elif label in {"closed", "定休日"}:
+                is_open_24h = False
+        seen_days.add(day.casefold())
+        schedule.append(PlaceOpeningHours(day=day, hours=hours, is_open_24h=is_open_24h))
+    return schedule
 
 
 def _normalize_about_sections(value: object) -> list[PlaceAboutSection]:
@@ -3983,8 +4194,6 @@ def _preview_rating_value(value: int | float) -> float | None:
     rating = float(value)
     if not 1.0 <= rating <= 5.0:
         return None
-    if rating.is_integer():
-        return None
     return round(rating, 1)
 
 
@@ -4000,6 +4209,14 @@ def _preview_review_count_value(value: int | float) -> int | None:
 
 def _rating_count_pair_is_ambiguous(node: list[object], count: int) -> bool:
     count_text = str(count)
+    has_review_count_context = any(
+        isinstance(value, str)
+        and re.sub(r"\D", "", value) == count_text
+        and re.search(r"\b(?:review|reviews|rating|ratings)\b", value, re.IGNORECASE)
+        for value in node
+    )
+    if 1900 <= count <= 2100 and not has_review_count_context:
+        return True
     return any(
         isinstance(value, str)
         and count_text in value
@@ -4110,9 +4327,18 @@ def _parse_review_count(value: object) -> int | None:
     suffix = match.group(2).upper()
     if not suffix and re.fullmatch(r"\d{1,3}(?:[.,\s]\d{3})+", number_text):
         return int(re.sub(r"[.,\s]", "", number_text))
+    normalized = re.sub(r"\s", "", number_text)
+    # A lone comma followed by three digits remains a grouping separator.
+    # Period groups before a comma disambiguate a decimal comma of any precision.
+    if suffix and re.fullmatch(
+        r"(?:[0-9]+,[0-9]{1,2}|[0-9]{1,3}(?:\.[0-9]{3})+,[0-9]+)", normalized
+    ):
+        normalized = normalized.replace(".", "").replace(",", ".")
+    else:
+        normalized = normalized.replace(",", "")
     try:
-        number = float(number_text.replace(",", "").replace(" ", ""))
-    except ValueError:
+        numerator, denominator = Decimal(normalized).as_integer_ratio()
+    except (InvalidOperation, ValueError):
         return None
     multiplier = 1
     if suffix == "K":
@@ -4121,7 +4347,7 @@ def _parse_review_count(value: object) -> int | None:
         multiplier = 1_000_000
     elif suffix in {"萬", "万"}:
         multiplier = 10_000
-    return int(number * multiplier)
+    return numerator * multiplier // denominator
 
 
 def _resolve_review_count(snapshot: Mapping[str, object], lines: list[str]) -> int | None:
@@ -4255,14 +4481,42 @@ def _reservation_provider_label_from_url(url: str) -> str:
     return base.replace("-", " ").replace("_", " ").title()
 
 
-def _extract_coordinate_from_url(url: str, *, index: int) -> float | None:
-    match = re.search(r"@(-?\d+(?:\.\d+)?),(-?\d+(?:\.\d+)?)", url)
+def _validated_coordinate_match(
+    match: re.Match[str] | None,
+) -> tuple[float, float] | None:
     if match is None:
         return None
     try:
-        return float(match.group(index + 1))
+        lat = float(match.group(1))
+        lng = float(match.group(2))
     except ValueError:
         return None
+    if not _valid_coordinates(lat, lng):
+        return None
+    return lat, lng
+
+
+def _extract_coordinate_from_url(url: str, *, index: int) -> float | None:
+    canonical_match = _CANONICAL_COORDINATE_PATTERN.search(url)
+    if canonical_match is not None:
+        coordinates = _validated_coordinate_match(canonical_match)
+    else:
+        coordinates = _validated_coordinate_match(
+            re.search(r"@(-?\d+(?:\.\d+)?),(-?\d+(?:\.\d+)?)", url)
+        )
+    if coordinates is None:
+        return None
+    return coordinates[index]
+
+
+def _extract_canonical_place_coordinates(
+    resolved_url: str | None,
+) -> tuple[float, float] | None:
+    if resolved_url is None or not _looks_like_google_maps_place_url(resolved_url):
+        return None
+    return _validated_coordinate_match(
+        _CANONICAL_COORDINATE_PATTERN.search(resolved_url)
+    )
 
 
 def _to_bool(value: object) -> bool:

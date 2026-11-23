@@ -68,7 +68,7 @@ class DebugDumpTests(unittest.TestCase):
             self.assertEqual(place_summary["name"], "Northwind Cafe")
             self.assertIn("Fixture note: order the sampler", place_summary["strings"])
 
-    def test_writes_place_debug_dump_and_selector_recipe(self) -> None:
+    def test_writes_place_debug_dump_with_runtime_artifacts(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             details = PlaceDetails(
                 source_url="https://www.google.com/maps/place/Fiamma",
@@ -102,10 +102,16 @@ class DebugDumpTests(unittest.TestCase):
 
             summary = json.loads(summary_path.read_text(encoding="utf-8"))
             self.assertEqual(summary["place"]["category_display_en"], "Italian restaurant")
-            self.assertTrue((Path(tmp_dir) / "selector-recipe.json").exists())
-            recipe = json.loads((Path(tmp_dir) / "selector-recipe.json").read_text())
-            self.assertIn("name", recipe["selectors"])
-            self.assertNotIn("title", recipe["selectors"])
-            self.assertIn("review_count", recipe["selectors"])
-            self.assertNotIn("address icon row fallback", recipe["selectors"]["address"])
-            self.assertIn("review_topic_chip", recipe["selectors"])
+            self.assertEqual(
+                summary["artifact_files"],
+                {
+                    "place_output": "place-output.json",
+                    "diagnostics": "diagnostics.json",
+                    "llm_evidence": "llm-evidence.json",
+                    "snapshot": "artifacts/snapshot.json",
+                    "merged_snapshot": "artifacts/merged-snapshot.json",
+                },
+            )
+            for file in summary["artifact_files"].values():
+                self.assertTrue((Path(tmp_dir) / file).exists())
+            self.assertFalse((Path(tmp_dir) / "selector-recipe.json").exists())

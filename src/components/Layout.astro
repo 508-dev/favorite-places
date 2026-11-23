@@ -1,10 +1,13 @@
 ---
 
+
+
 import "../styles/global.css";
 import "../styles/browse-theme.css";
 import "favorite-places:site-theme";
 import { siteConfig } from "../data/site";
 import { serializeJsonLdForHtml } from "../lib/seo";
+import PlaceChat from "./PlaceChat.astro";
 
 interface Props {
   title: string;
@@ -15,9 +18,10 @@ interface Props {
   openGraphType?: "website" | "article";
   robots?: string;
   jsonLd?: Record<string, unknown> | Array<Record<string, unknown>>;
+  chat?: { mode: "discover" | "guide"; guideSlug?: string; guideTitle?: string };
 }
 
-const { title, browseTheme = false, description, canonicalPath, image, openGraphType, robots, jsonLd } = Astro.props;
+const { title, browseTheme = false, description, canonicalPath, image, openGraphType, robots, jsonLd, chat } = Astro.props;
 const brandHref = siteConfig.logo?.href ?? "/";
 const headerLinks = siteConfig.navLinks.filter(({ href }) => brandHref !== "/" || href !== "/");
 const metaDescription = description ?? siteConfig.siteDescription;
@@ -98,5 +102,6 @@ const jsonLdEntries = (Array.isArray(jsonLd) ? jsonLd : jsonLd ? [jsonLd] : []).
     <main class="ui-page-shell">
       <slot />
     </main>
+    {import.meta.env.PUBLIC_CHAT_ENABLED === "true" && chat && <PlaceChat {...chat} />}
   </body>
 </html>

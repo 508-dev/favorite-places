@@ -6,10 +6,17 @@ import json
 import re
 from collections.abc import Iterable, Iterator, Sequence
 from dataclasses import dataclass
-from typing import TypeGuard, cast
+from html.parser import HTMLParser
+from typing import TypeGuard, cast, override
 from urllib.parse import urlencode
 
-from gmaps_scraper.models import ListOwner, Place, SavedList
+from gmaps_scraper.models import (
+    ListOwner,
+    Place,
+    SavedList,
+    SavedListArtifactSource,
+    SavedListExtractionDiagnostics,
+)
 from gmaps_scraper.url_tools import (
     extract_list_id,
     extract_list_id_from_text,
@@ -71,6 +78,12 @@ class _Candidate:
     signal_score: int
 
 
+@dataclass(frozen=True, slots=True)
+class _PlaceDedupeKeys:
+    primary: set[str]
+    aliases: set[str]
+
+
 class ParseError(RuntimeError):
     """Raised when a saved list cannot be parsed from the supplied artifacts."""
 
@@ -83,13 +96,13 @@ def parse_saved_list_artifacts(
     script_texts: Sequence[str] = (),
     html: str | None = None,
 ) -> SavedList:
-    """Parse a saved list from browser artifacts."""
+    """Parse a saved list from HTTP or browser artifacts."""
     list_id = extract_list_id(resolved_url or "") or extract_list_id(list_url)
     roots = _collect_roots(runtime_state=runtime_state, script_texts=script_texts, html=html)
-    best_result: SavedList | None = None
+    best_result: tuple[SavedList, SavedListArtifactSource, JSONValue] | None = None
     best_score = -1
 
-    for root in roots:
+    for source, root in roots:
         for candidate in _candidate_nodes(root, list_id=list_id):
             parsed = _parse_candidate_node(
                 list_url,
@@ -103,12 +116,34 @@ def parse_saved_list_artifacts(
             if parsed.description is not None:
                 score += 1
             if score > best_score:
-                best_result = parsed
+                best_result = (parsed, source, candidate.node)
                 best_score = score
 
-    if best_result is None or not best_result.places:
+    if best_result is None or not best_result[0].places:
         raise ParseError("Could not locate a placelist node with parsable places.")
-    return best_result
+
+    result, source, node = best_result
+    counts = _entitylist_row_counts(_find_metadata_node(node))
+    loaded_rows, expected_rows = counts if counts is not None else (None, None)
+    flags: list[str] = []
+    if result.list_id is None:
+        flags.append("missing_list_id")
+    if any(place.address is None for place in result.places):
+        flags.append("missing_address")
+    if any(place.cid is None for place in result.places):
+        flags.append("missing_cid")
+    if counts is not None and counts[0] < counts[1]:
+        flags.append("partial_payload")
+    if loaded_rows is not None and len(result.places) < loaded_rows:
+        flags.append("fewer_places_than_loaded_rows")
+    result.diagnostics = SavedListExtractionDiagnostics(
+        artifact_source=source,
+        runtime_state_present=runtime_state is not None,
+        loaded_rows=loaded_rows,
+        expected_rows=expected_rows,
+        quality_flags=flags,
+    )
+    return result
 
 
 def _collect_roots(
@@ -116,35 +151,73 @@ def _collect_roots(
     runtime_state: JSONValue | None,
     script_texts: Sequence[str],
     html: str | None,
-) -> list[JSONValue]:
-    roots: list[JSONValue] = []
+) -> list[tuple[SavedListArtifactSource, JSONValue]]:
+    roots: list[tuple[SavedListArtifactSource, JSONValue]] = []
     if isinstance(runtime_state, (list, dict)):
-        roots.append(runtime_state)
+        roots.append(("runtime_state", runtime_state))
         for value in _iter_strings(runtime_state):
-            roots.extend(_decode_embedded_json(value))
+            roots.extend(("runtime_state", root) for root in _decode_embedded_json(value))
     elif isinstance(runtime_state, str):
-        roots.extend(_decode_embedded_json(runtime_state))
+        roots.extend(("runtime_state", root) for root in _decode_embedded_json(runtime_state))
 
     for text in script_texts:
-        roots.extend(_decode_embedded_json(text))
+        roots.extend(("script_texts", root) for root in _decode_embedded_json(text))
 
     if html is not None:
-        roots.extend(_decode_embedded_json(html))
+        known_scripts = set(script_texts)
+        for text in _extract_script_texts_from_html(html):
+            if text not in known_scripts:
+                roots.extend(("html", root) for root in _decode_embedded_json(text))
+        roots.extend(("html", root) for root in _decode_embedded_json(html))
 
     return _dedupe_roots(roots)
 
 
-def _dedupe_roots(roots: Iterable[JSONValue]) -> list[JSONValue]:
-    deduped: list[JSONValue] = []
+def _extract_script_texts_from_html(page_html: str) -> list[str]:
+    parser = _ScriptTextParser()
+    parser.feed(page_html)
+    parser.close()
+    return parser.scripts
+
+
+class _ScriptTextParser(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=False)
+        self.scripts: list[str] = []
+        self._parts: list[str] | None = None
+
+    @override
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag == "script":
+            self._parts = []
+
+    @override
+    def handle_data(self, data: str) -> None:
+        if self._parts is not None:
+            self._parts.append(data)
+
+    @override
+    def handle_endtag(self, tag: str) -> None:
+        if tag == "script" and self._parts is not None:
+            text = "".join(self._parts)
+            if text.strip():
+                self.scripts.append(text)
+            self._parts = None
+
+
+def _dedupe_roots(
+    roots: Iterable[tuple[SavedListArtifactSource, JSONValue]],
+) -> list[tuple[SavedListArtifactSource, JSONValue]]:
+    deduped: list[tuple[SavedListArtifactSource, JSONValue]] = []
     seen_serialized: set[str] = set()
-    for root in roots:
+    for source, root in roots:
         try:
             serialized = json.dumps(root, sort_keys=True)
         except TypeError:
             serialized = repr(root)
         if serialized in seen_serialized:
             continue
-        deduped.append(root)
+        deduped.append((source, root))
         seen_serialized.add(serialized)
     return deduped
 
@@ -287,7 +360,7 @@ def _extract_metadata(
     description = _clean_text(_safe_index(metadata_node, 5))
     if description == title:
         description = None
-    owner = _parse_list_owner(_safe_index(metadata_node, 3))
+    owner = _parse_list_owner(_safe_index(metadata_node, 3), allow_extra_fields=True)
     collaborators = _merge_owner_lists(
         _extract_additional_list_header_owners(metadata_node),
         _collect_place_owners(places),
@@ -320,6 +393,18 @@ def _contains_placelist_signal(node: list[JSONValue]) -> bool:
         if has_placelist_marker(value):
             return True
     return False
+
+
+def _entitylist_row_counts(node: JSONValue | None) -> tuple[int, int] | None:
+    if not isinstance(node, list) or len(node) <= 12:
+        return None
+    # An entitylist header carries the share URL, saved rows, and total row count.
+    if not any(has_placelist_marker(value) for value in _iter_strings(node[2])):
+        return None
+    rows, total = node[8], node[12]
+    if not isinstance(rows, list) or type(total) is not int or total < len(rows):
+        return None
+    return len(rows), total
 
 
 def _extract_additional_list_header_owners(node: list[JSONValue]) -> list[ListOwner]:
@@ -368,8 +453,13 @@ def _merge_owner_lists(
     return owners
 
 
-def _parse_list_owner(node: JSONValue | None) -> ListOwner | None:
-    if not isinstance(node, list) or len(node) < 1 or len(node) > 3:
+def _parse_list_owner(
+    node: JSONValue | None,
+    *,
+    allow_extra_fields: bool = False,
+) -> ListOwner | None:
+    # Only known owner slots can safely ignore fields after the owner prefix.
+    if not isinstance(node, list) or not node or (len(node) > 3 and not allow_extra_fields):
         return None
 
     name = _clean_text(_safe_index(node, 0))
@@ -388,7 +478,8 @@ def _parse_list_owner(node: JSONValue | None) -> ListOwner | None:
 
 def _extract_places(node: JSONValue) -> list[Place]:
     places: list[Place] = []
-    seen: set[str] = set()
+    primary_key_indexes: dict[str, int] = {}
+    alias_key_indexes: dict[str, int] = {}
 
     for current, ancestors in _walk_json(node):
         if not _is_coordinate_tuple(current):
@@ -405,6 +496,7 @@ def _extract_places(node: JSONValue) -> list[Place]:
             metadata_node = _find_place_metadata(ancestors)
         address = _extract_address(metadata_node)
         cid = _find_cid(metadata_node)
+        cid_aliases = _find_cid_aliases(metadata_node)
         google_id = _find_google_id(metadata_node)
         name = _find_place_name(ancestors, address=address, place_record=place_record)
         note = _find_place_note(place_record, name=name, address=address)
@@ -420,23 +512,96 @@ def _extract_places(node: JSONValue) -> list[Place]:
                 address=address,
                 lat=lat,
                 lng=lng,
+                cid=cid,
             ),
             cid=cid,
+            cid_aliases=cid_aliases,
             google_id=google_id,
             is_favorite=is_favorite,
             added_by=_find_place_added_by(place_record),
         )
-        dedupe_key = (
-            google_id
-            or (f"{cid}:{lat:.6f}:{lng:.6f}" if cid is not None else None)
-            or f"{place.name}:{lat:.6f}:{lng:.6f}"
+        dedupe_keys = _place_dedupe_keys(place)
+        duplicate_index = _duplicate_place_index(
+            dedupe_keys,
+            primary_key_indexes=primary_key_indexes,
+            alias_key_indexes=alias_key_indexes,
         )
-        if dedupe_key in seen:
+        if duplicate_index is not None:
+            if _place_dedupe_quality(place) > _place_dedupe_quality(places[duplicate_index]):
+                places[duplicate_index] = place
+                _record_place_dedupe_keys(
+                    duplicate_index,
+                    dedupe_keys,
+                    primary_key_indexes=primary_key_indexes,
+                    alias_key_indexes=alias_key_indexes,
+                )
             continue
-        seen.add(dedupe_key)
         places.append(place)
+        _record_place_dedupe_keys(
+            len(places) - 1,
+            dedupe_keys,
+            primary_key_indexes=primary_key_indexes,
+            alias_key_indexes=alias_key_indexes,
+        )
 
     return places
+
+
+def _place_dedupe_keys(place: Place) -> _PlaceDedupeKeys:
+    primary: set[str] = set()
+    aliases: set[str] = set()
+    if place.google_id:
+        primary.add(f"gid:{place.google_id}")
+    if place.cid is not None:
+        cid_suffix = f"{place.lat:.6f}:{place.lng:.6f}"
+        primary.add(f"cid:{place.cid}:{cid_suffix}")
+        aliases.update(
+            f"cid:{cid_alias}:{cid_suffix}"
+            for cid_alias in place.cid_aliases
+        )
+    if not primary:
+        primary.add(f"name:{place.name}:{place.lat:.6f}:{place.lng:.6f}")
+    return _PlaceDedupeKeys(primary=primary, aliases=aliases)
+
+
+def _duplicate_place_index(
+    keys: _PlaceDedupeKeys,
+    *,
+    primary_key_indexes: dict[str, int],
+    alias_key_indexes: dict[str, int],
+) -> int | None:
+    for key in keys.primary:
+        if key in primary_key_indexes:
+            return primary_key_indexes[key]
+    for key in keys.aliases:
+        if key in primary_key_indexes:
+            return primary_key_indexes[key]
+    for key in keys.primary:
+        if key in alias_key_indexes:
+            return alias_key_indexes[key]
+    return None
+
+
+def _record_place_dedupe_keys(
+    index: int,
+    keys: _PlaceDedupeKeys,
+    *,
+    primary_key_indexes: dict[str, int],
+    alias_key_indexes: dict[str, int],
+) -> None:
+    for key in keys.primary:
+        primary_key_indexes[key] = index
+    for key in keys.aliases:
+        alias_key_indexes[key] = index
+
+
+def _place_dedupe_quality(place: Place) -> tuple[bool, bool, bool, bool]:
+    return (
+        place.google_id is not None,
+        bool(place.cid_aliases),
+        place.cid is not None,
+        place.address is not None,
+    )
 
 
 def _find_place_metadata(ancestors: Sequence[JSONValue]) -> list[JSONValue] | None:
@@ -520,7 +685,7 @@ def _find_place_added_by(place_record: list[JSONValue] | None) -> ListOwner | No
     if place_record is None:
         return None
 
-    preferred = _parse_list_owner(_safe_index(place_record, 12))
+    preferred = _parse_list_owner(_safe_index(place_record, 12), allow_extra_fields=True)
     if preferred is not None:
         return preferred
 
@@ -597,6 +762,19 @@ def _find_cid(node: list[JSONValue] | None) -> str | None:
     return None
 
 
+def _find_cid_aliases(node: list[JSONValue] | None) -> list[str]:
+    if node is None:
+        return []
+    structured_value = _safe_index(node, 6)
+    structured_cid = _find_cid_in_structured_slot(structured_value)
+    if structured_cid is None:
+        return []
+    return _find_cid_aliases_in_structured_slot(
+        structured_value,
+        selected_cid=structured_cid,
+    )
+
+
 def _find_google_id(node: list[JSONValue] | None) -> str | None:
     if node is None:
         return None
@@ -660,6 +838,27 @@ def _find_cid_in_structured_slot(value: JSONValue | None) -> str | None:
     return _normalize_cid_token(numeric_texts[0])
 
 
+def _find_cid_aliases_in_structured_slot(
+    value: JSONValue | None,
+    *,
+    selected_cid: str,
+) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    owner = _parse_list_owner(value)
+    if owner is not None and (owner.photo_url is not None or owner.profile_id is not None):
+        return []
+    aliases: list[str] = []
+    for item in value:
+        text = _clean_text(item)
+        if text is None or _LONG_INTEGER_PATTERN.fullmatch(text) is None:
+            continue
+        alias = _normalize_cid_token(text)
+        if alias is not None and alias != selected_cid and alias not in aliases:
+            aliases.append(alias)
+    return aliases
+
+
 def _find_cid_in_fallback_value(value: JSONValue | None) -> str | None:
     if isinstance(value, int | str):
         return _normalize_fallback_cid_token(value)
@@ -719,7 +918,10 @@ def _build_maps_url(
     address: str | None,
     lat: float,
     lng: float,
+    cid: str | None,
 ) -> str:
+    if address is None and cid is not None:
+        return f"https://www.google.com/maps?cid={cid}"
     query = _build_maps_query(name=name, address=address, lat=lat, lng=lng)
     return f"https://www.google.com/maps/search/?{urlencode({'api': '1', 'query': query})}"
 

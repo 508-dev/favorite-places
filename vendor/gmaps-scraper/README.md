@@ -84,8 +84,8 @@ Enable optional LLM repair only when deterministic extraction is thin or needs
 English-readable display normalization:
 
 ```bash
-OPENAI_API_KEY=...
-LLM_MODEL=gpt-5-mini
+export OPENAI_API_KEY=...
+export LLM_MODEL=gpt-5-mini
 
 uv run gmaps-scraper \
   --kind place \

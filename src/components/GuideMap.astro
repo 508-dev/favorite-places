@@ -1,5 +1,11 @@
 ---
 
+
+
+
+
+
+
 import { siteConfig } from "../data/site";
 import type { Place } from "../lib/types";
 
@@ -102,8 +108,9 @@ const mapPlaces = places
   import { installMapAccessibility } from "../lib/mapAccessibility";
   import {
     buildMapMarkerDataUrl,
-    buildMapMarkerSvg,
+    buildMapMarkerShadowDataUrl,
     getMapMarkerColors,
+    getMapMarkerShadowSize,
     getMapMarkerSize,
   } from "../lib/mapMarkerIcons";
   import type { MarkerIcon } from "../lib/types";
@@ -343,13 +350,6 @@ const mapPlaces = places
       topPick: place.topPick,
     });
 
-  const markerSvg = (place: MapPlace, active = false) =>
-    buildMapMarkerSvg(place.markerIcon, {
-      active,
-      ...markerColors(place, active),
-      topPick: place.topPick,
-    });
-
   const userLocationMarkerDataUrl = ({
     fillColor,
     fillOpacity,
@@ -380,17 +380,25 @@ const mapPlaces = places
 
   const leafletMarkerIcon = (place: MapPlace, active = false) => {
     const size = getMapMarkerSize(place.markerIcon, place.topPick, active);
-    return L.divIcon({
+    const shadow = getMapMarkerShadowSize(size);
+    return L.icon({
       className: "guide-map-marker",
-      html: markerSvg(place, active),
+      iconUrl: buildMapMarkerDataUrl(place.markerIcon, {
+        ...markerColors(place, active),
+        active,
+        topPick: place.topPick,
+      }),
       iconAnchor: [size.anchorX, size.anchorY],
       iconSize: [size.width, size.height],
       popupAnchor: [0, -size.popupOffsetY],
+      shadowUrl: buildMapMarkerShadowDataUrl({ active, topPick: place.topPick }),
+      shadowSize: [shadow.width, shadow.height],
+      shadowAnchor: [shadow.anchorX, shadow.anchorY],
     });
   };
 
   const placeMarker = (place: MapPlace, placePhotosEnabled: boolean) =>
-    L.marker([place.lat, place.lng], { icon: leafletMarkerIcon(place) }).bindPopup(popupHtml(place, placePhotosEnabled), {
+    L.marker([place.lat, place.lng], { icon: leafletMarkerIcon(place), alt: place.name }).bindPopup(popupHtml(place, placePhotosEnabled), {
       className: "guide-map-popup-shell",
       closeButton: false,
     });
@@ -965,6 +973,7 @@ const mapPlaces = places
         map.setView([coordinates.lat, coordinates.lng], zoom, { animate: true });
       },
       setVisiblePlaces: (visiblePlaceIds) => {
+        applyFocusBounds(places.filter((place) => visiblePlaceIds.has(place.id)));
         markers.forEach((marker, placeId) => {
           if (visiblePlaceIds.has(placeId)) {
             marker.addTo(map);
@@ -1239,6 +1248,7 @@ const mapPlaces = places
         map.setZoom(zoom);
       },
       setVisiblePlaces: (visiblePlaceIds) => {
+        applyFocusBounds(places.filter((place) => visiblePlaceIds.has(place.id)));
         markers.forEach((marker, placeId) => marker.setMap(visiblePlaceIds.has(placeId) ? map : null));
       },
     };
@@ -1291,6 +1301,13 @@ const mapPlaces = places
       selectPlace(placeId, { focusCard: shouldAutoFocusCardFromMarker() });
     const handlePopupDetailsSelect = (placeId: string) => selectPlace(placeId, { focusCard: true });
     let runtime: MapRuntime | null = null;
+    let pendingChatPlaceId = "";
+    const handleChatPlace = ((event: CustomEvent<{ placeId?: string }>) => {
+      const id = event.detail?.placeId;
+      if (!id || !placeById.has(id)) return;
+      if (!runtime) { pendingChatPlaceId = id; return; }
+      selectPlace(id, { expandCollapsed: window.matchMedia(DESKTOP_MAP_MEDIA_QUERY).matches });
+    }) as EventListener;
 
     const syncFullAreaButton = () => {
       if (!mapFullAreaButton) return;
@@ -1334,6 +1351,8 @@ const mapPlaces = places
     };
 
     const syncVisiblePlaces = (detail: PlacesUpdatedEvent["detail"]) => {
+      const visibilityChanged = detail.visiblePlaceIds.length !== currentVisiblePlaceIds.size ||
+        detail.visiblePlaceIds.some((id) => !currentVisiblePlaceIds.has(id));
       currentVisiblePlaceIds = new Set(detail.visiblePlaceIds);
       currentPlaces = places.filter((place) => currentVisiblePlaceIds.has(place.id));
       updateMapFrameControls(Boolean(detail.mapFrameActive));
@@ -1345,7 +1364,8 @@ const mapPlaces = places
       const shouldRecenterAfterUpdate = pendingLocationCenterAfterPlacesUpdate;
       pendingLocationCenterAfterPlacesUpdate = false;
 
-      if (!detail.mapFrameActive) {
+      if (!detail.mapFrameActive && detail.source !== "chat-place" &&
+        (detail.source !== "search-index" || visibilityChanged)) {
         runtime.fitPlaces(currentPlaces);
       }
       scheduleFullAreaButtonSync();
@@ -1365,6 +1385,7 @@ const mapPlaces = places
     updateMapFrameControls(mapFrameActive());
     document.addEventListener("guide:places-updated", handlePlacesUpdated);
     root?.addEventListener("guide:user-location-request", handleUserLocationRequest);
+    root?.addEventListener("guide:show-place", handleChatPlace);
     try {
       runtime =
         requestedProvider === "google" && apiKey
@@ -1380,6 +1401,7 @@ const mapPlaces = places
     } catch (error) {
       document.removeEventListener("guide:places-updated", handlePlacesUpdated);
       root?.removeEventListener("guide:user-location-request", handleUserLocationRequest);
+      root?.removeEventListener("guide:show-place", handleChatPlace);
       throw error;
     } finally {
       delete element.dataset.initializing;
@@ -1779,6 +1801,7 @@ const mapPlaces = places
     runtime.fitPlaces(currentPlaces);
     scheduleFullAreaButtonSync();
     window.setTimeout(() => mapElement.guideMapFit?.(), 0);
+    if (pendingChatPlaceId) window.setTimeout(() => selectPlace(pendingChatPlaceId, { expandCollapsed: window.matchMedia(DESKTOP_MAP_MEDIA_QUERY).matches }), 0);
   };
 
   const initMaps = () => {

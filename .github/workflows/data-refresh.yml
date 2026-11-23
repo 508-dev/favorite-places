@@ -234,9 +234,6 @@ jobs:
       - name: Install frontend dependencies
         run: bun ci
 
-      - name: Install Python dependencies
-        run: uv sync --frozen
-
       - name: Configure Git identity
         shell: bash
         run: |
@@ -259,6 +256,11 @@ jobs:
           # Treat the refresh branch as disposable. Each run starts from the
           # current main tip so old generated artifacts cannot conflict.
           git switch -C "${REFRESH_BRANCH}" origin/main
+
+      # `Prepare refresh branch` can advance main after the initial checkout.
+      # Sync against that exact tree before invoking .venv/bin/python below.
+      - name: Install Python dependencies
+        run: uv sync --frozen
 
       - name: Run self-hosted refresh
         id: refresh
@@ -310,17 +312,21 @@ jobs:
             local status="$1"
             local elapsed_seconds="$2"
             local soft_timeout_seconds=$((effective_soft_timeout_minutes * 60))
-            local kill_after_seconds=$((kill_after_minutes * 60))
             [[ "${status}" == "124" ]] || {
-              [[ "${status}" == "137" ]] && (( elapsed_seconds >= soft_timeout_seconds + kill_after_seconds ))
+              # GNU timeout can report SIGKILL as 137 as soon as the soft limit
+              # is reached, before its kill-after grace period has elapsed.
+              # Requiring the full soft interval avoids masking early OOM kills.
+              [[ "${status}" == "137" ]] && (( elapsed_seconds >= soft_timeout_seconds ))
             }
           }
 
           echo "timed_out=false" >> "${GITHUB_OUTPUT}"
           set +e
           refresh_started_at="$(date +%s)"
+          # Do not wrap the refresh in `uv run`: it can exit after forwarding
+          # SIGINT and leave Python outside `timeout --kill-after` supervision.
           timeout --signal=INT --kill-after=5m "${effective_soft_timeout_minutes}m" \
-            uv run python3 scripts/refresh_profiles.py "${args[@]}" | tee "${REFRESH_LOG_PATH}"
+            .venv/bin/python scripts/refresh_profiles.py "${args[@]}" | tee "${REFRESH_LOG_PATH}"
           pipeline_status=("${PIPESTATUS[@]}")
           refresh_finished_at="$(date +%s)"
           set -e
@@ -444,7 +450,11 @@ jobs:
             commit_subject="${commit_subject} [partial]"
           fi
           git commit -m "${commit_subject}"
-          git push --force-with-lease origin "${REFRESH_BRANCH}"
+          # The refresh branch is disposable and can be deleted when its PR is
+          # merged while a long-running refresh is still active. Concurrency
+          # serializes refresh jobs, so force-pushing lets that run recreate a
+          # branch deleted after its initial checkout.
+          git push --force origin "${REFRESH_BRANCH}"
 
           echo "changed=true" >> "${GITHUB_OUTPUT}"
 

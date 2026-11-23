@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
+from gmaps_scraper._logging import url_log_fields
 from gmaps_scraper.models import PlaceDetails, PlaceExtractionDiagnostics
 from gmaps_scraper.parser import (
     JSONValue,
@@ -20,7 +22,6 @@ from gmaps_scraper.parser import (
     _parse_candidate_node,
     _walk_json,
 )
-from gmaps_scraper.selector_recipes import write_default_place_selector_recipe
 from gmaps_scraper.url_tools import extract_list_id
 
 
@@ -42,6 +43,9 @@ class _PlaceEntry:
     lat: float
     lng: float
     strings: list[str]
+
+
+_logger = logging.getLogger(__name__)
 
 
 def write_debug_dump(
@@ -72,7 +76,7 @@ def write_debug_dump(
     ranked_candidates = _rank_candidates(
         list_url,
         resolved_url=resolved_url,
-        roots=roots,
+        roots=[node for _, node in roots],
         list_id=list_id,
     )
 
@@ -151,6 +155,7 @@ def write_debug_dump(
     }
     summary_path = output_dir / "summary.json"
     _write_json(summary_path, summary)
+    _logger.debug("Wrote saved-list debug artifacts", extra=url_log_fields(list_url, resolved_url))
     return summary_path
 
 
@@ -165,7 +170,7 @@ def write_place_debug_dump(
     diagnostics: PlaceExtractionDiagnostics,
     output_dir: Path,
 ) -> Path:
-    """Write place scrape artifacts plus a compact reusable selector recipe."""
+    """Write place snapshots, output, diagnostics, and repair evidence."""
     output_dir.mkdir(parents=True, exist_ok=True)
     artifacts_dir = output_dir / "artifacts"
     artifacts_dir.mkdir(exist_ok=True)
@@ -175,7 +180,6 @@ def write_place_debug_dump(
     _write_json(output_dir / "llm-evidence.json", evidence)
     _write_json(artifacts_dir / "snapshot.json", snapshot)
     _write_json(artifacts_dir / "merged-snapshot.json", merged_snapshot)
-    write_default_place_selector_recipe(output_dir / "selector-recipe.json")
 
     summary = {
         "source_url": place_url,
@@ -187,7 +191,6 @@ def write_place_debug_dump(
             "llm_evidence": "llm-evidence.json",
             "snapshot": "artifacts/snapshot.json",
             "merged_snapshot": "artifacts/merged-snapshot.json",
-            "selector_recipe": "selector-recipe.json",
         },
         "evidence_counts": {
             "text_lines": _list_len(evidence.get("text_lines")),
@@ -198,6 +201,7 @@ def write_place_debug_dump(
     }
     summary_path = output_dir / "summary.json"
     _write_json(summary_path, summary)
+    _logger.debug("Wrote place debug artifacts", extra=url_log_fields(place_url, resolved_url))
     return summary_path
 
 

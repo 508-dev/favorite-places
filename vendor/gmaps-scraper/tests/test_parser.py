@@ -102,6 +102,9 @@ class ParserTests(unittest.TestCase):
         self.assertEqual(parsed.list_id, "TESTLISTABC123456789")
         self.assertEqual(parsed.title, "Sample Coffee Stops")
         self.assertEqual(parsed.description, "Curated fixture data for parser tests")
+        assert parsed.diagnostics is not None
+        self.assertEqual(parsed.diagnostics.artifact_source, "runtime_state")
+        self.assertTrue(parsed.diagnostics.runtime_state_present)
         self.assertEqual(
             parsed.owner.to_dict() if parsed.owner else None,
             {
@@ -144,6 +147,60 @@ class ParserTests(unittest.TestCase):
             },
         )
         self.assertFalse(parsed.places[1].is_favorite)
+
+    def test_reads_inline_initialization_state_from_html(self) -> None:
+        html = (
+            '<html><head><script type="text/javascript">'
+            f"window.APP_INITIALIZATION_STATE={json.dumps(['noise', _LIST_NODE])};"
+            "</script></head><body>Map</body></html>"
+        )
+
+        parsed = parse_saved_list_artifacts(_LIST_URL, html=html)
+
+        self.assertEqual(
+            [place.name for place in parsed.places], ["Northwind Cafe", "Harbor Bakery"],
+        )
+        assert parsed.diagnostics is not None
+        self.assertEqual(parsed.diagnostics.artifact_source, "html")
+        self.assertFalse(parsed.diagnostics.runtime_state_present)
+        self.assertIsNone(parsed.diagnostics.collection_source)
+
+    def test_reports_missing_fields_without_claiming_payload_is_partial(self) -> None:
+        list_node = copy.deepcopy(_LIST_NODE)
+        list_node[0] = None
+        list_node[2] = None
+        metadata = list_node[8][0][1]
+        metadata[4] = None
+        metadata[6] = None
+
+        parsed = parse_saved_list_artifacts("https://www.google.com/maps", runtime_state=list_node)
+
+        assert parsed.diagnostics is not None
+        self.assertEqual(
+            parsed.diagnostics.quality_flags,
+            ["missing_list_id", "missing_address", "missing_cid"],
+        )
+        self.assertIsNone(parsed.diagnostics.expected_rows)
+
+    def test_flags_fewer_places_than_loaded_rows_after_parsing(self) -> None:
+        for case, extra_row in (
+            ("duplicate", _LIST_NODE[8][0]),
+            ("unparseable", [None, None, "Removed place"]),
+        ):
+            with self.subTest(case=case):
+                list_node = copy.deepcopy(_LIST_NODE)
+                list_node[8].append(copy.deepcopy(extra_row))
+                list_node.extend([None, None, None, 3])
+
+                parsed = parse_saved_list_artifacts(_LIST_URL, runtime_state=list_node)
+
+                self.assertEqual(len(parsed.places), 2)
+                assert parsed.diagnostics is not None
+                self.assertEqual(parsed.diagnostics.loaded_rows, 3)
+                self.assertEqual(parsed.diagnostics.expected_rows, 3)
+                self.assertEqual(
+                    parsed.diagnostics.quality_flags, ["fewer_places_than_loaded_rows"],
+                )
 
     def test_keeps_header_owner_first_when_collecting_collaborators(self) -> None:
         runtime_state = copy.deepcopy(["noise", _LIST_NODE])
@@ -249,12 +306,44 @@ class ParserTests(unittest.TestCase):
             "https://www.google.com/maps/search/?api=1&query=Northwind+Cafe%2C+Example+District",
         )
 
+    def test_builds_direct_cid_url_when_address_is_missing(self) -> None:
+        runtime_state = copy.deepcopy(["noise", _LIST_NODE])
+        place_metadata = runtime_state[1][8][0][1]
+        assert isinstance(place_metadata, list)
+        place_metadata[4] = None
+
+        parsed = parse_saved_list_artifacts(_LIST_URL, runtime_state=runtime_state)
+
+        self.assertIsNone(parsed.places[0].address)
+        self.assertEqual(parsed.places[0].cid, _NORTHWIND_CID)
+        self.assertEqual(
+            parsed.places[0].maps_url,
+            f"https://www.google.com/maps?cid={_NORTHWIND_CID}",
+        )
+
+    def test_builds_name_query_url_when_address_and_cid_are_missing(self) -> None:
+        runtime_state = copy.deepcopy(["noise", _LIST_NODE])
+        place_metadata = runtime_state[1][8][0][1]
+        assert isinstance(place_metadata, list)
+        place_metadata[4] = None
+        place_metadata[6] = [None]
+
+        parsed = parse_saved_list_artifacts(_LIST_URL, runtime_state=runtime_state)
+
+        self.assertIsNone(parsed.places[0].address)
+        self.assertIsNone(parsed.places[0].cid)
+        self.assertEqual(
+            parsed.places[0].maps_url,
+            "https://www.google.com/maps/search/?api=1&query=Northwind+Cafe",
+        )
+
     def test_uses_fingerprint_not_positive_s2_cell_from_slot_6(self) -> None:
         runtime_state = copy.deepcopy(["noise", _LIST_NODE])
 
         parsed = parse_saved_list_artifacts(_LIST_URL, runtime_state=runtime_state)
 
         self.assertEqual(parsed.places[0].cid, _NORTHWIND_CID)
+        self.assertEqual(parsed.places[0].cid_aliases, [_NORTHWIND_CELL_ID])
         self.assertNotEqual(parsed.places[0].cid, _NORTHWIND_CELL_ID)
 
     def test_normalizes_negative_slot_6_fingerprint(self) -> None:
@@ -332,6 +421,64 @@ class ParserTests(unittest.TestCase):
         self.assertEqual(parsed.places[0].cid, _NORTHWIND_CID)
         self.assertEqual(parsed.places[1].cid, _HARBOR_CID)
 
+    def test_dedupes_places_with_cid_alias(self) -> None:
+        runtime_state = copy.deepcopy(["noise", _LIST_NODE])
+        original_metadata = runtime_state[1][8][0][1]
+        assert isinstance(original_metadata, list)
+        original_metadata[7] = None
+        duplicate_place = copy.deepcopy(runtime_state[1][8][0])
+        duplicate_metadata = duplicate_place[1]
+        assert isinstance(duplicate_metadata, list)
+        duplicate_metadata[6] = [_NORTHWIND_CELL_ID]
+        duplicate_metadata[7] = None
+        runtime_state[1][8].append(duplicate_place)
+
+        parsed = parse_saved_list_artifacts(_LIST_URL, runtime_state=runtime_state)
+
+        self.assertEqual(len(parsed.places), 2)
+        self.assertEqual(parsed.places[0].cid, _NORTHWIND_CID)
+        self.assertEqual(parsed.places[1].cid, _HARBOR_CID)
+
+    def test_prefers_canonical_place_when_cid_alias_duplicate_appears_first(self) -> None:
+        runtime_state = copy.deepcopy(["noise", _LIST_NODE])
+        duplicate_place = copy.deepcopy(runtime_state[1][8][0])
+        duplicate_metadata = duplicate_place[1]
+        assert isinstance(duplicate_metadata, list)
+        duplicate_metadata[6] = [_NORTHWIND_CELL_ID]
+        duplicate_metadata[7] = None
+        runtime_state[1][8].insert(0, duplicate_place)
+
+        parsed = parse_saved_list_artifacts(_LIST_URL, runtime_state=runtime_state)
+
+        self.assertEqual(len(parsed.places), 2)
+        self.assertEqual(parsed.places[0].cid, _NORTHWIND_CID)
+        self.assertEqual(parsed.places[0].cid_aliases, [_NORTHWIND_CELL_ID])
+        self.assertEqual(parsed.places[0].google_id, "/g/11northwind")
+        self.assertEqual(parsed.places[1].cid, _HARBOR_CID)
+
+    def test_keeps_distinct_places_with_same_cid_alias_and_coordinates(self) -> None:
+        runtime_state = copy.deepcopy(["noise", _LIST_NODE])
+        first_place = runtime_state[1][8][0]
+        second_place = runtime_state[1][8][1]
+        assert isinstance(first_place, list)
+        assert isinstance(second_place, list)
+        first_metadata = first_place[1]
+        second_metadata = second_place[1]
+        assert isinstance(first_metadata, list)
+        assert isinstance(second_metadata, list)
+        first_metadata[7] = None
+        second_metadata[5] = [None, None, 35.6501307, 139.6868459]
+        second_metadata[6] = [_NORTHWIND_CELL_ID, _HARBOR_CID]
+        second_metadata[7] = None
+
+        parsed = parse_saved_list_artifacts(_LIST_URL, runtime_state=runtime_state)
+
+        self.assertEqual(len(parsed.places), 2)
+        self.assertEqual(parsed.places[0].cid, _NORTHWIND_CID)
+        self.assertEqual(parsed.places[1].cid, _HARBOR_CID)
+        self.assertEqual(parsed.places[0].cid_aliases, [_NORTHWIND_CELL_ID])
+        self.assertEqual(parsed.places[1].cid_aliases, [_NORTHWIND_CELL_ID])
+
     def test_keeps_distinct_places_that_share_a_cid(self) -> None:
         runtime_state = copy.deepcopy(["noise", _LIST_NODE])
         second_place = runtime_state[1][8][1]
@@ -382,6 +529,16 @@ class ParserTests(unittest.TestCase):
             parsed.places[0].maps_url,
             "https://www.google.com/maps/search/?api=1&query=Northwind+Cafe%2C+Example+District",
         )
+
+    def test_preserves_cid_and_alias_in_a_padded_identifier_tuple(self) -> None:
+        runtime_state = copy.deepcopy(["noise", _LIST_NODE])
+        first_metadata = runtime_state[1][8][0][1]
+        first_metadata[6] = [_NORTHWIND_CELL_ID, None, _NORTHWIND_CID, None]
+
+        parsed = parse_saved_list_artifacts(_LIST_URL, runtime_state=runtime_state)
+
+        self.assertEqual(parsed.places[0].cid, _NORTHWIND_CID)
+        self.assertEqual(parsed.places[0].cid_aliases, [_NORTHWIND_CELL_ID])
 
     def test_does_not_use_owner_payload_inside_metadata_as_place_cid(self) -> None:
         runtime_state = copy.deepcopy(["noise", _LIST_NODE])
@@ -777,6 +934,44 @@ class ParserTests(unittest.TestCase):
             parsed.places[1].added_by.to_dict() if parsed.places[1].added_by else None,
             {"name": "Name Only Collaborator"},
         )
+
+    def test_accepts_trailing_metadata_in_known_owner_records(self) -> None:
+        runtime_state = copy.deepcopy(["noise", _LIST_NODE])
+        list_node = runtime_state[1]
+        list_node[3].append({"verified": True})
+        list_node[8][1][12].append({"verified": False})
+
+        parsed = parse_saved_list_artifacts(_LIST_URL, runtime_state=runtime_state)
+
+        self.assertEqual(
+            parsed.owner.to_dict() if parsed.owner else None,
+            {
+                "name": "Fixture Owner",
+                "photo_url": "https://lh3.googleusercontent.com/a-/fixture-owner",
+                "profile_id": "104356373423434804635",
+            },
+        )
+        collaborator = {
+            "name": "Fixture Collaborator",
+            "photo_url": "https://lh3.googleusercontent.com/a-/fixture-collaborator",
+            "profile_id": "205678901234567890123",
+        }
+        added_by = parsed.places[1].added_by
+        self.assertEqual(added_by.to_dict() if added_by else None, collaborator)
+        self.assertEqual([owner.to_dict() for owner in parsed.collaborators], [collaborator])
+
+    def test_ignores_unrelated_long_records_when_scanning_for_owners(self) -> None:
+        runtime_state = copy.deepcopy(["noise", _LIST_NODE])
+        list_node = runtime_state[1]
+        list_node.append(["Header label", 1, None, {"visible": True}])
+        first_place = list_node[8][0]
+        first_place[12] = None
+        first_place.append(["Photo attribution", ["image"], 42, None])
+
+        parsed = parse_saved_list_artifacts(_LIST_URL, runtime_state=runtime_state)
+
+        self.assertIsNone(parsed.places[0].added_by)
+        self.assertEqual([owner.name for owner in parsed.collaborators], ["Fixture Collaborator"])
 
     def test_filters_sparse_owner_from_collaborators(self) -> None:
         runtime_state = copy.deepcopy(["noise", _LIST_NODE])

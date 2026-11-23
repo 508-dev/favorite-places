@@ -84,7 +84,10 @@ function renderAnchor(href: string, label: string): string {
 
 const RICH_TEXT_PATTERN = /\[([^\]\n]+)\]\((https?:\/\/[^\s)]+)\)|(https?:\/\/[^\s<]+)/gi;
 
-export function renderRichText(value: string | null | undefined): string | null {
+export function renderRichText(
+  value: string | null | undefined,
+  { bareLinkLabel = "url" }: { bareLinkLabel?: "url" | "hostname" } = {},
+): string | null {
   if (!value) {
     return null;
   }
@@ -106,7 +109,8 @@ export function renderRichText(value: string | null | undefined): string | null 
       const href = normalizeUrl(trimmedUrl);
 
       if (href) {
-        html += renderAnchor(href, escapeHtml(trimmedUrl));
+        const label = bareLinkLabel === "hostname" ? new URL(href).hostname : trimmedUrl;
+        html += renderAnchor(href, escapeHtml(label));
         html += escapeHtml(trailingPunctuation);
       } else {
         html += formatPlainText(fullMatch);

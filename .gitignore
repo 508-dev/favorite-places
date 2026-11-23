@@ -11,6 +11,7 @@ __pycache__/
 .DS_Store
 src/data/generated/
 public/data/search-index.json
+public/data/chat/
 .gstack/
 playwright-report/
 test-results/
@@ -19,3 +20,5 @@ site/data/cache/google-places/
 site.example/data/cache/*
 !site.example/data/cache/.gitkeep
 !site.example/data/cache/places.sqlite
+
+.wrangler/

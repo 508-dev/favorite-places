@@ -32,7 +32,8 @@ Place entries inside saved lists are detected structurally. The coordinate tuple
 pattern `[null, null, lat, lng]` is the strongest signal for a saved place
 record. The parser then uses surrounding parent structures to recover name,
 address, note, favorite status, Google identifiers, ownership metadata, and a
-Maps search URL.
+direct CID URL for addressless records when available, or a Maps search URL
+otherwise.
 
 Saved-list output preserves:
 
@@ -86,6 +87,11 @@ These payloads can contain useful values when the rendered DOM is thin, blocked,
 or only partially available. Because their shape is undocumented, extraction
 from preview payloads should favor strongly typed signals: coordinates, plus
 codes, phone-looking fields, postal addresses, and compact address arrays.
+When the final canonical `/maps/place/` URL encodes explicit `!3d`/`!4d` pin
+coordinates, those coordinates take precedence: preview payloads can include
+unrelated nearby entities or booking offers alongside the selected place. An
+`@lat,lng` viewport center remains a fallback only when structured coordinates
+are unavailable.
 
 ## Legacy Payloads
 

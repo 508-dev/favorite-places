@@ -1,23 +1,61 @@
 @layer components {
+  /* Hero */
   .home-welcome {
     display: grid;
-    gap: 0.75rem;
-    padding: clamp(1.15rem, 4vw, 2.3rem);
-    border: 1px solid #ecdfcf;
-    border-radius: 1.25rem;
-    background: #fbf4e9;
+    gap: 1rem;
+    max-width: 44rem;
+    padding: clamp(2rem, 6vw, 4.5rem) 0 clamp(1.75rem, 4vw, 2.75rem);
   }
 
   .home-welcome .ui-display {
-    font-size: clamp(2.25rem, 5.5vw, 4.25rem);
+    font-size: clamp(2.6rem, 6.4vw, 4.75rem);
+    font-weight: 500;
+    line-height: 1.02;
+    letter-spacing: -0.025em;
+  }
+
+  .home-welcome .ui-lede {
+    max-width: 36rem;
+    font-size: clamp(1.02rem, 1.4vw, 1.15rem);
+    line-height: 1.6;
   }
 
   .home-welcome-actions {
     display: flex;
     flex-wrap: wrap;
     align-items: center;
-    gap: 0.65rem 1.2rem;
-    margin-top: 0.3rem;
+    gap: 0.9rem 1.6rem;
+    margin-top: 0.6rem;
+  }
+
+  .home-browse-link {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.55rem;
+    min-height: 3rem;
+    padding: 0 1.35rem;
+    border-radius: 999px;
+    background: var(--ink);
+    color: #fffaf2;
+    font-weight: 700;
+    text-decoration: none;
+    box-shadow: 0 10px 24px -12px rgba(43, 38, 32, 0.6);
+    transition:
+      background-color 160ms ease,
+      transform 160ms ease;
+  }
+
+  .home-browse-link:hover {
+    background: var(--accent-strong);
+    transform: translateY(-1px);
+  }
+
+  .home-browse-link span {
+    transition: transform 160ms ease;
+  }
+
+  .home-browse-link:hover span {
+    transform: translateY(2px);
   }
 
   .home-stats {
@@ -44,36 +82,24 @@
     font-weight: 700;
   }
 
-  .home-browse-link {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.5rem;
-    min-height: 2.75rem;
-    padding: 0.45rem 0.95rem;
-    border-radius: 999px;
-    background: var(--accent-strong);
-    color: white;
-    font-weight: 700;
-    text-decoration: none;
-  }
-
-  .home-browse-link:hover {
-    text-decoration: underline;
-  }
-
+  /* Featured postcards */
   .home-browser {
-    margin-top: clamp(1.25rem, 3vw, 2.5rem);
+    margin-top: 0;
   }
 
   .home-featured {
-    margin-bottom: clamp(1.6rem, 4vw, 3.1rem);
+    margin-bottom: clamp(2.5rem, 6vw, 4.5rem);
+  }
+
+  .home-featured h2 {
+    font-size: clamp(1.35rem, 2.2vw, 1.6rem);
   }
 
   .home-postcards {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(min(100%, 14rem), 1fr));
-    gap: clamp(0.65rem, 1.5vw, 1.1rem);
-    margin: 0.8rem 0 0;
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 15rem), 1fr));
+    gap: clamp(0.9rem, 2vw, 1.5rem);
+    margin: 1rem 0 0;
     padding: 0;
     list-style: none;
   }
@@ -81,107 +107,254 @@
   .home-postcard {
     display: grid;
     height: 100%;
-    overflow: hidden;
-    border: 1px solid #e9dbca;
-    border-radius: 1rem;
-    background: #fffaf2;
+    padding: 0.5rem;
+    border-radius: calc(var(--radius-lg) + 0.25rem);
+    background: var(--surface);
+    box-shadow: var(--browse-shadow);
     color: var(--ink);
     text-decoration: none;
+    transition:
+      box-shadow 220ms ease,
+      transform 220ms ease;
   }
 
   .home-postcard:hover,
   .home-postcard[aria-current="true"] {
-    border-color: var(--accent-strong);
-    box-shadow: 0 0 0 1px var(--accent-strong);
+    box-shadow: var(--browse-shadow-lift);
+    transform: translateY(-3px);
+  }
+
+  .home-postcard[aria-current="true"] {
+    box-shadow:
+      0 0 0 2px var(--accent),
+      var(--browse-shadow-lift);
   }
 
   .home-postcard img {
     width: 100%;
     height: auto;
-    aspect-ratio: 2.5;
+    aspect-ratio: 16 / 9;
+    border-radius: calc(var(--radius-lg) - 0.25rem);
     object-fit: cover;
-    background: #eee0d0;
+    background: var(--surface-strong);
+    transition: filter 220ms ease;
+  }
+
+  .home-postcard:hover img {
+    filter: saturate(1.08) brightness(1.02);
   }
 
   .home-postcard-caption {
     display: grid;
     grid-template-columns: minmax(0, 1fr) auto;
     align-content: center;
-    column-gap: 0.6rem;
-    padding: 0.65rem 0.9rem;
-    line-height: 1.3;
+    column-gap: 0.75rem;
+    padding: 0.85rem 0.6rem 0.45rem;
+    line-height: 1.25;
   }
 
   .home-postcard strong {
-    font-size: clamp(1.15rem, 2vw, 1.5rem);
+    font-size: clamp(1.25rem, 2vw, 1.45rem);
     overflow-wrap: anywhere;
   }
 
   .home-postcard-caption > span:first-of-type {
     grid-column: 1;
+    margin-top: 0.2rem;
     color: var(--muted);
-    font-size: 0.85rem;
+    font-size: 0.86rem;
   }
 
   .home-postcard-arrow {
+    display: grid;
     grid-area: 1 / 2 / span 2;
+    place-items: center;
     align-self: center;
-    color: var(--accent-strong);
-    font-size: 1.25rem;
+    width: 2.25rem;
+    height: 2.25rem;
+    border-radius: 50%;
+    background: var(--surface-strong);
+    color: var(--ink);
+    font-size: 1rem;
+    transition:
+      background-color 220ms ease,
+      color 220ms ease,
+      transform 220ms ease;
+  }
+
+  .home-postcard:hover .home-postcard-arrow {
+    background: var(--ink);
+    color: #fffaf2;
+    transform: translateX(2px);
   }
 
   .home-postcard:focus-visible,
   .home-browse-link:focus-visible,
   .home-browser [data-home-browse-heading]:focus-visible {
-    outline: 2px solid var(--accent-strong);
+    outline: 2px solid var(--accent);
     outline-offset: 3px;
   }
 
+  /* Find a guide */
   .home-browser [data-home-browse-heading] {
+    display: grid;
+    gap: 0.35rem;
     scroll-margin-top: 1rem;
   }
 
-  .home-browser [data-country-block] {
-    scroll-margin-top: 8rem;
+  .home-browser [data-home-browse-heading] .ui-section-title {
+    font-size: clamp(1.9rem, 3.4vw, 2.6rem);
+    font-weight: 500;
+    letter-spacing: -0.03em;
   }
 
-  .home-controls {
-    margin: 0.75rem 0 1rem;
-    border-radius: 1rem;
+  .home-browser [data-country-block] {
+    scroll-margin-top: 7rem;
+  }
+
+  .home-controls.controls-panel {
+    margin: 1.1rem 0 2.6rem;
+    padding: 0.45rem;
+    border: 1px solid var(--line);
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--surface) 92%, transparent);
+    box-shadow: var(--browse-shadow);
+    -webkit-backdrop-filter: blur(14px);
+    backdrop-filter: blur(14px);
   }
 
   .home-control-row {
     display: grid;
-    grid-template-columns: minmax(0, 1.5fr) minmax(10rem, 1fr) auto;
-    gap: 0.75rem;
-    align-items: end;
+    grid-template-columns: minmax(0, 1.6fr) minmax(10rem, 1fr) auto;
+    gap: 0;
+    align-items: center;
+  }
+
+  .home-controls .control-group {
+    position: relative;
+    gap: 0;
+  }
+
+  .home-controls .ui-input {
+    min-height: 2.9rem;
+    padding-block: 0;
+    border: 0;
+    border-radius: 999px;
+    background: transparent;
+    font-size: 1rem;
+  }
+
+  .home-controls .ui-input:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: -2px;
+  }
+
+  .home-search-field .ui-input {
+    padding-left: 2.85rem;
+  }
+
+  .home-search-field .ui-input::placeholder {
+    color: color-mix(in srgb, var(--muted) 75%, transparent);
+  }
+
+  .home-search-icon {
+    position: absolute;
+    top: 50%;
+    left: 1.1rem;
+    color: var(--muted);
+    pointer-events: none;
+    transform: translateY(-50%);
+  }
+
+  .home-country-field::before {
+    content: "";
+    position: absolute;
+    top: 0.65rem;
+    bottom: 0.65rem;
+    left: 0;
+    width: 1px;
+    background: var(--line);
   }
 
   .home-controls select {
     width: 100%;
     cursor: pointer;
+    appearance: none;
+    padding-right: 2.5rem;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath d='M1 1.5 6 6.5l5-5' fill='none' stroke='%236e6458' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 1.1rem center;
   }
 
   .home-controls .home-nearby {
     display: inline-flex;
     justify-content: center;
     width: auto;
+    height: 2.9rem;
     gap: 0.45rem;
-    padding-inline: 0.7rem;
-    font-size: 0.85rem;
+    padding-inline: 1.1rem;
+    border: 0;
+    border-radius: 999px;
+    background: var(--surface-strong);
+    color: var(--ink);
+    font-size: 0.88rem;
     font-weight: 700;
     white-space: nowrap;
+    transition: background-color 160ms ease;
+  }
+
+  .home-controls .home-nearby:hover,
+  .home-controls .home-nearby:focus-visible {
+    background: color-mix(in srgb, var(--surface-strong) 70%, var(--ink) 8%);
+    color: var(--ink);
+  }
+
+  .home-controls .home-nearby[data-active="true"] {
+    background: var(--ink);
+    color: #fffaf2;
   }
 
   .home-control-status {
     display: flex;
     flex-wrap: wrap;
     gap: 0.2rem 0.85rem;
-    margin-top: 0.6rem;
+    margin: 0;
+    padding: 0;
+  }
+
+  .home-controls .home-control-status {
+    position: absolute;
+    top: calc(100% + 0.45rem);
+    left: 1rem;
+    right: 1rem;
+    pointer-events: none;
+  }
+
+  .home-controls .home-control-status p {
+    padding: 0.1rem 0.6rem;
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--bg) 88%, transparent);
+    font-size: 0.82rem;
   }
 
   .home-control-status p:empty {
     display: none;
+  }
+
+  /* Map panel */
+  .home-browser .home-map-panel {
+    border: 1px solid var(--line);
+    border-radius: var(--radius-lg);
+    background: var(--surface);
+    box-shadow: none;
+  }
+
+  .home-browser .home-map-panel .section-title {
+    font-size: 1.25rem;
+  }
+
+  .home-browser .home-map-panel .guide-map {
+    border-radius: calc(var(--radius-lg) - 0.35rem);
   }
 
   .home-browser .home-map-panel[data-collapsed="true"] {
@@ -189,14 +362,159 @@
     flex-wrap: wrap;
     align-items: center;
     justify-content: space-between;
+    padding: 0.7rem 0.7rem 0.7rem 1.25rem;
   }
 
+  .home-browser .map-inline-toggle {
+    min-height: 2.3rem;
+    padding-inline: 1rem;
+    border: 0;
+    background: var(--ink);
+    color: #fffaf2;
+    box-shadow: none;
+  }
+
+  .home-browser .map-inline-toggle:hover,
+  .home-browser .map-inline-toggle:focus-visible {
+    background: var(--accent-strong);
+    color: #fffaf2;
+  }
+
+  /* Country sections */
+  .home-browser .country-block {
+    margin-top: 0;
+    padding-top: clamp(1.75rem, 3.5vw, 2.5rem);
+  }
+
+  .home-browser .country-block + .country-block {
+    margin-top: 0;
+    border-top: 0;
+  }
+
+  .home-browser .country-section-head {
+    margin-bottom: 1rem;
+  }
+
+  .home-browser .country-title-row .ui-section-title {
+    font-size: clamp(1.45rem, 2.4vw, 1.8rem);
+  }
+
+  .home-browser .count-chip {
+    min-height: 1.6rem;
+    border: 0;
+    background: var(--surface-strong);
+  }
+
+  .home-browser .card-grid {
+    grid-template-columns: repeat(auto-fill, minmax(min(100%, 19rem), 1fr));
+    gap: clamp(0.85rem, 1.6vw, 1.25rem);
+  }
+
+  /* Guide cards */
+  .home-browser .guide-card {
+    gap: 0.9rem;
+    padding: 1.35rem 1.4rem 1.2rem;
+    border: 1px solid color-mix(in srgb, var(--line) 70%, transparent);
+    border-radius: var(--radius-lg);
+    background: var(--surface);
+    box-shadow: var(--browse-shadow);
+    transition:
+      box-shadow 220ms ease,
+      transform 220ms ease,
+      border-color 220ms ease;
+  }
+
+  .home-browser .guide-card::before {
+    display: none;
+  }
+
+  .home-browser .guide-card:hover {
+    border-color: var(--line);
+    background: var(--surface);
+    box-shadow: var(--browse-shadow-lift);
+    transform: translateY(-3px);
+  }
+
+  .home-browser .guide-card .ui-card-title {
+    font-size: 1.35rem;
+    line-height: 1.2;
+  }
+
+  .home-browser .guide-card .ui-stack {
+    gap: 0.5rem;
+  }
+
+  .home-browser .guide-card .ui-copy {
+    font-size: 0.95rem;
+    line-height: 1.55;
+  }
+
+  .home-browser .guide-card .ui-tag-row {
+    gap: 0.4rem;
+  }
+
+  .home-browser .ui-tag-pill {
+    min-height: 1.85rem;
+    padding-inline: 0.7rem;
+    border: 0;
+    border-radius: 999px;
+    background: var(--surface-strong);
+    color: var(--muted);
+    font-size: 0.8rem;
+    transition:
+      background-color 160ms ease,
+      color 160ms ease;
+  }
+
+  .home-browser .ui-tag-pill:hover,
+  .home-browser .ui-tag-pill:focus-visible {
+    background: var(--accent-soft);
+    color: var(--accent-strong);
+  }
+
+  .home-browser .guide-card-footer {
+    padding-top: 0.85rem;
+    border-top: 1px dashed var(--line);
+  }
+
+  .home-browser .guide-card-place-count {
+    background: transparent;
+    padding-inline: 0;
+  }
+
+  /* Search results */
+  .home-browser .ui-search-results {
+    border-top: 0;
+  }
+
+  /* About */
   .home-about {
     display: grid;
-    gap: 0.7rem;
-    margin-top: 2rem;
-    padding-top: 1.25rem;
-    border-top: 1px solid var(--line);
+    gap: 0.9rem;
+    margin-top: clamp(3rem, 7vw, 5rem);
+    padding: clamp(1.5rem, 4vw, 2.5rem);
+    border-radius: calc(var(--radius-lg) + 0.4rem);
+    background: var(--surface-strong);
+  }
+
+  .home-about .ui-section-title {
+    font-size: clamp(1.5rem, 2.6vw, 1.9rem);
+    font-weight: 500;
+  }
+
+  .home-about .social-card {
+    width: min(100%, 34rem);
+    padding: 0;
+    border: 0;
+    background: transparent;
+    box-shadow: none;
+  }
+
+  .home-about .social-card-link {
+    border-color: transparent;
+    border-radius: 0.85rem;
+    background: var(--surface);
+    box-shadow: var(--browse-shadow);
   }
 
   @media (max-width: 719px) {
@@ -206,24 +524,60 @@
 
     .home-postcards {
       grid-template-columns: minmax(0, 1fr);
+      gap: 0.7rem;
     }
 
     .home-postcard {
-      grid-template-columns: minmax(5rem, 32%) minmax(0, 1fr);
-      min-height: 4rem;
+      grid-template-columns: 6.5rem minmax(0, 1fr);
+      align-items: center;
+      padding: 0.4rem;
     }
 
     .home-postcard img {
-      height: 100%;
+      height: 4.5rem;
       aspect-ratio: auto;
+      border-radius: 0.75rem;
+    }
+
+    .home-postcard-caption {
+      padding: 0 0.4rem 0 0.9rem;
+    }
+
+    .home-controls.controls-panel {
+      padding: 0.4rem;
+      border-radius: 1.4rem;
     }
 
     .home-control-row {
       grid-template-columns: minmax(0, 1fr) auto;
+      row-gap: 0.4rem;
     }
 
     .home-control-row > :first-child {
       grid-column: 1 / -1;
+      border-bottom: 1px solid var(--line);
     }
+
+    .home-country-field::before {
+      display: none;
+    }
+  }
+}
+
+/* Unlayered: global.css has unlayered mobile map-panel rules that would otherwise win. */
+@media (max-width: 979px) {
+  .home-browser .home-map-panel[data-collapsed="true"] {
+    flex-wrap: nowrap;
+    gap: 0.75rem;
+    padding: 0.7rem 0.7rem 0.7rem 1.1rem;
+  }
+
+  .home-browser .home-map-panel[data-collapsed="true"] .home-map-head {
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+
+  .home-browser .home-map-panel:not([data-collapsed="true"]) {
+    padding: 0.6rem;
   }
 }

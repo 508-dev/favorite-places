@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Literal
 
 type AddressParts = list[str | list[str]]
 
@@ -34,6 +34,7 @@ PLACE_LLM_REPAIR_FIELDS: tuple[str, ...] = (
     "lng",
     "limited_view",
     "google_place_id",
+    "cid",
     "review_topics",
     "about_sections",
 )
@@ -82,6 +83,7 @@ class Place:
     maps_url: str
     cid: str | None = None
     google_id: str | None = None
+    cid_aliases: list[str] = field(default_factory=list)
     is_favorite: bool = False
     added_by: ListOwner | None = None
 
@@ -100,11 +102,46 @@ class Place:
             del result["note"]
         if self.cid is not None:
             result["cid"] = self.cid
+        if self.cid_aliases:
+            result["cid_aliases"] = self.cid_aliases
         if self.google_id is not None:
             result["google_id"] = self.google_id
         if self.added_by is not None:
             result["added_by"] = self.added_by.to_dict(include_photo_url=False)
         return result
+
+
+type SavedListArtifactSource = Literal["runtime_state", "script_texts", "html"]
+type SavedListCollectionSource = Literal["http", "browser"]
+
+
+@dataclass(slots=True)
+class SavedListExtractionDiagnostics:
+    """Provenance and quality signals for a parsed Google Maps saved list."""
+
+    artifact_source: SavedListArtifactSource
+    runtime_state_present: bool
+    collection_source: SavedListCollectionSource | None = None
+    used_browser_fallback: bool = False
+    preload_expanded: bool = False
+    preload_paginated: bool = False
+    loaded_rows: int | None = None
+    expected_rows: int | None = None
+    quality_flags: list[str] = field(default_factory=list)
+
+    def to_dict(self) -> dict[str, object]:
+        """Convert diagnostics into a JSON-serializable dictionary."""
+        return {
+            "artifact_source": self.artifact_source,
+            "runtime_state_present": self.runtime_state_present,
+            "collection_source": self.collection_source,
+            "used_browser_fallback": self.used_browser_fallback,
+            "preload_expanded": self.preload_expanded,
+            "preload_paginated": self.preload_paginated,
+            "loaded_rows": self.loaded_rows,
+            "expected_rows": self.expected_rows,
+            "quality_flags": list(self.quality_flags),
+        }
 
 
 @dataclass(slots=True)
@@ -119,10 +156,11 @@ class SavedList:
     places: list[Place]
     owner: ListOwner | None = None
     collaborators: list[ListOwner] = field(default_factory=list)
+    diagnostics: SavedListExtractionDiagnostics | None = None
 
     def to_dict(self) -> dict[str, object]:
         """Convert a saved list into a JSON-serializable dictionary."""
-        return {
+        result: dict[str, object] = {
             "source_url": self.source_url,
             "resolved_url": self.resolved_url,
             "list_id": self.list_id,
@@ -134,6 +172,30 @@ class SavedList:
             ],
             "places": [place.to_dict() for place in self.places],
         }
+        if self.diagnostics is not None:
+            result["diagnostics"] = self.diagnostics.to_dict()
+        return result
+
+
+@dataclass(slots=True)
+class SavedListScrapeResult:
+    """Per-URL result for a batch saved-list scrape."""
+
+    source_url: str
+    saved_list: SavedList | None = None
+    error: str | None = None
+    attempts: int = 1
+
+    def to_dict(self) -> dict[str, object]:
+        """Convert a batch result into a JSON-serializable dictionary."""
+        result: dict[str, object] = {"source_url": self.source_url}
+        if self.saved_list is not None:
+            result["saved_list"] = self.saved_list.to_dict()
+        if self.error is not None:
+            result["error"] = self.error
+        if self.attempts > 1:
+            result["attempts"] = self.attempts
+        return result
 
 
 @dataclass(slots=True)
@@ -286,6 +348,22 @@ class PlaceReservationLink:
 
 
 @dataclass(slots=True)
+class PlaceOpeningHours:
+    """One day from the displayed Maps schedule, with localized labels."""
+
+    day: str
+    hours: list[str]
+    is_open_24h: bool | None = None
+
+    def to_dict(self) -> dict[str, object]:
+        """Convert the day's opening hours into a JSON-serializable dictionary."""
+        result: dict[str, object] = {"day": self.day, "hours": self.hours}
+        if self.is_open_24h is not None:
+            result["is_open_24h"] = self.is_open_24h
+        return result
+
+
+@dataclass(slots=True)
 class PlaceDetails:
     """A parsed Google Maps place page."""
 
@@ -326,6 +404,8 @@ class PlaceDetails:
     diagnostics: PlaceExtractionDiagnostics | None = None
     search_result_description: str | None = None
     search_result_url: str | None = None
+    cid: str | None = None
+    opening_hours: list[PlaceOpeningHours] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, object]:
         """Convert place details into a JSON-serializable dictionary."""
@@ -333,6 +413,7 @@ class PlaceDetails:
             "source_url": self.source_url,
             "resolved_url": self.resolved_url,
             "google_place_id": self.google_place_id,
+            "cid": self.cid,
             "name": self.name,
             "category": self.category,
             "category_display_en": self.category_display_en,
@@ -349,6 +430,7 @@ class PlaceDetails:
             "address_display_en_confidence": self.address_display_en_confidence,
             "located_in": self.located_in,
             "status": self.status,
+            "opening_hours": [day.to_dict() for day in self.opening_hours],
             "website": self.website,
             "reservation_links": [link.to_dict() for link in self.reservation_links],
             "phone": self.phone,

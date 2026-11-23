@@ -320,15 +320,25 @@ Use a restricted browser key for `GOOGLE_MAPS_JS_API_KEY`. Do not expose `GOOGLE
 
 This is a static Astro site, so it can deploy to Cloudflare Pages, GitHub Pages, or similar static hosts. An optional Cloudflare Pages Function powers place chat when enabled; static search works without it.
 
-### Place chat prototype
+### Optional place chat
 
-The homepage chat searches the generated place index, sends at most 12 matching saved places and recent messages to a small chat model, then validates the returned place IDs before rendering links. It only recommends places already in the guides. The UI and endpoint are off by default.
+The chat bubble appears on the home page and each guide when enabled. On the home page, Cloudflare Clef Flash classifies the visitor's request against compact guide summaries, then ranks a bounded pool of up to 12 places per selected guide. The chat model receives at most six places per guide, 12 total. A guide page ranks up to 24 of its own places and sends at most 12 to chat. The model can select up to six results. Returned guide and place IDs are checked against the shortlist and rendered as cards with available photos, descriptions, ratings and prices. If classification fails, the Function uses the site's built-in search ranking. Chat remains limited to curated places. The UI and endpoint are off by default.
 
-On Cloudflare Pages, add a Workers AI binding named `AI`, set `PUBLIC_CHAT_ENABLED=true` for the build, and set `CHAT_ENABLED=true` for the Function. The default model is `@cf/zai-org/glm-4.7-flash`; change it with `CHAT_MODEL`. The Function returns a 503 when the binding is missing or inference fails, and the existing search remains available. Preview the Function with Wrangler Pages dev and an `AI` binding; Astro dev alone does not run Pages Functions. Requests to Workers AI during local testing use the Cloudflare account's allocation.
+To enable chat on Cloudflare Pages, add a Workers AI binding named `AI`, set `PUBLIC_CHAT_ENABLED=true` at build time, and set `CHAT_ENABLED=true` for the Pages Function. Keep encrypted keys in the Pages dashboard. The default model is `@cf/zai-org/glm-4.7-flash`; change it with `CHAT_MODEL`. The Function returns a 503 when the binding is missing or inference fails, and the existing search remains available. Preview the Function with Wrangler Pages dev and an `AI` binding; Astro dev alone does not run Pages Functions. Requests to Workers AI during local testing use the Cloudflare account's allocation.
 
-For another provider, set `CHAT_PROVIDER=openai-compatible`, `CHAT_MODEL`, `CHAT_API_BASE_URL`, and a server-only `CHAT_API_KEY`. Use a dedicated key with a provider-side budget before making this public. Request size, message history, candidate count, and output length are bounded in code; they do not provide a spending cap. Cloudflare's Workers Free plan stops Workers AI calls at its daily free allocation. A paid plan or another provider requires its own budget controls. Do not put provider keys in `PUBLIC_` variables.
+For another provider, set `CHAT_PROVIDER=openai-compatible`, `CHAT_MODEL`, `CHAT_API_BASE_URL`, and a server-only `CHAT_API_KEY`. The home page uses built-in guide search instead of Clef Flash for that provider. Use a dedicated key with a provider-side budget before making this public. Request size, message history, candidate count, and output length are bounded in code; they do not provide a spending cap. Cloudflare's Workers Free plan stops Workers AI calls at its daily free allocation. A paid plan or another provider requires its own budget controls. Do not put provider keys in `PUBLIC_` variables.
 
 External place discovery is outside this prototype. If added, it should run only after a deliberate user action, with a separate provider adapter, a fixed result limit, caching, and a hard quota or prepaid budget. Keep discovered places labeled separately from curated guide places and avoid adding them to the source index automatically.
+
+Guide chat can propose search terms, supported tags and a rating threshold through an explicit **Apply filters** action. The Function checks the proposal against saved data; the guide validates it again before updating its existing controls. Filters are applied only on click and can be undone. Follow-ups resolve the current search intent before retrieval, preserving unchanged preferences and replacing changed food types or locations. The browser carries a versioned search context and validated previous result IDs between turns.
+
+Run the live chat evals against a chat-enabled deployment (this uses that deployment's AI allowance):
+
+```bash
+CHAT_EVAL_BASE_URL=https://your-preview.pages.dev bun run eval:chat --report .context/evals/chat.json
+```
+
+The fixtures in `tests/fixtures/chat-evals.json` cover food changes, retained food/area with a rating refinement, area changes, mood refinements, three-turn context, and city changes. The deployment needs the Taipei, Tokyo and Osaka guides for the complete suite. Use `--case replace-food-preserve-area` for one trajectory. The runner checks resolved intent, stale recommendations, geographic radius, excluded neighborhoods, rating filters and guide selection; failed assertions exit nonzero. Frontend unit tests verify the assertions without inference. These are regression checks for specific behaviors, not a comprehensive quality score.
 
 For Cloudflare Pages, use the custom build path documented in [Architecture](docs/ARCHITECTURE.md#cloudflare-pages). Do not rely on Cloudflare's automatic Python dependency detection for this repo.
 

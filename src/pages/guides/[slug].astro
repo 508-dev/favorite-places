@@ -263,7 +263,7 @@ const reviewFilterOptions = REVIEW_FILTER_THRESHOLDS.map((threshold) => ({
   count: visiblePlaces.filter((place) => typeof place.user_rating_count === "number" && place.user_rating_count >= threshold).length,
 })).filter((option) => option.count > 0 && option.count < visiblePlaces.length);
 const hasMetricFilters = budgetRows.length > 0 || ratingFilterOptions.length > 0 || reviewFilterOptions.length > 0;
-const guideDescriptionHtml = renderRichText(guide.description);
+const guideDescriptionHtml = renderRichText(guide.description, { bareLinkLabel: "hostname" });
 const guideAsideHtml = getGuideAsideHtml(guide.slug);
 const guideBeforePlacesHtml = getTemplateHtml(`guide-before-places/${guide.slug}.html`) ?? getTemplateHtml("guide-before-places/default.html");
 const guideAfterPlacesHtml = getTemplateHtml(`guide-after-places/${guide.slug}.html`) ?? getTemplateHtml("guide-after-places/default.html");
@@ -298,6 +298,7 @@ const guideJsonLd = [
 <Layout
   browseTheme
   title={`${guide.title} · ${siteConfig.siteName}`}
+  chat={{ mode: "guide", guideSlug: guide.slug, guideTitle: guide.title }}
   description={guideMetaDescription}
   canonicalPath={`/guides/${guide.slug}/`}
   openGraphType="article"

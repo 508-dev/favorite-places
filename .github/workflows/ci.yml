@@ -31,6 +31,8 @@ jobs:
 
     steps:
       - name: Check out repository
+        # Pull-request filtering uses the GitHub API and needs no local history.
+        if: github.event_name != 'pull_request'
         uses: actions/checkout@v5
         with:
           fetch-depth: 0
@@ -44,6 +46,7 @@ jobs:
             frontend:
               - "src/**"
               - "functions/**"
+              - "workers/**"
               - "public/**"
               - "astro.config.*"
               - "package.json"

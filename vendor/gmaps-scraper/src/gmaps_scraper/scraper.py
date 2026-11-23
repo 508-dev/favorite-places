@@ -4,36 +4,59 @@ from __future__ import annotations
 
 import html
 import json
+import logging
+import random
 import re
+import time
+from collections.abc import Sequence
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from email.utils import parsedate_to_datetime
 from http.cookiejar import LoadError, MozillaCookieJar
+from itertools import zip_longest
 from pathlib import Path
-from typing import Any, Literal, Required, TypedDict
-from urllib.parse import urljoin
+from typing import Any, Literal, Required, TypedDict, cast
+from urllib.parse import parse_qsl, urlencode, urljoin, urlsplit, urlunsplit
 
+from gmaps_scraper._logging import url_log_fields
 from gmaps_scraper.browser_humanization import (
     BrowserWindowSize,
     resolve_browser_window_size,
 )
-from gmaps_scraper.models import SavedList
-from gmaps_scraper.parser import JSONValue, ParseError, parse_saved_list_artifacts
+from gmaps_scraper.models import SavedList, SavedListCollectionSource, SavedListScrapeResult
+from gmaps_scraper.parser import (
+    JSONValue,
+    ParseError,
+    _entitylist_row_counts,
+    _extract_script_texts_from_html,
+    parse_saved_list_artifacts,
+)
+from gmaps_scraper.url_tools import extract_list_id_from_text
+
+_logger = logging.getLogger(__name__)
+
 
 type CollectionMode = Literal["auto", "curl", "browser"]
 
 _CONSENT_URL_MARKERS = ("consent.google", "consent.youtube")
 _HTTP_IMPERSONATE = "chrome"
+_HTTP_GET_MAX_ATTEMPTS = 3
+_HTTP_GET_BACKOFF_BASE_SECONDS = 1.0
+_HTTP_GET_RETRY_AFTER_MAX_SECONDS = 30.0
+_HTTP_GET_MIN_TIMEOUT_SECONDS = 0.001
+_HTTP_GET_RETRYABLE_STATUS_CODES = frozenset({429, 500, 502, 503, 504})
 DEFAULT_COLLECTION_MODE: CollectionMode = "auto"
 _LINK_TAG_PATTERN = re.compile(r"<link\b[^>]*>", re.IGNORECASE)
 _HTML_ATTRIBUTE_PATTERN = re.compile(
     r"""\b([a-zA-Z_:][-a-zA-Z0-9_:.]*)\s*=\s*(['"])(.*?)\2""",
     re.DOTALL,
 )
-_SCRIPT_TEXT_PATTERN = re.compile(
-    r"<script\b[^>]*>(.*?)</script>",
-    re.IGNORECASE | re.DOTALL,
-)
 _ENTITYLIST_PAGE_SIZE_PATTERN = re.compile(r"(%214i|!4i)(\d+)")
+_ENTITYLIST_PAGE_SIZE_LIMIT = 500
+_ENTITYLIST_CONTINUATION_ANCHOR = re.compile(r"(!3e\d+!4i)(\d+)(?=!|$)")
+_ENTITYLIST_CURSOR_PATTERN = re.compile(r"[A-Za-z0-9+/_-]+={0,2}")
+_ENTITYLIST_CURSOR_TRANSLATION = str.maketrans("+/", "-_")
 _CONSENT_TEXT_MARKERS = (
     "before you continue to google",
     "prima di continuare su google",
@@ -73,12 +96,24 @@ _MORE_OPTIONS_BUTTON_LABELS = (
 
 @dataclass(slots=True)
 class BrowserArtifacts:
-    """Artifacts collected from a browser session."""
+    """Artifacts collected over HTTP or in a browser."""
 
     resolved_url: str | None
     runtime_state: JSONValue | None
     script_texts: list[str]
     html: str
+    preload_expanded: bool = False
+    preload_paginated: bool = False
+
+
+@dataclass(slots=True)
+class _EntitylistPage:
+    payload: list[JSONValue]
+    header: list[JSONValue]
+    rows: list[JSONValue]
+    list_id: str
+    total_rows: int
+    cursor: str | None
 
 
 class BrowserProxyConfig(TypedDict, total=False):
@@ -108,6 +143,38 @@ class HttpSessionConfig:
     proxy: str | None = None
 
 
+def _browser_session_for_parallel_worker(
+    browser_session: BrowserSessionConfig | None,
+    *,
+    worker_index: int,
+) -> BrowserSessionConfig | None:
+    if browser_session is None or browser_session.profile_dir is None:
+        return browser_session
+    return BrowserSessionConfig(
+        profile_dir=browser_session.profile_dir / f"worker-{worker_index + 1}",
+        proxy=browser_session.proxy,
+        window_size=browser_session.window_size,
+        human_mouse=browser_session.human_mouse,
+    )
+
+
+def _http_session_for_parallel_worker(
+    http_session: HttpSessionConfig | None,
+    *,
+    worker_index: int,
+) -> HttpSessionConfig | None:
+    if http_session is None or http_session.cookie_jar_path is None:
+        return http_session
+    cookie_jar_path = http_session.cookie_jar_path
+    return HttpSessionConfig(
+        cookie_jar_path=(
+            cookie_jar_path.parent
+            / f"{cookie_jar_path.stem}.worker-{worker_index + 1}{cookie_jar_path.suffix}"
+        ),
+        proxy=http_session.proxy,
+    )
+
+
 class ScrapeError(RuntimeError):
     """Raised when browser automation fails."""
 
@@ -135,6 +202,92 @@ def scrape_saved_list(
     return result
 
 
+def scrape_saved_lists(
+    list_urls: Sequence[str],
+    *,
+    headless: bool = True,
+    timeout_ms: int = 30_000,
+    settle_time_ms: int = 3_000,
+    collection_mode: CollectionMode = DEFAULT_COLLECTION_MODE,
+    browser_session: BrowserSessionConfig | None = None,
+    http_session: HttpSessionConfig | None = None,
+    max_concurrency: int = 1,
+    max_retries: int = 0,
+    retry_backoff_ms: int = 2_000,
+    stagger_ms: int = 0,
+) -> list[SavedListScrapeResult]:
+    """Scrape saved lists, returning per-URL results in input order.
+
+    Parallel workers keep separate persistent browser profiles and cookie jars.
+    Each retry reruns collection and parsing for its own URL.
+    """
+    urls = [url.strip() for url in list_urls if url.strip()]
+    if max_concurrency < 1:
+        raise ValueError("max_concurrency must be at least 1.")
+    if max_retries < 0:
+        raise ValueError("max_retries must be non-negative.")
+    if not urls:
+        return []
+    worker_count = min(max_concurrency, len(urls))
+
+    def scrape_one(
+        list_url: str,
+        worker_browser_session: BrowserSessionConfig | None,
+        worker_http_session: HttpSessionConfig | None,
+    ) -> SavedListScrapeResult:
+        last_error = "Saved-list scrape failed."
+        total_attempts = max_retries + 1
+        for attempt in range(1, total_attempts + 1):
+            try:
+                saved_list = scrape_saved_list(
+                    list_url,
+                    headless=headless,
+                    timeout_ms=timeout_ms,
+                    settle_time_ms=settle_time_ms,
+                    collection_mode=collection_mode,
+                    browser_session=worker_browser_session,
+                    http_session=worker_http_session,
+                )
+            except Exception as exc:
+                last_error = str(exc) or "Saved-list scrape failed."
+            else:
+                return SavedListScrapeResult(list_url, saved_list=saved_list, attempts=attempt)
+            if attempt < total_attempts and retry_backoff_ms > 0:
+                time.sleep(attempt * retry_backoff_ms / 1000)
+        return SavedListScrapeResult(list_url, error=last_error, attempts=total_attempts)
+
+    def scrape_worker(worker_index: int) -> list[SavedListScrapeResult]:
+        worker_browser_session = browser_session
+        worker_http_session = http_session
+        if max_concurrency > 1:
+            worker_browser_session = _browser_session_for_parallel_worker(
+                browser_session, worker_index=worker_index
+            )
+            worker_http_session = _http_session_for_parallel_worker(
+                http_session, worker_index=worker_index
+            )
+        if worker_index > 0 and stagger_ms > 0:
+            time.sleep(worker_index * stagger_ms / 1000)
+
+        results: list[SavedListScrapeResult] = []
+        worker_urls = urls[worker_index::worker_count]
+        for index, list_url in enumerate(worker_urls):
+            if index > 0 and stagger_ms > 0:
+                time.sleep(stagger_ms / 1000)
+            results.append(scrape_one(list_url, worker_browser_session, worker_http_session))
+        return results
+
+    if worker_count == 1:
+        return scrape_worker(0)
+
+    with ThreadPoolExecutor(max_workers=worker_count) as executor:
+        worker_results = executor.map(scrape_worker, range(worker_count))
+        # Each worker processes every nth URL, so interleave its results to restore input order.
+        return [
+            result for row in zip_longest(*worker_results) for result in row if result is not None
+        ]
+
+
 def collect_saved_list_result(
     list_url: str,
     *,
@@ -147,6 +300,12 @@ def collect_saved_list_result(
 ) -> tuple[BrowserArtifacts, SavedList]:
     """Collect artifacts and parse a Google Maps saved list."""
     normalized_mode = _normalize_collection_mode(collection_mode)
+    _logger.info(
+        "Starting saved-list collection mode=%s timeout_ms=%s",
+        normalized_mode,
+        timeout_ms,
+        extra=url_log_fields(list_url),
+    )
 
     if normalized_mode == "browser":
         artifacts = collect_browser_artifacts(
@@ -159,6 +318,7 @@ def collect_saved_list_result(
         return artifacts, _parse_saved_list(
             list_url,
             artifacts=artifacts,
+            collection_source="browser",
         )
 
     if normalized_mode == "curl":
@@ -170,6 +330,7 @@ def collect_saved_list_result(
         return artifacts, _parse_saved_list(
             list_url,
             artifacts=artifacts,
+            collection_source="http",
         )
 
     try:
@@ -181,8 +342,14 @@ def collect_saved_list_result(
         return artifacts, _parse_saved_list(
             list_url,
             artifacts=artifacts,
+            collection_source="http",
         )
-    except (ParseError, ScrapeError):
+    except (ParseError, ScrapeError) as exc:
+        _logger.warning(
+            "Falling back to saved-list browser collection error_type=%s",
+            type(exc).__name__,
+            extra=url_log_fields(list_url),
+        )
         artifacts = collect_browser_artifacts(
             list_url,
             headless=headless,
@@ -193,6 +360,8 @@ def collect_saved_list_result(
         return artifacts, _parse_saved_list(
             list_url,
             artifacts=artifacts,
+            collection_source="browser",
+            used_browser_fallback=True,
         )
 
 
@@ -200,14 +369,22 @@ def _parse_saved_list(
     list_url: str,
     *,
     artifacts: BrowserArtifacts,
+    collection_source: SavedListCollectionSource,
+    used_browser_fallback: bool = False,
 ) -> SavedList:
-    return parse_saved_list_artifacts(
+    parsed = parse_saved_list_artifacts(
         list_url,
         resolved_url=artifacts.resolved_url,
         runtime_state=artifacts.runtime_state,
         script_texts=artifacts.script_texts,
         html=artifacts.html,
     )
+    if parsed.diagnostics is not None:
+        parsed.diagnostics.collection_source = collection_source
+        parsed.diagnostics.used_browser_fallback = used_browser_fallback
+        parsed.diagnostics.preload_expanded = artifacts.preload_expanded
+        parsed.diagnostics.preload_paginated = artifacts.preload_paginated
+    return parsed
 
 
 def collect_http_artifacts(
@@ -232,11 +409,19 @@ def collect_http_artifacts(
     if http_session is not None and http_session.proxy is not None:
         session_kwargs["proxy"] = http_session.proxy
 
+    preload_expanded = False
+    preload_paginated = False
     try:
         with curl_requests.Session(**session_kwargs) as session:
-            response = session.get(list_url)
+            response = _get_with_retry(session, list_url, timeout=timeout_seconds)
             _raise_for_status(response)
             resolved_url = _normalize_response_url(getattr(response, "url", None))
+            if resolved_url is not None and urlsplit(resolved_url).hostname == "maps.app.goo.gl":
+                canonical_url = _resolve_saved_list_short_link(session, resolved_url)
+                if canonical_url is not None:
+                    response = _get_with_retry(session, canonical_url, timeout=timeout_seconds)
+                    _raise_for_status(response)
+                    resolved_url = _normalize_response_url(getattr(response, "url", None))
             page_html = _response_text(response)
             script_texts = _extract_script_texts_from_html(page_html)
             preload_url = _extract_preloaded_fetch_url(
@@ -246,35 +431,52 @@ def collect_http_artifacts(
             )
             if preload_url is not None:
                 try:
-                    preload_response = session.get(
+                    preload_response = _get_with_retry(
+                        session,
                         preload_url,
+                        timeout=timeout_seconds,
                         referer=resolved_url or list_url,
                     )
                     _raise_for_status(preload_response)
-                except Exception:
-                    pass
+                except Exception as exc:
+                    _logger.warning(
+                        "Saved-list preload fetch failed error_type=%s",
+                        type(exc).__name__,
+                        extra=url_log_fields(list_url, resolved_url),
+                    )
                 else:
                     preload_text = _response_text(preload_response)
                     if preload_text.strip():
-                        expanded_preload_text = _expand_entitylist_preload_text(
-                            session,
-                            preload_url=preload_url,
-                            preload_text=preload_text,
-                            referer=resolved_url or list_url,
+                        preload_text, preload_expanded, preload_paginated = (
+                            _complete_entitylist_preload(
+                                session,
+                                preload_url=preload_url,
+                                preload_text=preload_text,
+                                referer=resolved_url or list_url,
+                                timeout=timeout_seconds,
+                            )
                         )
-                        if expanded_preload_text is not None:
-                            preload_text = expanded_preload_text
                         script_texts.append(preload_text)
-    except Exception as exc:  # pragma: no cover - network error path
+    except Exception as exc:
+        _logger.warning(
+            "Saved-list HTTP collection failed error_type=%s",
+            type(exc).__name__,
+            extra=url_log_fields(list_url),
+        )
         raise ScrapeError(f"Failed to collect HTTP artifacts: {exc}") from exc
     finally:
         _save_http_cookie_jar(http_session, cookie_jar)
 
+    _logger.debug(
+        "Collected saved-list HTTP artifacts", extra=url_log_fields(list_url, resolved_url)
+    )
     return BrowserArtifacts(
         resolved_url=resolved_url,
         runtime_state=None,
         script_texts=script_texts,
         html=page_html,
+        preload_expanded=preload_expanded,
+        preload_paginated=preload_paginated,
     )
 
 
@@ -311,6 +513,9 @@ def collect_browser_artifacts(
     finally:
         context.close()
 
+    _logger.debug(
+        "Collected saved-list browser artifacts", extra=url_log_fields(list_url, resolved_url)
+    )
     return BrowserArtifacts(
         resolved_url=resolved_url,
         runtime_state=runtime_state,
@@ -386,12 +591,16 @@ def _handle_google_consent(page: Any, *, timeout_ms: int) -> None:
     for _ in range(2):
         if not _has_google_consent_screen(page):
             return
+        _logger.debug("Detected Google consent screen")
         if _click_button_in_contexts(page, _REJECT_BUTTON_LABELS):
+            _logger.debug("Selected Reject all on Google consent screen")
             _settle_after_consent(page, timeout_ms=timeout_ms)
             continue
         if _click_button_in_contexts(page, _MORE_OPTIONS_BUTTON_LABELS):
+            _logger.debug("Opened More options on Google consent screen")
             page.wait_for_timeout(500)
             if _click_button_in_contexts(page, _REJECT_BUTTON_LABELS):
+                _logger.debug("Selected Reject all from Google consent options")
                 _settle_after_consent(page, timeout_ms=timeout_ms)
                 continue
         break
@@ -399,6 +608,7 @@ def _handle_google_consent(page: Any, *, timeout_ms: int) -> None:
     if not _has_google_consent_screen(page):
         return
 
+    _logger.error("Could not dismiss Google consent screen")
     diagnostics = _capture_consent_diagnostics(page)
     details = ", ".join(str(path) for path in diagnostics)
     raise ScrapeError(
@@ -548,6 +758,7 @@ def _load_http_cookie_jar(
         try:
             cookie_jar.load(ignore_discard=True, ignore_expires=True)
         except LoadError as exc:
+            _logger.warning("Failed to load HTTP cookie jar error_type=%s", type(exc).__name__)
             raise ScrapeError(
                 f"Failed to load HTTP cookie jar: {http_session.cookie_jar_path}"
             ) from exc
@@ -567,12 +778,23 @@ def _save_http_cookie_jar(
     cookie_jar.save(ignore_discard=True, ignore_expires=True)
 
 
-def _extract_script_texts_from_html(page_html: str) -> list[str]:
-    return [
-        match.group(1)
-        for match in _SCRIPT_TEXT_PATTERN.finditer(page_html)
-        if match.group(1).strip()
-    ]
+def _resolve_saved_list_short_link(session: Any, url: str) -> str | None:
+    # Some short links return a JavaScript interstitial to browser-identified GET requests.
+    try:
+        response = session.head(url, headers={"User-Agent": "gmaps-scraper"})
+        _raise_for_status(response)
+    except Exception:
+        return None
+    target = _normalize_response_url(getattr(response, "url", None))
+    if target is not None:
+        parts = urlsplit(target)
+        if (
+            parts.scheme == "https"
+            and parts.hostname in {"www.google.com", "maps.google.com"}
+            and extract_list_id_from_text(target) is not None
+        ):
+            return target
+    return None
 
 
 def _extract_preloaded_fetch_url(
@@ -599,66 +821,197 @@ def _extract_preloaded_fetch_url(
     return candidates[0]
 
 
-def _expand_entitylist_preload_text(
+def _complete_entitylist_preload(
     session: Any,
     *,
     preload_url: str,
     preload_text: str,
     referer: str,
+    timeout: float,
+) -> tuple[str, bool, bool]:
+    first_page = _parse_entitylist_page(preload_text)
+    if first_page is None or len(first_page.rows) >= first_page.total_rows:
+        return preload_text, False, False
+
+    deadline = time.monotonic() + timeout
+    attempted_urls: set[str] = set()
+    paginated_text = _paginate_entitylist_preload(
+        session,
+        preload_url=preload_url,
+        first_page=first_page,
+        referer=referer,
+        attempted_urls=attempted_urls,
+        deadline=deadline,
+    )
+    if paginated_text is not None:
+        return paginated_text, False, True
+
+    expanded = _expand_entitylist_preload(
+        session,
+        preload_url=preload_url,
+        first_page=first_page,
+        referer=referer,
+        deadline=deadline,
+    )
+    if expanded is None:
+        return preload_text, False, False
+
+    expanded_url, expanded_text, expanded_page = expanded
+    paginated_text = _paginate_entitylist_preload(
+        session,
+        preload_url=expanded_url,
+        first_page=expanded_page,
+        referer=referer,
+        attempted_urls=attempted_urls,
+        deadline=deadline,
+    )
+    return paginated_text or expanded_text, True, paginated_text is not None
+
+
+def _paginate_entitylist_preload(
+    session: Any,
+    *,
+    preload_url: str,
+    first_page: _EntitylistPage,
+    referer: str,
+    attempted_urls: set[str],
+    deadline: float,
 ) -> str | None:
-    response_counts = _extract_entitylist_response_counts(preload_text)
-    if response_counts is None:
+    if first_page.cursor is None or len(first_page.rows) >= first_page.total_rows:
         return None
+    rows = list(first_page.rows)
+    seen_rows = {_entitylist_row_key(row) for row in rows}
+    cursor = first_page.cursor
+    while cursor is not None and len(rows) < first_page.total_rows:
+        next_url = _entitylist_continuation_url(preload_url, cursor)
+        if next_url is None or next_url in attempted_urls:
+            break
+        attempted_urls.add(next_url)
 
-    loaded_rows, total_rows = response_counts
-    if total_rows <= loaded_rows:
+        text = _fetch_entitylist_text(session, url=next_url, referer=referer, deadline=deadline)
+        page = _parse_entitylist_page(text) if text is not None else None
+        if (
+            page is None
+            or page.list_id != first_page.list_id
+            or page.total_rows != first_page.total_rows
+            or not page.rows
+            or len(rows) + len(page.rows) > first_page.total_rows
+        ):
+            break
+
+        page_keys = {_entitylist_row_key(row) for row in page.rows}
+        if seen_rows & page_keys:
+            break
+        rows.extend(page.rows)
+        seen_rows.update(page_keys)
+        cursor = page.cursor
+
+    if len(rows) == len(first_page.rows):
         return None
+    # The parser selects one artifact. Present the combined rows under the original header.
+    first_page.header[8] = rows
+    first_page.payload[1] = cursor or ""
+    return ")]}'\n" + json.dumps(first_page.payload, ensure_ascii=False, separators=(",", ":"))
 
-    expanded_preload_url = _replace_entitylist_page_size(preload_url, total_rows)
-    if expanded_preload_url is None or expanded_preload_url == preload_url:
+
+def _expand_entitylist_preload(
+    session: Any,
+    *,
+    preload_url: str,
+    first_page: _EntitylistPage,
+    referer: str,
+    deadline: float,
+) -> tuple[str, str, _EntitylistPage] | None:
+    page_size = min(first_page.total_rows, _ENTITYLIST_PAGE_SIZE_LIMIT)
+    if page_size <= len(first_page.rows):
         return None
-
-    try:
-        expanded_response = session.get(
-            expanded_preload_url,
-            referer=referer,
+    expanded_url = _replace_entitylist_page_size(preload_url, page_size)
+    if expanded_url is None or expanded_url == preload_url:
+        return None
+    text = _fetch_entitylist_text(session, url=expanded_url, referer=referer, deadline=deadline)
+    if text is None:
+        return None
+    expanded = _parse_entitylist_page(text)
+    if (
+        expanded is None
+        or expanded.list_id != first_page.list_id
+        or expanded.total_rows != first_page.total_rows
+        or len(expanded.rows) <= len(first_page.rows)
+        or not {_entitylist_row_key(row) for row in first_page.rows}.issubset(
+            _entitylist_row_key(row) for row in expanded.rows
         )
-        _raise_for_status(expanded_response)
+    ):
+        return None
+    return expanded_url, text, expanded
+
+
+def _fetch_entitylist_text(
+    session: Any, *, url: str, referer: str, deadline: float
+) -> str | None:
+    try:
+        response = _get_with_retry(
+            session, url, timeout=deadline - time.monotonic(), referer=referer
+        )
+        _raise_for_status(response)
     except Exception:
         return None
+    return _response_text(response)
 
-    expanded_text = _response_text(expanded_response)
-    if not expanded_text.strip():
+
+def _entitylist_continuation_url(preload_url: str, cursor: str) -> str | None:
+    parts = urlsplit(preload_url)
+    query = parse_qsl(parts.query, keep_blank_values=True)
+    pb_indexes = [index for index, (name, _) in enumerate(query) if name == "pb"]
+    if len(pb_indexes) != 1:
         return None
-    return expanded_text
-
-
-def _extract_entitylist_response_counts(preload_text: str) -> tuple[int, int] | None:
-    candidate = _extract_entitylist_payload(preload_text)
-    if candidate is None:
+    index = pb_indexes[0]
+    _, pb = query[index]
+    if "!5B" in pb:
         return None
-
-    rows = candidate[8]
-    total = candidate[12]
-    if not isinstance(rows, list) or not isinstance(total, int):
+    # Maps sends the response cursor as field 5B in URL-safe base64.
+    cursor = cursor.translate(_ENTITYLIST_CURSOR_TRANSLATION).rstrip("=")
+    if (size := _ENTITYLIST_CONTINUATION_ANCHOR.search(pb)) is None:
         return None
-    return len(rows), total
+    page_size = min(int(size[2]), _ENTITYLIST_PAGE_SIZE_LIMIT)
+    query[index] = ("pb", f"{pb[:size.start()]}{size[1]}{page_size}!5B{cursor}{pb[size.end():]}")
+    return urlunsplit(parts._replace(query=urlencode(query)))
 
 
-def _extract_entitylist_payload(preload_text: str) -> list[Any] | None:
+def _parse_entitylist_page(preload_text: str) -> _EntitylistPage | None:
     normalized = preload_text.strip()
     if normalized.startswith(")]}'"):
         normalized = normalized[4:].lstrip()
     try:
-        payload = json.loads(normalized)
+        payload = cast(JSONValue, json.loads(normalized))
     except json.JSONDecodeError:
         return None
     if not isinstance(payload, list) or not payload:
         return None
-    candidate = payload[0]
-    if not isinstance(candidate, list) or len(candidate) <= 12:
+    header = payload[0]
+    counts = _entitylist_row_counts(header)
+    if counts is None or not isinstance(header, list):
         return None
-    return candidate
+    identity = header[0]
+    rows = header[8]
+    if (
+        not isinstance(identity, list)
+        or not identity
+        or not isinstance(identity[0], str)
+        or not identity[0]
+        or not isinstance(rows, list)
+    ):
+        return None
+    cursor = payload[1] if len(payload) > 1 else None
+    if not isinstance(cursor, str) or _ENTITYLIST_CURSOR_PATTERN.fullmatch(cursor) is None:
+        cursor = None
+    return _EntitylistPage(payload, header, rows, identity[0], counts[1], cursor)
+
+
+def _entitylist_row_key(row: JSONValue) -> str:
+    # The saved item identity is independent of display strings and user notes on the row.
+    if isinstance(row, list) and len(row) > 8 and isinstance(row[8], list) and row[8]:
+        row = row[8]
+    return json.dumps(row, sort_keys=True, separators=(",", ":"))
 
 
 def _replace_entitylist_page_size(preload_url: str, page_size: int) -> str | None:
@@ -700,6 +1053,117 @@ def _response_text(response: Any) -> str:
     if isinstance(value, str):
         return value
     return str(value)
+
+
+def _get_with_retry(session: Any, url: str, *, timeout: float, **kwargs: Any) -> Any:
+    """GET with bounded retries on transient transport errors, 429, and 5xx.
+
+    The timeout in seconds includes all attempts and retry delays for this GET.
+    The last response or exception is passed through unchanged.
+    """
+    if timeout < _HTTP_GET_MIN_TIMEOUT_SECONDS:
+        raise TimeoutError("Insufficient time to attempt HTTP GET.")
+    deadline = time.monotonic() + timeout
+    remaining = timeout
+    attempt = 1
+    while True:
+        try:
+            response = session.get(url, timeout=remaining, **kwargs)
+        except OSError as exc:
+            if attempt == _HTTP_GET_MAX_ATTEMPTS or not _is_transient_transport_error(exc):
+                raise
+            remaining = _wait_for_http_retry(
+                deadline,
+                _http_get_backoff_seconds(attempt),
+                url=url,
+                next_attempt=attempt + 1,
+                reason=type(exc).__name__,
+            )
+            if remaining < _HTTP_GET_MIN_TIMEOUT_SECONDS:
+                raise
+        else:
+            status_code = getattr(response, "status_code", None)
+            if (
+                attempt == _HTTP_GET_MAX_ATTEMPTS
+                or status_code not in _HTTP_GET_RETRYABLE_STATUS_CODES
+            ):
+                return response
+            retry_after = _parse_retry_after_seconds(response)
+            if retry_after is not None and retry_after > _HTTP_GET_RETRY_AFTER_MAX_SECONDS:
+                return response
+            delay = _http_get_backoff_seconds(attempt) if retry_after is None else retry_after
+            remaining = _wait_for_http_retry(
+                deadline, delay, url=url, next_attempt=attempt + 1, reason=f"HTTP {status_code}",
+            )
+            if remaining < _HTTP_GET_MIN_TIMEOUT_SECONDS:
+                return response
+        attempt += 1
+
+
+def _wait_for_http_retry(
+    deadline: float, delay: float, *, url: str, next_attempt: int, reason: str,
+) -> float:
+    # curl_cffi converts seconds to integer milliseconds. Zero means no timeout.
+    if deadline - time.monotonic() - delay < _HTTP_GET_MIN_TIMEOUT_SECONDS:
+        return 0.0
+    if delay:
+        time.sleep(delay)
+    if deadline - time.monotonic() >= _HTTP_GET_MIN_TIMEOUT_SECONDS:
+        _logger.warning(
+            "Retrying HTTP GET attempt=%d max_attempts=%d delay_seconds=%.3f reason=%s",
+            next_attempt,
+            _HTTP_GET_MAX_ATTEMPTS,
+            delay,
+            reason,
+            extra=url_log_fields(url),
+        )
+    return deadline - time.monotonic()
+
+
+def _is_transient_transport_error(exc: OSError) -> bool:
+    # curl_cffi errors subclass OSError; these ones fail the same way on every
+    # attempt (bad URL, TLS verification, redirect loop, proxy config).
+    if isinstance(exc, ValueError):
+        return False
+    try:
+        from curl_cffi import CurlECode
+        from curl_cffi.requests import exceptions as curl_exceptions
+    except ImportError:  # pragma: no cover - dependency error path
+        return True
+    if isinstance(exc, curl_exceptions.ProxyError):
+        # A CONNECT rejection, such as 407, can carry the same receive error code.
+        return exc.code == CurlECode.RECV_ERROR and "proxy connect aborted" in str(exc).lower()
+    permanent = (
+        curl_exceptions.CertificateVerifyError,
+        curl_exceptions.TooManyRedirects,
+        curl_exceptions.ImpersonateError,
+        curl_exceptions.SessionClosed,
+    )
+    return not isinstance(exc, permanent)
+
+
+def _http_get_backoff_seconds(attempt: int) -> float:
+    ceiling = _HTTP_GET_BACKOFF_BASE_SECONDS * (2 ** (attempt - 1))
+    return random.uniform(ceiling / 2, ceiling)
+
+
+def _parse_retry_after_seconds(response: Any) -> float | None:
+    headers = getattr(response, "headers", None)
+    if headers is None:
+        return None
+    value = headers.get("Retry-After")
+    if not isinstance(value, str) or not value.strip():
+        return None
+    value = value.strip()
+    if value.isascii() and value.isdigit():
+        return float(value)
+    try:
+        retry_at = parsedate_to_datetime(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if retry_at.tzinfo is None:
+        retry_at = retry_at.replace(tzinfo=UTC)
+    return max((retry_at - datetime.now(UTC)).total_seconds(), 0.0)
 
 
 def _raise_for_status(response: Any) -> None:

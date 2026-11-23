@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import os
 import sys
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from hashlib import sha256
 from pathlib import Path
 from typing import Literal, cast
@@ -18,7 +19,12 @@ from gmaps_scraper.llm import (
     llm_cache_namespace_from_env,
     openai_compatible_place_repairer_from_env,
 )
-from gmaps_scraper.models import PlaceDetails, PlaceLLMRepairRequest
+from gmaps_scraper.models import (
+    PlaceDetails,
+    PlaceLLMRepairRequest,
+    PlaceScrapeResult,
+    SavedListScrapeResult,
+)
 from gmaps_scraper.place_scraper import (
     _PLACE_LLM_PROMPT_VERSION,
     PlaceLLMRepairer,
@@ -32,6 +38,7 @@ from gmaps_scraper.place_scraper import (
     _merge_llm_place_fields,
     _merge_place_sources,
     _place_detail_values,
+    _prefer_resolved_place_url_coordinates,
     _repair_source_used_llm,
     _should_use_llm_repair,
     collect_place_snapshot,
@@ -47,6 +54,7 @@ from gmaps_scraper.scraper import (
     _import_curl_requests,
     _raise_for_status,
     collect_saved_list_result,
+    scrape_saved_lists,
 )
 from gmaps_scraper.url_tools import extract_list_id
 
@@ -64,6 +72,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Scrape a list or an individual place page.",
     )
     parser.add_argument("--output", type=Path, help="Optional JSON output path")
+    parser.add_argument(
+        "--log-level",
+        choices=["DEBUG", "INFO", "WARNING", "ERROR"],
+        help="Show scraper logs on stderr at the chosen level.",
+    )
     parser.add_argument(
         "--download-photo",
         type=Path,
@@ -99,8 +112,9 @@ def build_parser() -> argparse.ArgumentParser:
         choices=["auto", "curl", "browser"],
         default=DEFAULT_COLLECTION_MODE,
         help=(
-            "Fetch mode: auto (curl_cffi with browser fallback), curl, or "
-            "browser."
+            "For saved lists, auto tries HTTP first and falls back to the browser. "
+            "Curl mode is for saved lists only. Place scraping uses the browser "
+            "with auto or browser."
         ),
     )
     parser.add_argument(
@@ -148,37 +162,38 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--input",
         type=Path,
-        help=(
-            "For place scraping, read additional place URLs from a newline-delimited "
-            "file, or use '-' for stdin."
-        ),
+        help="Read additional URLs from a newline-delimited file, or use '-' for stdin.",
     )
     parser.add_argument(
         "--max-concurrency",
         type=int,
         default=1,
-        help="For batch place scraping, number of concurrent workers. Defaults to 1.",
+        help="For batch scraping, number of concurrent workers. Defaults to 1.",
     )
     parser.add_argument(
         "--max-retries",
         type=int,
-        default=1,
         help=(
-            "For batch place scraping, per-place retries after failures or "
-            "retryable quality flags."
+            "For batch scraping, per-URL retries after failures or retryable place quality "
+            "flags. Defaults to 0 for saved lists and 1 for places."
         ),
     )
     parser.add_argument(
         "--retry-backoff-ms",
         type=int,
         default=2_000,
-        help="For batch place scraping, linear retry backoff in milliseconds.",
+        help="For batch scraping, linear retry backoff in milliseconds.",
     )
     parser.add_argument(
         "--stagger-ms",
         type=int,
         default=0,
-        help="For batch place scraping, delay starts between URLs or workers.",
+        help="For batch scraping, delay starts between URLs or workers.",
+    )
+    parser.add_argument(
+        "--fail-on-error",
+        action="store_true",
+        help="For batch scraping, exit with status 1 if any URL fails to scrape.",
     )
     parser.add_argument(
         "--llm-repair",
@@ -225,6 +240,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="For place scraping, skip opening the About tab.",
     )
     parser.add_argument(
+        "--skip-preview-if-dom-complete",
+        action="store_true",
+        help="For place scraping, skip the HTTP preview when the browser has core overview facts.",
+    )
+    parser.add_argument(
         "--dump-debug-output",
         action="store_true",
         help=(
@@ -239,8 +259,22 @@ def main() -> int:
     """Run the CLI."""
     parser = build_parser()
     args = parser.parse_args()
+    if args.log_level:
+        handler = logging.StreamHandler()
+        handler.setFormatter(
+            logging.Formatter(
+                "%(levelname)s %(name)s %(message)s "
+                "source_url_hash=%(source_url_hash)s resolved_url_hash=%(resolved_url_hash)s",
+                defaults={"source_url_hash": None, "resolved_url_hash": None},
+            )
+        )
+        logging.basicConfig(handlers=[handler])
+        logging.getLogger("gmaps_scraper").setLevel(args.log_level)
     if not args.urls and args.input is None:
         parser.error("at least one URL or --input is required.")
+    max_retries = args.max_retries
+    if max_retries is None:
+        max_retries = 0 if args.kind == "list" else 1
     browser_session = None
     if (
         args.session_dir is not None
@@ -264,8 +298,8 @@ def main() -> int:
     if args.kind == "place":
         if args.collection_mode == "curl":
             parser.error(
-                "Place scraping currently requires browser mode. "
-                "Use `--fetch-mode browser`."
+                "`--fetch-mode curl` is only supported with `--kind list`. "
+                "For places, use `--fetch-mode auto` or `--fetch-mode browser`."
             )
         if args.llm_cache_dir is not None and not args.llm_repair:
             parser.error("`--llm-cache-dir` requires `--llm-repair`.")
@@ -294,7 +328,7 @@ def main() -> int:
                     )
             except LLMRepairError as exc:
                 parser.exit(1, f"{parser.prog}: error: {exc}\n")
-        place_urls = _read_place_urls(args.urls, args.input)
+        place_urls = _read_urls(args.urls, args.input)
         is_batch = len(place_urls) > 1 or args.input is not None
         if is_batch:
             if args.download_photo is not None or args.download_main_photo is not None:
@@ -314,8 +348,9 @@ def main() -> int:
                     llm_tasks=llm_tasks,
                     collect_reviews=collect_reviews,
                     collect_about=collect_about,
+                    skip_preview_if_dom_complete=args.skip_preview_if_dom_complete,
                     max_concurrency=args.max_concurrency,
-                    max_retries=args.max_retries,
+                    max_retries=max_retries,
                     retry_backoff_ms=args.retry_backoff_ms,
                     stagger_ms=args.stagger_ms,
                 )
@@ -332,22 +367,18 @@ def main() -> int:
                     llm_tasks=llm_tasks,
                     collect_reviews=collect_reviews,
                     collect_about=collect_about,
+                    skip_preview_if_dom_complete=args.skip_preview_if_dom_complete,
                     max_concurrency=args.max_concurrency,
-                    max_retries=args.max_retries,
+                    max_retries=max_retries,
                     retry_backoff_ms=args.retry_backoff_ms,
                     stagger_ms=args.stagger_ms,
                     screenshot_output_dir=args.screenshot_output_dir,
                 )
-            payload = json.dumps(
-                {"results": [result.to_dict() for result in batch_results]},
-                indent=2,
-                ensure_ascii=False,
+            return _write_batch_output(
+                batch_results,
+                output_path=args.output,
+                fail_on_error=args.fail_on_error,
             )
-            if args.output is not None:
-                args.output.write_text(f"{payload}\n", encoding="utf-8")
-            else:
-                print(payload)
-            return 0
         if (
             args.download_photo is not None
             and args.output is not None
@@ -397,6 +428,7 @@ def main() -> int:
                     llm_tasks=llm_tasks,
                     collect_reviews=collect_reviews,
                     collect_about=collect_about,
+                    skip_preview_if_dom_complete=args.skip_preview_if_dom_complete,
                 )
             else:
                 place_result = scrape_place(
@@ -411,6 +443,7 @@ def main() -> int:
                     llm_tasks=llm_tasks,
                     collect_reviews=collect_reviews,
                     collect_about=collect_about,
+                    skip_preview_if_dom_complete=args.skip_preview_if_dom_complete,
                     screenshot_path=screenshot_path,
                     overview_screenshot_path=overview_screenshot_path,
                 )
@@ -427,6 +460,7 @@ def main() -> int:
                 llm_tasks=llm_tasks,
                 collect_reviews=collect_reviews,
                 collect_about=collect_about,
+                skip_preview_if_dom_complete=args.skip_preview_if_dom_complete,
                 screenshot_path=_place_screenshot_path(
                     args.screenshot_output_dir or (place_debug_output_dir / "artifacts"),
                     place_urls[0],
@@ -489,15 +523,38 @@ def main() -> int:
         parser.error("`--skip-reviews` is supported only with `--kind place`.")
     if args.skip_about:
         parser.error("`--skip-about` is supported only with `--kind place`.")
+    if args.skip_preview_if_dom_complete:
+        parser.error("`--skip-preview-if-dom-complete` is supported only with `--kind place`.")
     if args.screenshot_output_dir is not None:
         parser.error("`--screenshot-output-dir` is supported only with `--kind place`.")
-    if args.input is not None:
-        parser.error("`--input` is supported only with `--kind place`.")
-    if len(args.urls) != 1:
-        parser.error("list scraping requires exactly one URL.")
+    list_urls = _read_urls(args.urls, args.input)
+    if not list_urls:
+        parser.error("list scraping requires at least one URL.")
+    if len(list_urls) > 1 or args.input is not None:
+        if args.dump_debug_output or args.debug_output_dir is not None:
+            parser.error("list debug dumps are supported only for one URL.")
+        list_batch_results = scrape_saved_lists(
+            list_urls,
+            headless=not args.show_browser_window,
+            timeout_ms=args.timeout_ms,
+            settle_time_ms=args.settle_ms,
+            collection_mode=args.collection_mode,
+            browser_session=browser_session,
+            http_session=http_session,
+            max_concurrency=args.max_concurrency,
+            max_retries=max_retries,
+            retry_backoff_ms=args.retry_backoff_ms,
+            stagger_ms=args.stagger_ms,
+        )
+        return _write_batch_output(
+            list_batch_results,
+            output_path=args.output,
+            fail_on_error=args.fail_on_error,
+        )
 
+    list_url = list_urls[0]
     artifacts, result = collect_saved_list_result(
-        cast(str, args.urls[0]),
+        list_url,
         headless=not args.show_browser_window,
         timeout_ms=args.timeout_ms,
         settle_time_ms=args.settle_ms,
@@ -506,14 +563,14 @@ def main() -> int:
         http_session=http_session,
     )
     debug_output_dir = _resolve_debug_output_dir(
-        list_url=cast(str, args.urls[0]),
+        list_url=list_url,
         resolved_url=artifacts.resolved_url,
         dump_debug_output=args.dump_debug_output,
         debug_output_dir=args.debug_output_dir,
     )
     if debug_output_dir is not None:
         write_debug_dump(
-            args.urls[0],
+            list_url,
             resolved_url=artifacts.resolved_url,
             runtime_state=artifacts.runtime_state,
             script_texts=artifacts.script_texts,
@@ -581,7 +638,7 @@ def _download_place_image(
         raise RuntimeError(f"Failed to download place photo: {exc}") from exc
 
 
-def _read_place_urls(urls: list[str], input_path: Path | None) -> list[str]:
+def _read_urls(urls: list[str], input_path: Path | None) -> list[str]:
     result = list(urls)
     if input_path is not None:
         text = (
@@ -594,6 +651,24 @@ def _read_place_urls(urls: list[str], input_path: Path | None) -> list[str]:
             if stripped and not stripped.startswith("#"):
                 result.append(stripped)
     return result
+
+
+def _write_batch_output(
+    batch_results: Sequence[PlaceScrapeResult | SavedListScrapeResult],
+    *,
+    output_path: Path | None,
+    fail_on_error: bool,
+) -> int:
+    payload = json.dumps(
+        {"results": [result.to_dict() for result in batch_results]},
+        indent=2,
+        ensure_ascii=False,
+    )
+    if output_path is not None:
+        output_path.write_text(f"{payload}\n", encoding="utf-8")
+    else:
+        print(payload)
+    return int(fail_on_error and any(result.error is not None for result in batch_results))
 
 
 def _place_screenshot_path(
@@ -623,6 +698,7 @@ def _scrape_place_for_debug(
     llm_tasks: tuple[PlaceLLMTask, ...] = ("dom_repair", "display_translation"),
     collect_reviews: bool = True,
     collect_about: bool = True,
+    skip_preview_if_dom_complete: bool = False,
     screenshot_path: Path | None = None,
     overview_screenshot_path: Path | None = None,
 ) -> tuple[PlaceDetails, dict[str, object], dict[str, object], dict[str, object]]:
@@ -635,6 +711,7 @@ def _scrape_place_for_debug(
         http_session=http_session,
         collect_reviews=collect_reviews,
         collect_about=collect_about,
+        skip_preview_if_dom_complete=skip_preview_if_dom_complete,
         screenshot_path=screenshot_path,
         overview_screenshot_path=overview_screenshot_path,
     )
@@ -654,6 +731,10 @@ def _scrape_place_for_debug(
         snapshot["preview"] if isinstance(snapshot.get("preview"), dict) else {},
     )
     merged_snapshot = _merge_place_sources(dom_snapshot, preview_snapshot)
+    merged_snapshot = _prefer_resolved_place_url_coordinates(
+        merged_snapshot,
+        resolved_url=resolved_url,
+    )
     details = _build_place_details(place_url, resolved_url=resolved_url, snapshot=merged_snapshot)
     evidence = _build_place_llm_evidence(merged_snapshot)
     evidence_hash = _hash_evidence(evidence)

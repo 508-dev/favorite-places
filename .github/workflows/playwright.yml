@@ -77,6 +77,8 @@ permissions:
 
 jobs:
   test-e2e:
+    # Playwright 1.59 does not yet support the Ubuntu 26.04 image behind
+    # ubuntu-latest; keep the E2E environment on a supported LTS release.
     runs-on: ubuntu-24.04
 
     steps:
