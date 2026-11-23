@@ -859,7 +859,7 @@ class TrustSignalsTest(unittest.TestCase):
     def test_refresh_reuses_existing_direct_tabelog_signal_before_search_gate(self) -> None:
         with TemporaryDirectory() as tmpdir:
             db_path = Path(tmpdir) / "trust.sqlite"
-            now = datetime(2026, 6, 15, tzinfo=UTC)
+            now = datetime.now(UTC)
             existing_signal = TrustSignal(
                 source="tabelog",
                 label="Tabelog Hyakumeiten",

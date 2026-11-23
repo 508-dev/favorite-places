@@ -1,0 +1,85 @@
+---
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+import { siteConfig } from "../data/site";
+
+interface Props {
+  mode: "discover" | "guide";
+  guideSlug?: string;
+  guideTitle?: string;
+}
+
+const { mode, guideSlug, guideTitle } = Astro.props;
+const isGuide = mode === "guide";
+const title = isGuide ? `Ask about ${guideTitle}` : "Find your next guide";
+---
+
+<aside
+  class="place-chat"
+  data-place-chat
+  data-chat-mode={mode}
+  data-guide-slug={guideSlug ?? ""}
+  data-show-photos={siteConfig.placeCard.showPhoto && (import.meta.env.PUBLIC_PLACE_PHOTOS || "on").toLowerCase() !== "off"}
+  data-show-rating={siteConfig.placeCard.showRating}
+  data-show-reviews={siteConfig.placeCard.showReviewCount}
+  data-show-price={siteConfig.placeCard.showPriceRange}
+  data-show-description={siteConfig.placeCard.showWhyRecommended}
+>
+  <button
+    class="place-chat-toggle"
+    type="button"
+    aria-controls="place-chat-panel"
+    aria-expanded="false"
+    data-place-chat-toggle
+  >
+    <span class="place-chat-toggle-icon" aria-hidden="true">✦</span>
+    <span>{isGuide ? "Ask this guide" : "Ask for ideas"}</span>
+  </button>
+  <section class="place-chat-panel" id="place-chat-panel" aria-label={title} data-place-chat-panel hidden>
+    <div class="place-chat-header">
+      <h2>{title}</h2>
+      <div class="place-chat-header-actions">
+        <button class="place-chat-close" type="button" aria-label="Minimize chat" data-place-chat-minimize>
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M5 12h14" /></svg>
+        </button>
+        <button class="place-chat-close" type="button" aria-label="Close chat" data-place-chat-close>
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="m6 6 12 12M6 18 18 6" /></svg>
+        </button>
+      </div>
+    </div>
+    <div class="place-chat-thread" data-place-chat-thread role="log" aria-live="polite" aria-label="Place chat">
+      <div class="place-chat-message place-chat-message--assistant">
+        <p>{isGuide ? `Looking for something in ${guideTitle}? Tell me the kind of place or mood.` : "Where are you headed, and what sounds good? I can suggest a guide and a few places in it."}</p>
+      </div>
+    </div>
+    <form class="place-chat-form" data-place-chat-form>
+      <label class="visually-hidden" for="place-chat-input">Ask for a recommendation</label>
+      <input
+        class="ui-input"
+        id="place-chat-input"
+        name="message"
+        type="text"
+        maxlength="500"
+        placeholder={isGuide ? "A quiet café to linger in..." : "A relaxed weekend in Tokyo..."}
+        required
+        data-place-chat-input
+      />
+      <button class="place-chat-submit" type="submit" data-place-chat-submit>Send</button>
+    </form>
+    <p class="place-chat-status" data-place-chat-status role="status"></p>
+  </section>
+</aside>
+<script is:inline type="module" src="/scripts/place-chat.js"></script>

@@ -159,6 +159,8 @@ OPERATIONAL_CACHE_TTL = timedelta(days=14)
 PHOTOLESS_REAL_PLACE_CACHE_TTL = timedelta(days=1)
 RAW_SOURCE_CACHE_TTL = timedelta(days=14)
 RAW_SOURCE_REFRESH_JITTER = timedelta(days=3)
+# Observed limits across saved-list responses and parser versions.
+GOOGLE_SAVED_LIST_SCRAPE_CAPS = (499, 500)
 RAW_PLACE_SUSPICIOUS_COORDINATE_SHIFT_METERS = 1_000.0
 RAW_PLACE_ADDRESS_TOKEN_ALIASES = {
     "av": "ave",
@@ -2867,6 +2869,7 @@ def rebuild_generated_data(
     write_json(GENERATED_DIR / "manifests.json", manifests)
     write_json(GENERATED_DIR / "search-index.json", search_index)
     write_json(PUBLIC_DATA_DIR / "search-index.json", search_index, compact=True)
+    write_chat_indexes(search_index)
 
 
 def build_stable_place_id_index(raw_lists: Mapping[str, RawSavedList]) -> dict[tuple[str, int], str]:
@@ -3047,6 +3050,7 @@ def refresh_generated_guide_photos(
     write_json(GENERATED_DIR / "manifests.json", manifests)
     write_json(GENERATED_DIR / "search-index.json", search_index)
     write_json(PUBLIC_DATA_DIR / "search-index.json", search_index, compact=True)
+    write_chat_indexes(search_index)
     return True
 
 
@@ -3288,21 +3292,16 @@ def normalize_guide(
     normalized_places: list[NormalizedPlace] = []
     category_counter: Counter[str] = Counter()
     prefer_enrichment_names = raw.configured_source_type == "google_export_csv"
+    place_id_aliases: dict[str, str] = {}
 
     for place in raw.places:
         place_id = stable_place_id(place, source_type=raw.configured_source_type)
-        override_key = raw_place_mapping_lookup_key(
-            place_override_map,
+        for alias in raw_place_lookup_keys(
             place,
             source_type=raw.configured_source_type,
             blocked_alias_keys=current_primary_keys,
-        )
-        cache_key = raw_place_mapping_lookup_key(
-            enrichment_cache,
-            place,
-            source_type=raw.configured_source_type,
-            blocked_alias_keys=current_primary_keys,
-        )
+        ):
+            place_id_aliases.setdefault(alias, place_id)
         place_trust_signals: list[TrustSignal] = []
         seen_trust_signals: set[tuple[Any, ...]] = set()
         if trust_signals is not None:
@@ -3327,11 +3326,21 @@ def normalize_guide(
         override = place_override_for_ui_copy(
             slug,
             place_id,
-            place_override_map.get(override_key, {}) if override_key is not None else {},
+            place_override_for_raw_place(
+                place_override_map,
+                place,
+                source_type=raw.configured_source_type,
+                blocked_alias_keys=current_primary_keys,
+            ),
         )
-        enrichment_cache_entry = enrichment_cache.get(cache_key) if cache_key is not None else None
-        if cache_key is not None and cache_key != place_id and place_id not in enrichment_cache:
-            enrichment_cache[place_id] = enrichment_cache[cache_key]
+        enrichment_cache_entry = cache_entry_for_raw_place(
+            enrichment_cache,
+            place,
+            source_type=raw.configured_source_type,
+            blocked_alias_keys=current_primary_keys,
+        )
+        if enrichment_cache_entry is not None and place_id not in enrichment_cache:
+            enrichment_cache[place_id] = enrichment_cache_entry
         enrichment = coerce_enrichment_place(enrichment_cache_entry)
         usable_enrichment_category = usable_enrichment_primary_category(
             enrichment,
@@ -3376,6 +3385,10 @@ def normalize_guide(
         )
         use_semantic_enrichment = google_maps_place_semantic_llm_enabled()
         use_semantic_descriptions = google_maps_place_semantic_descriptions_enabled()
+        semantic_classification_populated = bool(
+            use_semantic_enrichment
+            and semantic_enrichment_state_is_populated(semantic_enrichment_state(enrichment))
+        )
         semantic_tags = [
             tag
             for tag in [
@@ -3389,7 +3402,13 @@ def normalize_guide(
             {
                 *place_override_tags,
                 *semantic_tags,
-                *derive_place_tags(place, city_name, enrichment=enrichment, category=primary_category),
+                *derive_place_tags(
+                    place,
+                    city_name,
+                    enrichment=enrichment,
+                    category=primary_category,
+                    include_locality_tags=not semantic_classification_populated,
+                ),
             }
         )
         if mapped_primary_category_source_tag:
@@ -3431,7 +3450,11 @@ def normalize_guide(
             locality_candidates,
         )
         manual_neighborhood = as_string(override.get("neighborhood"))
-        machine_neighborhood = semantic_neighborhood or (locality_candidates[0] if locality_candidates else None)
+        machine_neighborhood = (
+            semantic_neighborhood
+            if semantic_classification_populated
+            else (locality_candidates[0] if locality_candidates else None)
+        )
         mapped_neighborhood = apply_site_neighborhood_mappings(
             machine_neighborhood,
             city_name=city_name,
@@ -3645,9 +3668,10 @@ def normalize_guide(
     display_places = [place for place in normalized_places if place_is_visible_in_ui(place)]
 
     featured_place_ids = [
-        place_id
+        resolved_place_id
         for place_id in coerce_string_list(list_override.get("featured_place_ids"))
-        if any(place.id == place_id for place in display_places)
+        if (resolved_place_id := place_id_aliases.get(place_id, place_id))
+        and any(place.id == resolved_place_id for place in display_places)
     ]
     auto_featured_ids = [place.id for place in display_places if place.top_pick]
     if featured_place_ids:
@@ -4431,7 +4455,9 @@ def enrich_raw_sources(
 ) -> None:
     api_key = google_places_api_key()
     cache_payloads: dict[str, dict[str, EnrichmentCacheEntry]] = {}
-    enrich_jobs: list[tuple[str, str, str | None, str | None, str, str, dict[str, Any], str | None, str | None]] = []
+    enrich_jobs: list[
+        tuple[str, str, str, str, dict[str, Any], str | None, str | None, Mapping[str, Any], EnrichmentCacheEntry | None]
+    ] = []
     normalized_place_selectors = normalize_place_selectors(place_selectors or [])
     matched_place_selectors: set[str] = set()
 
@@ -4449,13 +4475,6 @@ def enrich_raw_sources(
         current_primary_keys = raw_saved_list_primary_match_key_set(raw)
         for place in raw.places:
             place_id = stable_place_id(place, source_type=raw.configured_source_type)
-            cache_key = raw_place_mapping_lookup_key(
-                cache_payload,
-                place,
-                source_type=raw.configured_source_type,
-                blocked_alias_keys=current_primary_keys,
-            )
-            cache_entry = cache_payload.get(cache_key) if cache_key is not None else None
             if normalized_place_selectors:
                 selector_matches = place_selector_matches(
                     slug,
@@ -4467,7 +4486,7 @@ def enrich_raw_sources(
                 matched_place_selectors.update(selector_matches)
                 if not selector_matches:
                     continue
-            override_key = raw_place_mapping_lookup_key(
+            override_payload = place_override_for_raw_place(
                 place_override_map,
                 place,
                 source_type=raw.configured_source_type,
@@ -4476,12 +4495,18 @@ def enrich_raw_sources(
             override = place_override_for_ui_copy(
                 slug,
                 place_id,
-                place_override_map.get(override_key, {}) if override_key is not None else {},
+                override_payload,
             )
             override_google_place_id = as_string(override.get("google_place_id"))
+            existing_entry = cache_entry_for_raw_place(
+                cache_payload,
+                place,
+                source_type=raw.configured_source_type,
+                blocked_alias_keys=current_primary_keys,
+            )
             refresh_reason = enrichment_refresh_reason(
                 place,
-                cache_entry,
+                existing_entry,
                 city_name=city_name,
                 country_name=country_name,
                 signature_google_place_id=override_google_place_id,
@@ -4495,13 +4520,13 @@ def enrich_raw_sources(
                 (
                     slug,
                     place_id,
-                    cache_key,
-                    override_key,
                     place.name,
                     refresh_reason,
                     place.model_dump(mode="json"),
                     city_name,
                     country_name,
+                    override_payload,
+                    existing_entry,
                 )
             )
 
@@ -4521,7 +4546,7 @@ def enrich_raw_sources(
     )
     max_workers = max(1, min(refresh_workers, len(enrich_jobs)))
     if max_workers == 1 or len(enrich_jobs) == 1:
-        for slug, place_id, cache_key, override_key, place_name, refresh_reason, place_payload, city_name, country_name in enrich_jobs:
+        for slug, place_id, place_name, refresh_reason, place_payload, city_name, country_name, override_payload, existing_entry in enrich_jobs:
             entry = enrich_place_job(
                 slug,
                 place_id,
@@ -4532,11 +4557,9 @@ def enrich_raw_sources(
                 country_name=country_name,
                 api_key=api_key,
                 refresh_startup_jitter_seconds=effective_startup_jitter_seconds,
-                existing_entry=cache_payloads[slug].get(cache_key) if cache_key is not None else None,
-                override_key=override_key,
+                override_payload=override_payload,
+                existing_entry=existing_entry,
             )
-            if cache_key is not None and cache_key != place_id:
-                cache_payloads[slug].pop(cache_key, None)
             cache_payloads[slug][place_id] = entry
             save_places_cache(slug, cache_payloads[slug])
         return
@@ -4557,15 +4580,13 @@ def enrich_raw_sources(
                 country_name=country_name,
                 api_key=api_key,
                 refresh_startup_jitter_seconds=effective_startup_jitter_seconds,
-                existing_entry=cache_payloads[slug].get(cache_key) if cache_key is not None else None,
-                override_key=override_key,
-            ): (slug, place_id, cache_key)
-            for slug, place_id, cache_key, override_key, place_name, refresh_reason, place_payload, city_name, country_name in enrich_jobs
+                override_payload=override_payload,
+                existing_entry=existing_entry,
+            ): (slug, place_id)
+            for slug, place_id, place_name, refresh_reason, place_payload, city_name, country_name, override_payload, existing_entry in enrich_jobs
         }
         for future in as_completed(future_map):
-            slug, place_id, cache_key = future_map[future]
-            if cache_key is not None and cache_key != place_id:
-                cache_payloads[slug].pop(cache_key, None)
+            slug, place_id = future_map[future]
             cache_payloads[slug][place_id] = future.result()
             save_places_cache(slug, cache_payloads[slug])
     except KeyboardInterrupt:
@@ -4661,26 +4682,24 @@ def refresh_cached_semantic_enrichment(
                 if not selector_matches:
                     continue
 
-            cache_key = raw_place_mapping_lookup_key(
+            entry = cache_entry_for_raw_place(
                 cache_payload,
                 place,
                 source_type=raw.configured_source_type,
                 blocked_alias_keys=current_primary_keys,
             )
-            entry = cache_payload.get(cache_key) if cache_key is not None else None
             if not cache_entry_has_publishable_enrichment(entry) or entry is None or entry.place is None:
                 skipped_count += 1
                 continue
-            override_key = raw_place_mapping_lookup_key(
-                place_override_map,
-                place,
-                source_type=raw.configured_source_type,
-                blocked_alias_keys=current_primary_keys,
-            )
             override = place_override_for_ui_copy(
                 slug,
                 place_id,
-                place_override_map.get(override_key, {}) if override_key is not None else {},
+                place_override_for_raw_place(
+                    place_override_map,
+                    place,
+                    source_type=raw.configured_source_type,
+                    blocked_alias_keys=current_primary_keys,
+                ),
             )
             suppress_description = bool(as_string(override.get("note")))
             semantic_jobs.append((slug, place_id, place, entry, city_name, country_name, suppress_description))
@@ -4778,8 +4797,8 @@ def enrich_place_job(
     country_name: str | None = None,
     api_key: str | None,
     refresh_startup_jitter_seconds: float,
+    override_payload: Mapping[str, Any] | None = None,
     existing_entry: EnrichmentCacheEntry | None = None,
-    override_key: str | None = None,
 ) -> EnrichmentCacheEntry:
     print(
         f"Enriching {slug}:{place_id} [{place_name}] ({refresh_reason})",
@@ -4788,10 +4807,14 @@ def enrich_place_job(
     sleep_for_refresh_startup_jitter(refresh_startup_jitter_seconds)
     place = RawPlace.model_validate(place_payload)
     place_override_map = read_json(PLACE_OVERRIDES_DIR / f"{slug}.json")
+    if override_payload is None:
+        override_payload = place_override_map.get(place_id)
+    if not isinstance(override_payload, Mapping):
+        override_payload = place_override_for_raw_place(place_override_map, place)
     override = place_override_for_ui_copy(
         slug,
         place_id,
-        place_override_map.get(override_key or place_id, {}),
+        override_payload,
     )
     suppress_description = bool(as_string(override.get("note")))
     override_google_place_id = as_string(override.get("google_place_id"))
@@ -4845,14 +4868,13 @@ def google_place_id_for_refresh_seed(
 
 
 def stable_place_id(place: RawPlace, *, source_type: str | None = None) -> str:
+    google_id = normalized_google_id(place.google_id)
+    if google_id:
+        return f"gid:{google_id}"
+
     cid = place.cid
     if cid:
         return f"cid:{cid}"
-
-    google_id = place.google_id
-    if google_id:
-        normalized = google_id.strip("/").replace("/", "-")
-        return f"gid:{normalized}"
 
     cid_from_url = extract_maps_cid(place.maps_url)
     if cid_from_url:
@@ -4875,6 +4897,13 @@ def stable_place_id(place: RawPlace, *, source_type: str | None = None) -> str:
     return f"slug:{slugify(fallback)}"
 
 
+def normalized_google_id(google_id: str | None) -> str | None:
+    normalized = as_string(google_id)
+    if normalized is None:
+        return None
+    return normalized.strip("/").replace("/", "-")
+
+
 def short_maps_url_id(maps_url: str | None) -> str | None:
     normalized_url = as_string(maps_url)
     if normalized_url is None:
@@ -4889,19 +4918,21 @@ def derive_place_tags(
     *,
     enrichment: EnrichmentPlace,
     category: str | None,
+    include_locality_tags: bool = True,
 ) -> list[str]:
     tags: set[str] = set()
     if city_name:
         tags.add(normalize_tag_slug(city_name))
-    tags.update(
-        derive_locality_tags(
-            place.address,
-            raw_place=place,
-            city_name=city_name,
-            enrichment=enrichment,
-            category=category,
+    if include_locality_tags:
+        tags.update(
+            derive_locality_tags(
+                place.address,
+                raw_place=place,
+                city_name=city_name,
+                enrichment=enrichment,
+                category=category,
+            )
         )
-    )
     if category:
         tags.add(normalize_tag_slug(category))
     tags.update(derive_enrichment_type_tags(enrichment, category=category))
@@ -5507,6 +5538,17 @@ def build_search_index(guides: list[Guide]) -> dict[str, Any]:
     }
 
 
+def write_chat_indexes(index: dict[str, Any]) -> None:
+    """Keep Worker requests scoped to a catalog and selected guides' places."""
+    target = PUBLIC_DATA_DIR / "chat"
+    write_json(target / "guides.json", {"guides": index["guides"]}, compact=True)
+    by_guide: dict[str, list[dict[str, Any]]] = {guide["slug"]: [] for guide in index["guides"]}
+    for entry in index["entries"]:
+        by_guide[entry["guide_slug"]].append(entry)
+    for slug, entries in by_guide.items():
+        write_json(target / f"{slug}.json", {"entries": entries}, compact=True)
+
+
 def search_index_guide_entry(guide: Guide) -> dict[str, Any]:
     featured_ids = set(guide.featured_place_ids)
     return {
@@ -5579,6 +5621,9 @@ def search_index_place_entry(guide: Guide, place: NormalizedPlace) -> dict[str, 
         "name": place.name,
         "category": place.primary_category,
         "neighborhood": place.neighborhood,
+        "address": place.address,
+        "lat": place.lat,
+        "lng": place.lng,
         "tags": place.tags,
         "vibe_tags": place.vibe_tags,
         "note": place.note,
@@ -5586,6 +5631,8 @@ def search_index_place_entry(guide: Guide, place: NormalizedPlace) -> dict[str, 
         "review_evidence": place.review_evidence,
         "rating": place.rating,
         "user_rating_count": place.user_rating_count,
+        "price_range": place.price_range,
+        "photo_url": place.main_photo_path or (place.photo_url if guide.place_photo_mode == "remote_url" else None),
         "top_pick": place.top_pick,
         "manual_rank": place.manual_rank,
         "trust_signals": [
@@ -6725,15 +6772,15 @@ def stamp_raw_saved_list(payload: RawSavedList, source: SourceConfig, *, source_
 
 
 def raw_place_primary_match_keys(place: RawPlace, *, source_type: str | None = None) -> list[str]:
-    keys: list[str] = []
+    keys: list[str] = [stable_place_id(place, source_type=source_type)]
+
+    google_id = normalized_google_id(place.google_id)
+    if google_id:
+        keys.append(f"gid:{google_id}")
 
     cid = as_string(place.cid) or extract_maps_cid(place.maps_url)
     if cid:
         keys.append(f"cid:{cid}")
-
-    google_id = as_string(place.google_id)
-    if google_id:
-        keys.append(f"gid:{google_id.strip('/').replace('/', '-')}")
 
     maps_place_token = place.maps_place_token or extract_maps_place_token(place.maps_url)
     if maps_place_token:
@@ -6758,7 +6805,6 @@ def raw_place_primary_match_keys(place: RawPlace, *, source_type: str | None = N
         if maps_url_id:
             keys.append(maps_url_id)
 
-    keys.append(stable_place_id(place, source_type=source_type))
     return list(dict.fromkeys(keys))
 
 
@@ -6866,6 +6912,24 @@ def raw_place_lookup_keys(
     return list(dict.fromkeys(keys))
 
 
+def place_override_for_raw_place(
+    place_override_map: Mapping[str, Any],
+    place: RawPlace,
+    *,
+    source_type: str | None = None,
+    blocked_alias_keys: set[str] | None = None,
+) -> Mapping[str, Any]:
+    for key in raw_place_lookup_keys(
+        place,
+        source_type=source_type,
+        blocked_alias_keys=blocked_alias_keys,
+    ):
+        override = place_override_map.get(key)
+        if isinstance(override, Mapping):
+            return override
+    return {}
+
+
 def raw_place_mapping_lookup_key(
     mapping: Mapping[str, Any],
     place: RawPlace,
@@ -6881,6 +6945,22 @@ def raw_place_mapping_lookup_key(
         if key in mapping:
             return key
     return None
+
+
+def cache_entry_for_raw_place(
+    cache_payload: Mapping[str, EnrichmentCacheEntry],
+    place: RawPlace,
+    *,
+    source_type: str | None = None,
+    blocked_alias_keys: set[str] | None = None,
+) -> EnrichmentCacheEntry | None:
+    key = raw_place_mapping_lookup_key(
+        cache_payload,
+        place,
+        source_type=source_type,
+        blocked_alias_keys=blocked_alias_keys,
+    )
+    return cache_payload[key] if key is not None else None
 
 
 def build_raw_place_preservation_index(
@@ -9545,6 +9625,7 @@ def preserve_existing_raw_saved_list(
 
     existing_index = build_raw_place_preservation_index(existing_payload, source_type=source_type)
     updated_places: list[RawPlace] = []
+    matched_existing_ids: set[int] = set()
 
     for refreshed_place in refreshed_payload.places:
         existing_place = None
@@ -9573,6 +9654,7 @@ def preserve_existing_raw_saved_list(
             updated_places.append(refreshed_place)
             continue
 
+        matched_existing_ids.add(id(existing_place))
         merged_place, preserved_fields = preserve_existing_raw_place(
             existing_place=existing_place,
             refreshed_place=refreshed_place,
@@ -9585,6 +9667,23 @@ def preserve_existing_raw_saved_list(
                 flush=True,
             )
         updated_places.append(merged_place)
+
+    refreshed_count = len(refreshed_payload.places)
+    if (
+        source_type == "google_list_url"
+        and refreshed_count in GOOGLE_SAVED_LIST_SCRAPE_CAPS
+        and len(existing_payload.places) >= refreshed_count
+    ):
+        # Match against the results of the normal merge, including its fallback
+        # matches, so repeated capped responses retain the same omitted places.
+        missing_places = [place for place in existing_payload.places if id(place) not in matched_existing_ids]
+        if missing_places:
+            print(
+                f"WARNING: Restoring {len(missing_places)} established places for {slug} "
+                f"after a potentially capped {refreshed_count}-place Google saved-list response.",
+                flush=True,
+            )
+            updated_places.extend(missing_places)
 
     deduped_payload = clear_duplicate_raw_place_cids(
         slug=slug,
@@ -9800,9 +9899,19 @@ def enrichment_refresh_reason(
 
 
 def enrichment_job_priority(
-    job: tuple[str, str, str | None, str | None, str, str, dict[str, Any], str | None, str | None]
+    job: tuple[
+        str,
+        str,
+        str,
+        str,
+        dict[str, Any],
+        str | None,
+        str | None,
+        Mapping[str, Any],
+        EnrichmentCacheEntry | None,
+    ]
 ) -> tuple[int, str, str]:
-    slug, place_id, _cache_key, _override_key, _place_name, refresh_reason, _place_payload, _city_name, _country_name = job
+    slug, place_id, _place_name, refresh_reason, _place_payload, _city_name, _country_name, _override_payload, _existing_entry = job
     return (
         ENRICHMENT_REFRESH_REASON_PRIORITY.get(refresh_reason, 99),
         slug,
@@ -9857,13 +9966,13 @@ def google_maps_place_scraper_policy_payload() -> dict[str, Any]:
 
 
 def structured_place_identity_payload(place: RawPlace) -> dict[str, str] | None:
+    google_id = normalized_google_id(place.google_id)
+    if google_id:
+        return {"google_id": google_id}
+
     cid = place.cid or extract_maps_cid(place.maps_url)
     if cid:
         return {"cid": cid}
-
-    google_id = as_string(place.google_id)
-    if google_id:
-        return {"google_id": google_id.strip("/").replace("/", "-")}
 
     maps_place_token = place.maps_place_token or extract_maps_place_token(place.maps_url)
     if maps_place_token:
@@ -11117,7 +11226,7 @@ def sync_guide_place_photos(
     startup_jitter_seconds: float = 0,
 ) -> None:
     for place in guide.places:
-        photo_url = cached_place_photo_url(enrichment_cache.get(place.id))
+        photo_url = cached_place_photo_url(cache_entry_for_normalized_place(enrichment_cache, place))
         place.main_photo_path = sync_place_photo(
             guide.slug,
             place.id,
@@ -11130,6 +11239,31 @@ def cached_place_photo_url(cache_entry: EnrichmentCacheEntry | None) -> str | No
     if cache_entry is None or cache_entry.place is None:
         return None
     return cache_entry.place.main_photo_url or cache_entry.place.photo_url
+
+
+def normalized_place_match_keys(place: NormalizedPlace) -> list[str]:
+    keys: list[str] = [place.id]
+
+    google_id = normalized_google_id(place.google_id)
+    if google_id:
+        keys.append(f"gid:{google_id}")
+
+    cid = as_string(place.cid) or extract_maps_cid(place.maps_url)
+    if cid:
+        keys.append(f"cid:{cid}")
+
+    return list(dict.fromkeys(keys))
+
+
+def cache_entry_for_normalized_place(
+    cache_payload: Mapping[str, EnrichmentCacheEntry],
+    place: NormalizedPlace,
+) -> EnrichmentCacheEntry | None:
+    for key in normalized_place_match_keys(place):
+        entry = cache_payload.get(key)
+        if entry is not None:
+            return entry
+    return None
 
 
 def sync_list_author_photo(slug: str, author: ListAuthor | None) -> ListAuthor | None:
@@ -11249,7 +11383,7 @@ def populate_place_photos_for_guides(
                 continue
             enrichment_cache = enrichment_caches.get(guide.slug, {})
             for place in guide.places:
-                photo_url = cached_place_photo_url(enrichment_cache.get(place.id))
+                photo_url = cached_place_photo_url(cache_entry_for_normalized_place(enrichment_cache, place))
                 place.main_photo_path, fallback_reason = resolve_existing_place_photo_path(
                     guide.slug,
                     place.id,
@@ -11288,7 +11422,7 @@ def populate_place_photos_for_guides(
             continue
         enrichment_cache = enrichment_caches.get(guide.slug, {})
         for place in guide.places:
-            photo_url = cached_place_photo_url(enrichment_cache.get(place.id))
+            photo_url = cached_place_photo_url(cache_entry_for_normalized_place(enrichment_cache, place))
             if not photo_url:
                 unreference_current_photo(place)
                 place.main_photo_path = None
@@ -14022,7 +14156,9 @@ def refine_semantic_neighborhood_with_address_localities(
         if not candidate_key:
             continue
         if candidate_key == semantic_key:
-            return candidate
+            if len(candidate.strip()) >= len(semantic_neighborhood.strip()):
+                return candidate
+            continue
         if (
             candidate_key.endswith(semantic_key)
             or candidate_key.startswith(f"{semantic_key} ")
@@ -15790,6 +15926,7 @@ def place_selector_matches(
         ("cid", place.cid),
         ("cid", extract_maps_cid(place.maps_url)),
         *((("cid", cid_alias) for cid_alias in cid_aliases)),
+        ("gid", normalized_google_id(place.google_id)),
         *(
             ("gpid", google_places_id)
             for google_places_id in sorted(raw_place_google_places_identities(place))

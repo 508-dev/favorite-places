@@ -21,6 +21,16 @@ describe("renderRichText", () => {
     );
   });
 
+  it("can label bare links by hostname while keeping the destination and authored labels", () => {
+    expect(
+      renderRichText("See https://example.com/guide?lang=en. [My map](https://maps.example.com/)", {
+        bareLinkLabel: "hostname",
+      }),
+    ).toBe(
+      'See <a href="https://example.com/guide?lang=en" target="_blank" rel="noopener noreferrer">example.com</a>. <a href="https://maps.example.com/" target="_blank" rel="noopener noreferrer">My map</a>',
+    );
+  });
+
   it("escapes plain text and preserves line breaks", () => {
     expect(renderRichText("Line 1\nLine <2>")).toBe("Line 1<br />Line &lt;2&gt;");
   });

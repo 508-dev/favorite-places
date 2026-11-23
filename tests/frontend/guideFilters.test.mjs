@@ -23,6 +23,7 @@ import {
   hasAdditionalGuideFilters,
   locationFallbackMessage,
   normalizeUserLocationDetail,
+  resolveChatFilterControls,
   resolveLocationSortState,
   sortFilterOptions,
   toggleBudgetSelection,
@@ -902,5 +903,66 @@ describe("guide filters", () => {
       shouldFallback: false,
       sortValue: "nearby",
     });
+  });
+});
+
+describe("chat filters share native control state", () => {
+  const cards = [
+    makeCard({ placeId: "one", neighborhood: "Shibuya" }),
+    makeCard({ placeId: "two", neighborhood: "Shibuya" }),
+    makeCard({ placeId: "three", neighborhood: "Shinjuku" }),
+  ];
+  const context = {
+    cards,
+    types: ["cafe", "restaurant"],
+    areas: [{ value: "shibuya", label: "Shibuya" }],
+  };
+  const action = (query, scope) => ({ filters: { query, tags: [], min_rating: 0 }, scope });
+  it("moves an exact place type into its native control", () => {
+    expect(resolveChatFilterControls(action("cafes"), context)).toEqual({
+      query: "",
+      type: "cafe",
+      area: "",
+      scope: null,
+    });
+  });
+  it("uses existing search aliases only for an unambiguous category-only query", () => {
+    expect(
+      resolveChatFilterControls(action("coffee shops"), {
+        ...context,
+        parsedQuery: { categories: ["cafe"], unmatchedTerms: [], vibes: [] },
+      }).type,
+    ).toBe("cafe");
+    expect(
+      resolveChatFilterControls(action("quiet cafes"), {
+        ...context,
+        parsedQuery: { categories: ["cafe"], unmatchedTerms: [], vibes: ["quiet"] },
+      }).query,
+    ).toBe("quiet cafes");
+  });
+  it("keeps unsupported or more specific criteria in the editable search", () => {
+    expect(resolveChatFilterControls(action("soup dumplings"), context).query).toBe(
+      "soup dumplings",
+    );
+    expect(resolveChatFilterControls(action("vegan restaurant"), context).type).toBe("");
+  });
+  it("selects the native area only when label and complete membership agree", () => {
+    expect(
+      resolveChatFilterControls(
+        action("", { label: "Shibuya", place_ids: ["one", "two"] }),
+        context,
+      ),
+    ).toEqual({ query: "", type: "", area: "shibuya", scope: null });
+  });
+  it("preserves a narrower geographic scope even when its label matches an area", () => {
+    const scope = { label: "Shibuya", place_ids: ["one"] };
+    expect(resolveChatFilterControls(action("", scope), context)).toEqual({
+      query: "",
+      type: "",
+      area: "",
+      scope,
+    });
+    const ximen = { label: "Ximen", place_ids: ["one"] };
+    expect(resolveChatFilterControls(action("", ximen), context).scope).toEqual(ximen);
   });
 });

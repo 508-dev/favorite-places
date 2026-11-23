@@ -449,11 +449,11 @@ describe("guide map interactions", () => {
 
     expect(guideMap).toContain("markerIcon: place.marker_icon");
     expect(guideMap).toContain("buildMapMarkerDataUrl");
-    expect(guideMap).toContain("buildMapMarkerSvg");
+    expect(guideMap).toContain("buildMapMarkerShadowDataUrl");
     expect(guideMap).toContain('className: "guide-map-marker"');
     expect(guideMap).not.toContain("google.maps.SymbolPath.CIRCLE");
     expectCssToContain(css, ".guide-map-marker");
-    expectCssToContain(css, ".guide-map-marker svg");
+    expectCssNotToContain(css, ".guide-map-marker svg");
     expectCssToContain(css, "width: 100%;");
     expectCssToContain(css, "height: 100%;");
   });

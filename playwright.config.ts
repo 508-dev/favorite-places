@@ -19,7 +19,7 @@ const host = "127.0.0.1";
 const baseURL = `http://${host}:${port}`;
 const testSiteDir = ".context/e2e-site";
 const prepareSiteCommand = `mkdir -p .context && rm -rf ${testSiteDir} && cp -R site.example ${testSiteDir}`;
-const siteEnv = `FAVORITE_PLACES_SITE_DIR=${testSiteDir} PUBLIC_MAP_PROVIDER=leaflet`;
+const siteEnv = `FAVORITE_PLACES_SITE_DIR=${testSiteDir} PUBLIC_MAP_PROVIDER=leaflet PUBLIC_CHAT_ENABLED=true`;
 
 export default defineConfig({
   testDir: "./tests/e2e",

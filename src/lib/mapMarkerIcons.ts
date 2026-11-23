@@ -230,12 +230,42 @@ export const getMapMarkerSize = (
   };
 };
 
+// Keep the shadow silhouette aligned with the badge and its selection/top-pick ring.
+const markerGeometry = (active = false, topPick = false) => {
+  const outerRadius = active ? (topPick ? 16.25 : 15.35) : topPick ? 15.55 : 14.9;
+  return {
+    outerRadius,
+    ringRadius: active ? outerRadius + 1.8 : topPick ? outerRadius + 1.35 : 0,
+    strokeWidth: active ? 2.5 : 2.15,
+  };
+};
+
+// The extra 16 SVG units on each side keep the blur inside the image bounds.
+export const getMapMarkerShadowSize = (size: MapMarkerSize) => ({
+  width: size.width * 1.8,
+  height: size.height * 1.8,
+  anchorX: size.anchorX + size.width * 0.4,
+  anchorY: size.anchorY + size.height * 0.4,
+});
+
+export const buildMapMarkerShadowDataUrl = ({
+  active = false,
+  topPick = false,
+}: Pick<MapMarkerSvgOptions, "active" | "topPick"> = {}): string => {
+  const { outerRadius, ringRadius, strokeWidth } = markerGeometry(active, topPick);
+  const radius = Math.max(outerRadius + strokeWidth / 2, ringRadius);
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="-16 -16 72 72" width="72" height="72" fill="none">
+    <defs><filter id="shadow" x="-100%" y="-100%" width="300%" height="300%"><feGaussianBlur stdDeviation="4" /></filter></defs>
+    <circle cx="20" cy="25" r="${radius}" fill="#110c08" fill-opacity="0.22" filter="url(#shadow)" />
+    <circle cx="20" cy="22" r="${radius}" fill="#ffffff" fill-opacity="0.92" />
+  </svg>`;
+  return `data:image/svg+xml;charset=UTF-8,${encodeURIComponent(svg)}`;
+};
+
 export const buildMapMarkerSvg = (icon: MarkerIcon, options: MapMarkerSvgOptions): string => {
   const { active = false, fillColor, haloColor, ringColor, strokeColor, topPick = false } = options;
   const label = escapeXml(getMapMarkerLabel(icon));
-  const outerRadius = active ? (topPick ? 16.25 : 15.35) : topPick ? 15.55 : 14.9;
-  const ringRadius = active ? outerRadius + 1.8 : topPick ? outerRadius + 1.35 : 0;
-  const strokeWidth = active ? 2.5 : 2.15;
+  const { outerRadius, ringRadius, strokeWidth } = markerGeometry(active, topPick);
 
   return `
     <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 40 40" width="40" height="40" fill="none" aria-hidden="true">

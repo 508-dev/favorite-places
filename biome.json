@@ -6,6 +6,7 @@
       "*.mjs",
       "src/**",
       "functions/**",
+      "workers/**",
       "public/scripts/**",
       "scripts/**",
       "tests/e2e/**",
@@ -13,7 +14,8 @@
       "!src/data/generated",
       "!public/data",
       "!data",
-      "!vendor"
+      "!vendor",
+      "!**/.wrangler"
     ],
     "ignoreUnknown": true
   },
