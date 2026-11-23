@@ -10129,6 +10129,7 @@ def merge_page_place_into_api_entry(
         return api_entry
 
     for field_name in (
+        "address_parts",
         "address_display_en",
         "address_display_en_source",
         "address_display_en_confidence",
@@ -10143,6 +10144,10 @@ def merge_page_place_into_api_entry(
         "main_photo_url",
         "photo_url",
         "website",
+        "phone",
+        "price_range",
+        "admission_price",
+        "room_price",
     ):
         if getattr(api_place, field_name) in (None, "", []):
             setattr(api_place, field_name, getattr(page_place, field_name))
@@ -12410,8 +12415,6 @@ def should_fallback_to_places_api(entry: EnrichmentCacheEntry) -> bool:
     if place.business_status is None and place.rating is None and place.user_rating_count is None:
         if not place.primary_type_display_name:
             return True
-    if not place.address_country_name:
-        return True
     return False
 
 

@@ -11319,7 +11319,7 @@ class BuildDataTests(unittest.TestCase):
 
         self.assertFalse(build_data.should_fallback_to_places_api(entry))
 
-    def test_should_fallback_to_places_api_for_rich_search_result_missing_address_components(self) -> None:
+    def test_should_not_fallback_to_places_api_for_rich_search_result_missing_address_components(self) -> None:
         entry = EnrichmentCacheEntry(
             fetched_at="2026-04-20T00:00:00+00:00",
             query="Sister Midnight, 4 Rue Viollet-le-Duc, 75009 Paris, France",
@@ -11340,7 +11340,7 @@ class BuildDataTests(unittest.TestCase):
             ),
         )
 
-        self.assertTrue(build_data.should_fallback_to_places_api(entry))
+        self.assertFalse(build_data.should_fallback_to_places_api(entry))
 
     def test_extract_hashtags_normalizes_accented_and_malformed_location_tags(self) -> None:
         tags = build_data.extract_hashtags("Great spots #genève #gen-ve #park")
@@ -18109,6 +18109,11 @@ class BuildDataTests(unittest.TestCase):
                 formatted_address="Tokyo, Japan",
                 google_maps_uri=place.maps_url,
                 limited_view=True,
+                address_parts=["Tokyo", "Japan"],
+                phone="+81 3-1234-5678",
+                price_range="¥10,000–15,000",
+                admission_price="¥1,000",
+                room_price="¥20,000",
                 description="A polished kaiseki counter with seasonal menus.",
                 about_sections=[{"title": "Amenities", "items": [{"label": "Restroom"}]}],
             ),
@@ -18124,6 +18129,8 @@ class BuildDataTests(unittest.TestCase):
                 display_name="Jimbocho Den",
                 formatted_address="Tokyo, Japan",
                 google_maps_uri="https://maps.google.com/?cid=1",
+                address_country_name="Japan",
+                address_country_code="JP",
                 primary_type="restaurant",
                 primary_type_display_name="Restaurant",
             ),
@@ -18166,11 +18173,18 @@ class BuildDataTests(unittest.TestCase):
             entry.place.about_sections,
             [{"title": "Amenities", "items": [{"label": "Restroom"}]}],
         )
+        self.assertEqual(entry.place.address_parts, ["Tokyo", "Japan"])
+        self.assertEqual(entry.place.phone, "+81 3-1234-5678")
+        self.assertEqual(entry.place.price_range, "¥10,000–15,000")
+        self.assertEqual(entry.place.admission_price, "¥1,000")
+        self.assertEqual(entry.place.room_price, "¥20,000")
+        self.assertEqual(entry.place.address_country_name, "Japan")
+        self.assertEqual(entry.place.address_country_code, "JP")
         self.assertTrue(entry.place.limited_view)
         self.assertEqual(entry.place.google_maps_uri, "https://maps.google.com/?cid=1")
         self.assertEqual(entry.merged_sources, ["google_maps_page", "google_places_api"])
 
-    def test_fetch_places_enrichment_falls_back_to_api_when_page_lacks_address_components(self) -> None:
+    def test_fetch_places_enrichment_keeps_a_rich_page_result_without_address_components(self) -> None:
         place = RawPlace(
             name="Sister Midnight",
             address="4 Rue Viollet-le-Duc, 75009 Paris, France",
@@ -18193,26 +18207,9 @@ class BuildDataTests(unittest.TestCase):
                 primary_type_display_name="Cocktail bar",
             ),
         )
-        api_entry = EnrichmentCacheEntry(
-            fetched_at="2026-04-16T00:00:00+00:00",
-            refresh_after="2026-04-23T00:00:00+00:00",
-            source="google_places_api",
-            query="Sister Midnight, 4 Rue Viollet-le-Duc, 75009 Paris, France",
-            matched=True,
-            score=88,
-            place=EnrichmentPlace(
-                display_name="Sister Midnight",
-                formatted_address="4 Rue Viollet-le-Duc, 75009 Paris, France",
-                google_maps_uri="https://maps.google.com/?cid=1",
-                address_country_name="France",
-                address_country_code="FR",
-                address_locality="Paris",
-            ),
-        )
-
         with (
             patch.object(build_data, "fetch_place_page_enrichment", return_value=page_entry) as page_fetch,
-            patch.object(build_data, "fetch_places_api_enrichment", return_value=api_entry) as api_fetch,
+            patch.object(build_data, "fetch_places_api_enrichment") as api_fetch,
         ):
             entry = build_data.fetch_places_enrichment(
                 place,
@@ -18221,10 +18218,8 @@ class BuildDataTests(unittest.TestCase):
             )
 
         page_fetch.assert_called_once()
-        api_fetch.assert_called_once()
-        assert entry.place is not None
-        self.assertEqual(entry.place.address_country_name, "France")
-        self.assertEqual(entry.place.address_country_code, "FR")
+        api_fetch.assert_not_called()
+        self.assertIs(entry, page_entry)
 
     def test_fetch_places_enrichment_keeps_page_result_when_api_fallback_fails(self) -> None:
         place = RawPlace(
