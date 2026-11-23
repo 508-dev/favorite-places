@@ -4194,8 +4194,6 @@ def _preview_rating_value(value: int | float) -> float | None:
     rating = float(value)
     if not 1.0 <= rating <= 5.0:
         return None
-    if rating.is_integer():
-        return None
     return round(rating, 1)
 
 
@@ -4211,6 +4209,14 @@ def _preview_review_count_value(value: int | float) -> int | None:
 
 def _rating_count_pair_is_ambiguous(node: list[object], count: int) -> bool:
     count_text = str(count)
+    has_review_count_context = any(
+        isinstance(value, str)
+        and re.sub(r"\D", "", value) == count_text
+        and re.search(r"\b(?:review|reviews|rating|ratings)\b", value, re.IGNORECASE)
+        for value in node
+    )
+    if 1900 <= count <= 2100 and not has_review_count_context:
+        return True
     return any(
         isinstance(value, str)
         and count_text in value

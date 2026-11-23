@@ -2144,12 +2144,30 @@ class PlaceScraperTests(unittest.TestCase):
         self.assertEqual(enrichment["rating"], 4.7)
         self.assertEqual(enrichment["review_count"], 832)
 
-    def test_extract_preview_place_enrichment_accepts_year_range_review_count(self) -> None:
+    def test_extract_preview_place_enrichment_rejects_bare_year_range_review_count(
+        self,
+    ) -> None:
         payload = ")]}'\n" + json.dumps([["rating-summary", 4.7, 2000]])
+        enrichment = _extract_preview_place_enrichment(payload)
+
+        self.assertNotIn("rating", enrichment)
+        self.assertNotIn("review_count", enrichment)
+
+    def test_extract_preview_place_enrichment_accepts_year_range_review_count_with_context(
+        self,
+    ) -> None:
+        payload = ")]}'\n" + json.dumps([["rating-summary", 4.7, 2000, "2,000 reviews"]])
         enrichment = _extract_preview_place_enrichment(payload)
 
         self.assertEqual(enrichment["rating"], 4.7)
         self.assertEqual(enrichment["review_count"], 2000)
+
+    def test_extract_preview_place_enrichment_accepts_whole_float_rating(self) -> None:
+        payload = ")]}'\n" + json.dumps([["rating-summary", 5.0, 123]])
+        enrichment = _extract_preview_place_enrichment(payload)
+
+        self.assertEqual(enrichment["rating"], 5.0)
+        self.assertEqual(enrichment["review_count"], 123)
 
     def test_extract_preview_place_enrichment_rejects_ambiguous_rating_counts(self) -> None:
         enrichment = _extract_preview_place_enrichment(
