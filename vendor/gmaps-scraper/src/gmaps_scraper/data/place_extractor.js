@@ -347,7 +347,20 @@
     } else if (text.includes("萬") || text.includes("万")) {
       multiplier = 10000;
     }
-    const numeric = parseFloat(text.replace(/[,\sKM萬万]/g, ""));
+    const numberText = text.replace(/[KM萬万]$/, "").trim();
+    let normalized = numberText.replace(/\s/g, "");
+    // Match Python's separator handling when ranking DOM candidates.
+    if (multiplier === 1 && /^[0-9]{1,3}(?:[.,\s][0-9]{3})+$/.test(numberText)) {
+      normalized = normalized.replace(/[.,]/g, "");
+    } else if (
+      multiplier > 1
+      && /^(?:[0-9]+,[0-9]{1,2}|[0-9]{1,3}(?:\.[0-9]{3})+,[0-9]+)$/.test(normalized)
+    ) {
+      normalized = normalized.replace(/\./g, "").replace(",", ".");
+    } else {
+      normalized = normalized.replace(/,/g, "");
+    }
+    const numeric = Number(normalized);
     return Number.isFinite(numeric) ? numeric * multiplier : 0;
   };
 
@@ -826,6 +839,19 @@
     }
     return null;
   };
+  const openingHours = () => {
+    if (!panelInfo.found || !panelInfo.title || isSearchResultTitle(panelInfo.title)) {
+      return [];
+    }
+    // Maps renders the weekly rows even when the Overview hours control is collapsed.
+    const table = panel.querySelector("div.OqCZI table.eK4R0e");
+    return Array.from(table?.querySelectorAll("tr.y0skZc") || [], (row) => ({
+      day: row.querySelector("td.ylH6lf > div")?.textContent?.trim(),
+      hours: Array.from(row.querySelectorAll("td.mxowUb li.G8aQO"), (item) => (
+        item.textContent.trim()
+      )),
+    }));
+  };
   const structuralOffers = structuralOfferSignals();
 
   return {
@@ -847,6 +873,7 @@
     address: addressValue(),
     located_in: itemValue("locatedin"),
     status: firstText(["div.OqCZI .ZDu9vd", "div.OqCZI .o0Svhf"]),
+    opening_hours: openingHours(),
     website: firstAttr(["a[data-item-id='authority']"], "href", document) || itemValue("authority"),
     reservation_links: collectReservationLinks(),
     phone: firstText([

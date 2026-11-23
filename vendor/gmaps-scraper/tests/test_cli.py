@@ -4,7 +4,7 @@ import io
 import json
 import tempfile
 import unittest
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest.mock import Mock, patch
 
@@ -12,9 +12,10 @@ from gmaps_scraper.cli import (
     _download_place_photo,
     _place_screenshot_path,
     _scrape_place_for_debug,
+    build_parser,
     main,
 )
-from gmaps_scraper.models import PlaceDetails, PlaceScrapeResult
+from gmaps_scraper.models import PlaceDetails, PlaceScrapeResult, SavedList, SavedListScrapeResult
 from gmaps_scraper.scraper import (
     BrowserArtifacts,
     BrowserSessionConfig,
@@ -68,6 +69,29 @@ def _result(payload: dict[str, object]) -> Mock:
 
 
 class CliTests(unittest.TestCase):
+    def test_fetch_mode_help_describes_place_mode_restrictions(self) -> None:
+        help_text = " ".join(build_parser().format_help().split())
+
+        self.assertIn("Curl mode is for saved lists only.", help_text)
+        self.assertIn("Place scraping uses the browser with auto or browser.", help_text)
+
+    def test_place_kind_rejects_curl_fetch_mode(self) -> None:
+        stderr = io.StringIO()
+        url = "https://www.google.com/maps/place/Den"
+        with (
+            patch("sys.argv", ["gmaps-scraper", url, "--kind", "place", "--fetch-mode", "curl"]),
+            patch("gmaps_scraper.cli.scrape_place") as scrape,
+            redirect_stderr(stderr),
+            self.assertRaises(SystemExit) as caught,
+        ):
+            main()
+
+        self.assertEqual(caught.exception.code, 2)
+        self.assertIn(
+            "`--fetch-mode curl` is only supported with `--kind list`.", stderr.getvalue()
+        )
+        scrape.assert_not_called()
+
     def test_place_screenshot_path_includes_digest_to_avoid_slug_collisions(self) -> None:
         path_a = _place_screenshot_path(
             Path("screenshots"),
@@ -117,6 +141,117 @@ class CliTests(unittest.TestCase):
             browser_session=None,
             http_session=None,
         )
+
+    def test_list_batch_accepts_multiple_urls_and_stdin(self) -> None:
+        urls = ["https://maps.app.goo.gl/example-a", "https://maps.app.goo.gl/example-b"]
+        saved_list = SavedList(urls[0], None, None, "Sample Coffee Stops", None, [])
+        results = [
+            SavedListScrapeResult(urls[0], saved_list=saved_list),
+            SavedListScrapeResult(urls[1], error="unavailable"),
+        ]
+        cases = [
+            (urls, "", 0),
+            ([urls[0], "--input", "-", "--fail-on-error"], f"# comment\n\n{urls[1]}\n", 1),
+        ]
+        for arguments, stdin, expected_status in cases:
+            with self.subTest(arguments=arguments):
+                stdout = io.StringIO()
+                with (
+                    patch("sys.argv", ["gmaps-scraper", *arguments, "--stagger-ms", "250"]),
+                    patch("sys.stdin", io.StringIO(stdin)),
+                    patch("gmaps_scraper.cli.scrape_saved_lists", return_value=results) as scrape,
+                    redirect_stdout(stdout),
+                ):
+                    self.assertEqual(main(), expected_status)
+
+                scrape.assert_called_once_with(
+                    urls,
+                    headless=True,
+                    timeout_ms=30_000,
+                    settle_time_ms=3_000,
+                    collection_mode="auto",
+                    browser_session=None,
+                    http_session=None,
+                    max_concurrency=1,
+                    max_retries=0,
+                    retry_backoff_ms=2_000,
+                    stagger_ms=250,
+                )
+                self.assertEqual(
+                    json.loads(stdout.getvalue()),
+                    {
+                        "results": [
+                            {"source_url": urls[0], "saved_list": saved_list.to_dict()},
+                            {"source_url": urls[1], "error": "unavailable"},
+                        ],
+                    },
+                )
+
+    def test_list_batch_writes_output_file_on_failure_with_one_input_url(self) -> None:
+        url = "https://maps.app.goo.gl/example-a"
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            input_path = Path(tmp_dir) / "lists.txt"
+            output_path = Path(tmp_dir) / "list-results.json"
+            input_path.write_text(f"{url}\n", encoding="utf-8")
+            with (
+                patch(
+                    "sys.argv",
+                    [
+                        "gmaps-scraper",
+                        "--kind",
+                        "list",
+                        "--input",
+                        str(input_path),
+                        "--output",
+                        str(output_path),
+                        "--fail-on-error",
+                        "--max-concurrency",
+                        "2",
+                        "--max-retries",
+                        "1",
+                        "--retry-backoff-ms",
+                        "50",
+                    ],
+                ),
+                patch(
+                    "gmaps_scraper.cli.scrape_saved_lists",
+                    return_value=[SavedListScrapeResult(url, error="unavailable")],
+                ) as scrape,
+            ):
+                self.assertEqual(main(), 1)
+
+            scrape.assert_called_once_with(
+                [url],
+                headless=True,
+                timeout_ms=30_000,
+                settle_time_ms=3_000,
+                collection_mode="auto",
+                browser_session=None,
+                http_session=None,
+                max_concurrency=2,
+                max_retries=1,
+                retry_backoff_ms=50,
+                stagger_ms=0,
+            )
+            self.assertEqual(
+                json.loads(output_path.read_text(encoding="utf-8")),
+                {"results": [{"source_url": url, "error": "unavailable"}]},
+            )
+
+    def test_list_batch_rejects_empty_input(self) -> None:
+        stderr = io.StringIO()
+        with (
+            patch("sys.argv", ["gmaps-scraper", "--input", "-"]),
+            patch("sys.stdin", io.StringIO("# no URLs\n\n")),
+            patch("gmaps_scraper.cli.scrape_saved_lists") as scrape,
+            redirect_stderr(stderr),
+            self.assertRaises(SystemExit) as caught,
+        ):
+            main()
+
+        self.assertEqual(caught.exception.code, 2)
+        self.assertIn("list scraping requires at least one URL", stderr.getvalue())
+        scrape.assert_not_called()
 
     def test_writes_output_file_and_forwards_cli_flags(self) -> None:
         artifacts = _artifacts()
@@ -296,6 +431,7 @@ class CliTests(unittest.TestCase):
             llm_tasks=("dom_repair", "display_translation"),
             collect_reviews=True,
             collect_about=True,
+            skip_preview_if_dom_complete=False,
         )
         collect_saved_list_result.assert_not_called()
 
@@ -555,6 +691,7 @@ class CliTests(unittest.TestCase):
             llm_tasks=("dom_repair", "display_translation"),
             collect_reviews=True,
             collect_about=True,
+            skip_preview_if_dom_complete=False,
         )
 
     def test_place_kind_can_enable_llm_repair_from_env(self) -> None:
@@ -608,6 +745,7 @@ class CliTests(unittest.TestCase):
             llm_tasks=("dom_repair", "display_translation"),
             collect_reviews=True,
             collect_about=True,
+            skip_preview_if_dom_complete=False,
         )
 
     def test_place_kind_can_scope_llm_tasks_and_skip_tabs(self) -> None:
@@ -636,6 +774,7 @@ class CliTests(unittest.TestCase):
                     "display_translation",
                     "--skip-reviews",
                     "--skip-about",
+                    "--skip-preview-if-dom-complete",
                 ],
             ),
             patch(
@@ -654,6 +793,7 @@ class CliTests(unittest.TestCase):
         )
         self.assertFalse(scrape_place.call_args.kwargs["collect_reviews"])
         self.assertFalse(scrape_place.call_args.kwargs["collect_about"])
+        self.assertTrue(scrape_place.call_args.kwargs["skip_preview_if_dom_complete"])
 
     def test_place_kind_uses_env_file_model_for_llm_cache_namespace(self) -> None:
         stdout = io.StringIO()
@@ -877,6 +1017,7 @@ class CliTests(unittest.TestCase):
             llm_tasks=("dom_repair", "display_translation"),
             collect_reviews=True,
             collect_about=True,
+            skip_preview_if_dom_complete=False,
             max_concurrency=1,
             max_retries=2,
             retry_backoff_ms=750,
@@ -932,6 +1073,7 @@ class CliTests(unittest.TestCase):
             llm_tasks=("dom_repair", "display_translation"),
             collect_reviews=True,
             collect_about=True,
+            skip_preview_if_dom_complete=False,
             max_concurrency=1,
             max_retries=1,
             retry_backoff_ms=2_000,
@@ -987,6 +1129,108 @@ class CliTests(unittest.TestCase):
                 "https://www.google.com/maps/place/Narisawa",
             ],
         )
+
+    def test_place_kind_batch_fail_on_error_returns_one_on_error(self) -> None:
+        stdout = io.StringIO()
+        details = PlaceDetails(
+            source_url="https://www.google.com/maps/place/Den",
+            resolved_url="https://www.google.com/maps/place/Den",
+            name="Den",
+            category="Japanese restaurant",
+            rating=4.4,
+            review_count=324,
+            address="Tokyo, Japan",
+        )
+        with (
+            patch(
+                "sys.argv",
+                [
+                    "gmaps-scraper",
+                    "--kind",
+                    "place",
+                    "https://www.google.com/maps/place/Den",
+                    "https://www.google.com/maps/place/Narisawa",
+                    "--fail-on-error",
+                ],
+            ),
+            patch(
+                "gmaps_scraper.cli.scrape_places",
+                return_value=[
+                    PlaceScrapeResult(
+                        source_url="https://www.google.com/maps/place/Den",
+                        place=details,
+                        attempts=1,
+                    ),
+                    PlaceScrapeResult(
+                        source_url="https://www.google.com/maps/place/Narisawa",
+                        error="blocked",
+                        attempts=3,
+                    ),
+                ],
+            ) as scrape_places,
+            redirect_stdout(stdout),
+        ):
+            exit_code = main()
+
+        self.assertEqual(exit_code, 1)
+        scrape_places.assert_called_once_with(
+            [
+                "https://www.google.com/maps/place/Den",
+                "https://www.google.com/maps/place/Narisawa",
+            ],
+            headless=True,
+            timeout_ms=30_000,
+            settle_time_ms=3_000,
+            browser_session=None,
+            http_session=None,
+            llm_fallback=None,
+            llm_policy="on_quality_failure",
+            llm_tasks=("dom_repair", "display_translation"),
+            collect_reviews=True,
+            collect_about=True,
+            skip_preview_if_dom_complete=False,
+            max_concurrency=1,
+            max_retries=1,
+            retry_backoff_ms=2_000,
+            stagger_ms=0,
+        )
+        payload = json.loads(stdout.getvalue())
+        self.assertEqual(payload["results"][0]["place"]["name"], "Den")
+        self.assertEqual(payload["results"][1]["error"], "blocked")
+
+    def test_place_kind_batch_fail_on_error_returns_zero_when_all_succeed(self) -> None:
+        stdout = io.StringIO()
+        with (
+            patch(
+                "sys.argv",
+                [
+                    "gmaps-scraper",
+                    "--kind",
+                    "place",
+                    "https://www.google.com/maps/place/Den",
+                    "https://www.google.com/maps/place/Narisawa",
+                    "--fail-on-error",
+                ],
+            ),
+            patch(
+                "gmaps_scraper.cli.scrape_places",
+                return_value=[
+                    PlaceScrapeResult(
+                        source_url="https://www.google.com/maps/place/Den",
+                        attempts=1,
+                    ),
+                    PlaceScrapeResult(
+                        source_url="https://www.google.com/maps/place/Narisawa",
+                        attempts=1,
+                    ),
+                ],
+            ) as scrape_places,
+            redirect_stdout(stdout),
+        ):
+            exit_code = main()
+
+        self.assertEqual(exit_code, 0)
+        scrape_places.assert_called_once()
 
     def test_download_place_photo_writes_bytes(self) -> None:
         details = PlaceDetails(

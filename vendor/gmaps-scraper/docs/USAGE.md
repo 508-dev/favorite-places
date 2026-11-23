@@ -40,6 +40,57 @@ Run with a visible browser for debugging:
 uv run gmaps-scraper URL --kind place --headed
 ```
 
+## CLI Reference
+
+Run `uv run gmaps-scraper --help` to see the options available in your checkout.
+Pass URLs as positional arguments, through `--input`, or both.
+
+| Option | Default | Description |
+| --- | --- | --- |
+| `-h`, `--help` | Off | Print CLI help and exit. |
+| `--kind {list,place}` | `list` | Select saved-list or place scraping. |
+| `--output PATH` | Standard output | Write JSON to a file. |
+| `--log-level {DEBUG,INFO,WARNING,ERROR}` | Off | Write scraper logs at the selected level to standard error. |
+| `--download-photo PATH` | Off | Download the representative photo for a single place. |
+| `--download-main-photo PATH` | Off | Download the main photo for a single place. |
+| `--show-browser-window`, `--headed` | Off | Show the browser window. |
+| `--timeout-ms MS` | `30000` | Set time limits for fetch operations in milliseconds. |
+| `--settle-ms MS` | `3000` | Wait this long after browser navigation before extraction. |
+| `--fetch-mode {auto,curl,browser}` | `auto` | Select a fetch mode. Saved lists support all three. Places use the browser with `auto` or `browser`. |
+| `--session-dir PATH` | Unset | Store and reuse a persistent browser profile. |
+| `--disable-random-window-size` | Off | Use CloakBrowser's default viewport. |
+| `--human-mouse` | Off | Enable CloakBrowser's humanized mouse, keyboard, and scroll behavior. |
+| `--proxy URL` | `GMAPS_SCRAPER_PROXY`, if set | Set the proxy for HTTP and browser requests. |
+| `--http-cookie-jar PATH` | Unset | Persist HTTP cookies in a Netscape-format file. |
+| `--debug-output-dir PATH` | Off | Write raw extraction artifacts for a single URL to this directory. |
+| `--screenshot-output-dir PATH` | Off | Write place-page screenshots to this directory. |
+| `--input PATH` | Unset | Append URLs from a newline-delimited file, or use `-` for standard input. |
+| `--max-concurrency N` | `1` | Set the number of batch workers. |
+| `--max-retries N` | `0` for lists, `1` for places | Set the number of retries per URL in a batch. |
+| `--retry-backoff-ms MS` | `2000` | Set the initial batch retry delay in milliseconds. Successive delays increase linearly. |
+| `--stagger-ms MS` | `0` | Delay starts between batch URLs or place workers. |
+| `--fail-on-error` | Off | Write batch results, then exit with status `1` if any URL failed. |
+| `--llm-repair` | Off | Enable optional OpenAI-compatible LLM repair for places. |
+| `--llm-policy {never,on_quality_failure,always}` | `on_quality_failure` | Control when the optional LLM repair runs. |
+| `--llm-task {dom_repair,display_translation}` | Both tasks | Select LLM tasks. Repeat to select multiple tasks. Requires `--llm-repair`. |
+| `--llm-env-file PATH` | `.env` | Read optional LLM settings from this file. |
+| `--llm-cache-dir PATH` | Unset | Cache optional LLM place repairs. Requires `--llm-repair`. |
+| `--skip-reviews` | Off | Skip opening a place's Reviews tab. |
+| `--skip-about` | Off | Skip opening a place's About tab. |
+| `--skip-preview-if-dom-complete` | Off | Skip the HTTP preview when a full place overview supplies the core facts. |
+| `--dump-debug-output` | Off | Write debug artifacts for a single URL under `.gmaps-debug/`. |
+
+### Proxy, Timeouts, and Cookies
+
+Use `--proxy` to override `GMAPS_SCRAPER_PROXY`. For an authenticated proxy,
+set the environment variable to keep credentials out of command arguments.
+Use `--session-dir` to retain browser cookies and `--http-cookie-jar` to retain
+cookies used by the HTTP client.
+
+`--timeout-ms` controls operations such as browser navigation and HTTP requests.
+`--settle-ms` adds a browser-only wait. Batch runs also include any delays from
+`--stagger-ms` and retries.
+
 ## Fetch Modes
 
 ```bash
@@ -48,11 +99,60 @@ uv run gmaps-scraper URL --fetch-mode curl
 uv run gmaps-scraper URL --fetch-mode browser
 ```
 
-- `auto` uses `curl_cffi` first and falls back to the browser when parsing fails.
+- `auto` uses `curl_cffi` first and falls back to the browser if HTTP collection
+  or parsing fails.
 - `curl` uses only the HTTP path.
 - `browser` uses only the browser path.
 
-Place scraping currently uses the browser path.
+Use `auto` or `browser` for place scraping. Both use the browser. The `curl`
+mode is available for saved lists only.
+
+HTTP requests for saved lists and place previews make up to three attempts on
+transient transport errors, HTTP 429, and HTTP 500/502/503/504. Each GET shares
+`--timeout-ms` across its attempts and delays, with a one-second minimum.
+Saved-list continuation and capped expansion share a single completion budget.
+Retries stop if a delay would exhaust the available budget or if
+`Retry-After` exceeds 30 seconds.
+
+Saved-list JSON includes `diagnostics` with the collector and source artifact,
+browser fallback status, and whether the HTTP preload was expanded or
+paginated. When Google reports a row total, `loaded_rows` and `expected_rows`
+count raw saved-list entries before parsing and deduplication. Check
+`quality_flags` for `partial_payload` before replacing previously saved results.
+`fewer_places_than_loaded_rows` marks a difference between the raw and parsed
+counts, including when deduplication merges rows.
+Missing addresses, CIDs, or a list ID are reported separately.
+
+## Batch Saved-List Scraping
+
+Pass multiple saved-list URLs or use `--input` with a newline-delimited file.
+Use `--input -` for stdin. Blank lines and comments in the input are ignored.
+
+```bash
+uv run gmaps-scraper --kind list --input lists.txt --fail-on-error --output list-results.json
+```
+
+Batch results are returned as `{"results": [...]}` in input order. Each result
+contains its `source_url` and either a `saved_list` object or an `error` message.
+A single positional URL still returns the saved-list object directly. Either
+kind of batch writes all its results before returning status `1` when
+`--fail-on-error` is set and any scrape fails. By default, the status is `0`
+when the batch finishes and writes its results.
+
+Saved-list batches default to one worker, using the configured browser profile
+and HTTP cookie jar for each URL. With `--max-concurrency` above `1`, workers
+use separate profile subdirectories and cookie jars. `--stagger-ms` adds a
+delay before each worker starts and between URLs within each worker. Debug
+dumps are available for single-list runs.
+
+Use `--max-retries` to retry failures per URL. Saved-list batches default to
+zero retries. `--retry-backoff-ms` sets the initial delay, which increases
+linearly on successive retries. Results include `attempts` for URLs tried
+more than once.
+
+The Python library exposes the same workflow through `scrape_saved_lists(urls)`,
+which returns `SavedListScrapeResult` objects with `saved_list` and `error`
+attributes.
 
 ## Batch Place Scraping
 
@@ -80,6 +180,14 @@ uv run gmaps-scraper \
   --output place-results.json
 ```
 
+For overview refreshes, `--skip-preview-if-dom-complete` avoids an extra HTTP
+request when a full place view already supplies a name, address, phone, website,
+and coordinates from the view or the canonical URL. Preview-only fields can be
+absent in that mode. A batch can accept such a result with quality flags that
+identify missing fields. The Python functions `scrape_place()`,
+`scrape_places()`, and `collect_place_snapshot()` accept
+`skip_preview_if_dom_complete=True`.
+
 Browser sessions use a weighted random desktop viewport by default. Persistent
 profile sessions keep a stable viewport for that profile path. Use
 `--disable-random-window-size` when you need CloakBrowser's default viewport,
@@ -98,9 +206,14 @@ Parallel workers get separate browser profile subdirectories under
 when the goal is a single long-lived browser identity. Use higher concurrency
 when separate worker session state is acceptable.
 
-## Debug Artifacts
+## Logs and Debug Artifacts
 
-Write place debug artifacts and a compact selector recipe:
+Use `--log-level INFO` to see scraper activity on stderr while stdout remains
+JSON. `DEBUG` adds details about browser operations and consent handling.
+URL hashes correlate events for the same input and resolved URL.
+Python callers can configure loggers under `gmaps_scraper` with standard logging.
+
+Use `--debug-output-dir` to write place debug artifacts to a specific directory.
 
 ```bash
 uv run gmaps-scraper URL \
@@ -109,9 +222,17 @@ uv run gmaps-scraper URL \
 ```
 
 `--screenshot-output-dir` writes overview and reviews screenshots. Debug dumps
-also include raw investigation artifacts under `artifacts/` and a compact
-`selector-recipe.json`. Reuse selector recipes across sessions, not full DOM
-snapshots.
+include extraction snapshots under `artifacts/`, the final place output,
+diagnostics, and LLM evidence.
+
+Current selectors live in the overview extractor and panel helpers.
+[Overview extractor](../src/gmaps_scraper/data/place_extractor.js) and
+[panel helpers](../src/gmaps_scraper/place_scraper.py).
+
+The `selector-recipe.json` artifact and its manifest entry have been retired.
+The deprecated selector recipe helpers still read and write legacy recipes for
+offline use. For tools that expect the archived v1 file, call
+`write_default_place_selector_recipe(path)`.
 
 Reviews and About collection are enabled by default for place scraping. Use
 `--skip-reviews` when you only need overview facts and do not want to open the
@@ -124,9 +245,15 @@ review snippets.
 
 LLM repair is opt-in. Deterministic DOM and preview extraction always run first.
 
+### LLM Setup
+
+Export the API key and model before running the CLI. You can also put the
+settings in `.env` or pass a different file with `--llm-env-file PATH`. Use
+`OPENAI_BASE_URL` to select a different OpenAI-compatible endpoint.
+
 ```bash
-OPENAI_API_KEY=...
-LLM_MODEL=gpt-5-mini
+export OPENAI_API_KEY=...
+export LLM_MODEL=gpt-5-mini
 
 uv run gmaps-scraper \
   URL \
@@ -379,9 +506,25 @@ want the same English-readable bias explicitly:
 place = scrape_place(localize_maps_url("https://www.google.co.jp/maps/place/Tokyo+Tower"))
 ```
 
+`PlaceDetails.cid` contains the numeric Google Maps CID as a decimal string
+when it can be recovered from the resolved Maps URL, the place preview, or
+the input Maps URL. Optional DOM repair can supply a missing CID from the
+evidence. JSON omits `cid` when it is unavailable.
+
 `gl` is a regional search bias, not proof of location. Downstream consumers that
 have expected city/country context should still validate the resolved place
 address or coordinates before accepting a refresh.
+
+## Weekly opening hours
+
+Place output includes `opening_hours` when Google Maps supplies a complete
+seven-day schedule in the Overview panel. Each entry has a localized `day` and
+an `hours` array that preserves each displayed interval or closure label. The
+scraper includes `is_open_24h` for recognized all-day or closed labels.
+The schedule follows Google's display order and can include holiday changes.
+The `status` field still reports the current open or closed message. The
+`opening_hours_incomplete` quality flag indicates that the scraper found
+schedule rows but could not validate all seven days.
 
 ## Public API
 
@@ -389,6 +532,7 @@ Common top-level imports:
 
 - `build_maps_search_url`
 - `scrape_saved_list`
+- `scrape_saved_lists`
 - `scrape_place`
 - `scrape_places`
 - `collect_place_snapshot`

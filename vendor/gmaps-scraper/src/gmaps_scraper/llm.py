@@ -5,6 +5,7 @@ from __future__ import annotations
 import atexit
 import importlib
 import json
+import logging
 import os
 import re
 import sys
@@ -17,6 +18,7 @@ from hashlib import sha256
 from pathlib import Path
 from typing import Any
 
+from gmaps_scraper._logging import url_log_fields
 from gmaps_scraper.models import (
     PLACE_LLM_DISPLAY_TRANSLATION_FIELDS,
     PLACE_LLM_DOM_REPAIR_FIELDS,
@@ -27,6 +29,9 @@ from gmaps_scraper.translation_memory import (
     TranslationMemory,
     write_learned_translation_memory,
 )
+
+_logger = logging.getLogger(__name__)
+
 
 _DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1"
 _DEFAULT_CONFIG_PATH = Path("llm.json")
@@ -452,6 +457,8 @@ def openai_compatible_place_repair(
             "content": (
                 "You repair Google Maps place extraction from sanitized DOM evidence. "
                 "Return only JSON. Only include fields directly supported by evidence. "
+                "Return a CID as a decimal string only when explicitly identified "
+                "for the selected place in the evidence. "
                 "Do not infer product-specific tags, neighborhoods, or marketing prose. "
                 "Never translate review topic labels. Do not return user-generated "
                 "review text."
@@ -501,6 +508,11 @@ def openai_compatible_place_repair(
         "resolved_url_hash": _langfuse_hash(request.resolved_url),
         "full_capture": full_langfuse_capture,
     }
+    _logger.debug(
+        "Requesting optional place repair timeout_seconds=%s",
+        timeout_seconds,
+        extra=url_log_fields(request.source_url, request.resolved_url),
+    )
     manager, generation = _open_langfuse_generation(
         name="gmaps-scraper.place-repair",
         model=model,
@@ -512,6 +524,11 @@ def openai_compatible_place_repair(
             with urllib.request.urlopen(http_request, timeout=timeout_seconds) as response:
                 response_payload = json.loads(response.read().decode("utf-8"))
         except urllib.error.HTTPError as exc:
+            _logger.warning(
+                "Place repair provider returned HTTP status=%s",
+                exc.code,
+                extra=url_log_fields(request.source_url, request.resolved_url),
+            )
             body = exc.read().decode("utf-8", errors="replace")
             metadata: dict[str, object] = {
                 **langfuse_metadata,

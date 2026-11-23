@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import unittest
+from pathlib import Path
+from tempfile import TemporaryDirectory
 
 from gmaps_scraper import (
     BrowserProxyConfig,
@@ -15,10 +17,13 @@ from gmaps_scraper import (
     PlaceDetails,
     PlaceExtractionDiagnostics,
     PlaceLLMRepairRequest,
+    PlaceOpeningHours,
     PlaceReview,
     PlaceScrapeResult,
     ReviewTopic,
     SavedList,
+    SavedListExtractionDiagnostics,
+    SavedListScrapeResult,
     ScrapeError,
     build_maps_search_url,
     cached_place_repairer,
@@ -34,13 +39,31 @@ from gmaps_scraper import (
     scrape_place,
     scrape_places,
     scrape_saved_list,
+    scrape_saved_lists,
     write_default_place_selector_recipe,
 )
 
 
 class PublicApiTests(unittest.TestCase):
+    def test_legacy_place_selector_recipe_can_still_be_read_and_written(self) -> None:
+        recipe = default_place_selector_recipe()
+        self.assertEqual(recipe["version"], 1)
+        self.assertEqual(
+            recipe["selectors"]["name"], ["h1.DUwDvf", "h1.lfPIob", "div[role='main'] h1"]
+        )
+        self.assertIn("review_count", recipe["selectors"])
+        self.assertIn("review_topic_chip", recipe["selectors"])
+
+        recipe["selectors"]["name"].clear()
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "archive" / "selector-recipe.json"
+            self.assertEqual(write_default_place_selector_recipe(path), path)
+            self.assertEqual(load_place_selector_recipe(path), default_place_selector_recipe())
+            self.assertTrue(default_place_selector_recipe()["selectors"]["name"])
+
     def test_top_level_exports_are_importable(self) -> None:
         self.assertTrue(callable(scrape_saved_list))
+        self.assertTrue(callable(scrape_saved_lists))
         self.assertTrue(callable(scrape_place))
         self.assertTrue(callable(scrape_places))
         self.assertEqual(BrowserSessionConfig.__name__, "BrowserSessionConfig")
@@ -51,9 +74,12 @@ class PublicApiTests(unittest.TestCase):
         self.assertEqual(PlaceAboutItem.__name__, "PlaceAboutItem")
         self.assertEqual(PlaceAboutSection.__name__, "PlaceAboutSection")
         self.assertEqual(PlaceExtractionDiagnostics.__name__, "PlaceExtractionDiagnostics")
+        self.assertEqual(SavedListExtractionDiagnostics.__name__, "SavedListExtractionDiagnostics")
         self.assertEqual(PlaceLLMRepairRequest.__name__, "PlaceLLMRepairRequest")
+        self.assertEqual(PlaceOpeningHours.__name__, "PlaceOpeningHours")
         self.assertEqual(PlaceReview.__name__, "PlaceReview")
         self.assertEqual(PlaceScrapeResult.__name__, "PlaceScrapeResult")
+        self.assertEqual(SavedListScrapeResult.__name__, "SavedListScrapeResult")
         self.assertEqual(ReviewTopic.__name__, "ReviewTopic")
         self.assertTrue(issubclass(ParseError, RuntimeError))
         self.assertTrue(issubclass(ScrapeError, RuntimeError))

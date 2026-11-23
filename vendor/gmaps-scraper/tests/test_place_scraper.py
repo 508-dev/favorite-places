@@ -4,8 +4,9 @@ import json
 import os
 import tempfile
 import unittest
+from decimal import localcontext
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, Mock, patch
 
 from gmaps_scraper.models import (
     PlaceExtractionDiagnostics,
@@ -63,6 +64,7 @@ from gmaps_scraper.place_scraper import (
     _seed_google_consent_cookies,
     _should_use_llm_repair,
     collect_place_snapshot,
+    scrape_place,
     scrape_places,
 )
 from gmaps_scraper.scraper import (
@@ -134,6 +136,65 @@ class PlaceJsExtractorFixtureTests(unittest.TestCase):
             "https://lh3.googleusercontent.com/place-overview.jpg",
         )
         self.assertFalse(snapshot["limited_view"])
+
+    def test_overview_fixture_ranks_localized_review_count_candidates(self) -> None:
+        snapshot = self._evaluate_fixture("localized_review_counts.html")
+
+        self.assertIsInstance(snapshot, dict)
+        self.assertEqual(snapshot["review_count"], "1.234,5K")
+        self.assertEqual(snapshot["review_count_source"], "f7nice")
+        details = _build_place_details(
+            "https://www.google.com/maps/place/Fixture+Cafe",
+            resolved_url="https://www.google.com/maps/place/Fixture+Cafe",
+            snapshot=snapshot,
+        )
+        self.assertEqual(details.review_count, 1_234_500)
+
+    def test_scrape_place_reads_complete_opening_hours_without_opening_tabs(self) -> None:
+        cases = (
+            (
+                "opening_hours_en.html",
+                "Closed · Opens 6 PM",
+                [
+                    *(
+                        {"day": day, "hours": ["6–8\u202fPM"]}
+                        for day in ("Tuesday", "Wednesday", "Thursday", "Friday", "Saturday")
+                    ),
+                    {"day": "Sunday", "hours": ["Closed"], "is_open_24h": False},
+                    {"day": "Monday", "hours": ["Noon–2\u202fPM", "6–8\u202fPM"]},
+                ],
+            ),
+            (
+                "opening_hours_ja.html",
+                "24 時間営業",
+                [
+                    {"day": day, "hours": ["24 時間営業"], "is_open_24h": True}
+                    for day in "火曜日 水曜日 木曜日 金曜日 土曜日 日曜日 月曜日".split()
+                ],
+            ),
+        )
+        for fixture, status, expected in cases:
+            with (
+                self.subTest(fixture=fixture),
+                patch(
+                    "gmaps_scraper.place_scraper._launch_browser_context",
+                    return_value=self.context,
+                ),
+                patch.object(self.context, "close"),
+                patch(
+                    "gmaps_scraper.place_scraper._collect_preview_place_enrichment",
+                    return_value={},
+                ),
+            ):
+                details = scrape_place(
+                    (_FIXTURE_DIR / fixture).as_uri(),
+                    timeout_ms=2_000,
+                    settle_time_ms=0,
+                    collect_reviews=False,
+                    collect_about=False,
+                )
+                self.assertEqual(details.status, status)
+                self.assertEqual(details.to_dict()["opening_hours"], expected)
 
     def test_reviews_fixture_keeps_reviewer_photo_out_of_place_photo(self) -> None:
         snapshot = self._evaluate_fixture("reviews.html")
@@ -212,6 +273,26 @@ class PlaceJsExtractorFixtureTests(unittest.TestCase):
 
 
 class PlaceScraperTests(unittest.TestCase):
+    def test_opening_hours_omits_missing_or_incomplete_week(self) -> None:
+        row = {"day": "Monday", "hours": ["Open 24 hours"]}
+        for rows, incomplete in (([], False), ([row], True), ([row] * 7, True)):
+            with self.subTest(rows=rows):
+                details = _build_place_details_from_snapshot(
+                    "https://www.google.com/maps/place/Fixture+Cafe",
+                    snapshot={
+                        "resolved_url": "https://www.google.com/maps/place/Fixture+Cafe",
+                        "dom": {"name": "Fixture Cafe", "opening_hours": rows},
+                    },
+                    llm_fallback=None,
+                    llm_policy="never",
+                )
+                self.assertNotIn("opening_hours", details.to_dict())
+                self.assertIsNotNone(details.diagnostics)
+                self.assertEqual(
+                    "opening_hours_incomplete" in details.diagnostics.quality_flags,
+                    incomplete,
+                )
+
     def test_build_place_details_from_snapshot_rejects_saved_list_resolution(self) -> None:
         with self.assertRaisesRegex(ScrapeError, "saved list"):
             _build_place_details_from_snapshot(
@@ -305,6 +386,106 @@ class PlaceScraperTests(unittest.TestCase):
             self.assertGreaterEqual(context.page.evaluate_calls, 2)
             review_signal.assert_not_called()
             self.assertEqual(screenshot_path.read_bytes(), b"screenshot")
+
+    def test_collect_place_snapshot_skips_preview_only_for_complete_overview(self) -> None:
+        place_url = "https://www.google.com/maps/place/Den"
+        search_url = "https://www.google.com/maps/search/?api=1&query=Den"
+        overview = {
+            "name": "Den",
+            "address": "2 Chome-3-18 Jingumae, Shibuya, Tokyo",
+            "phone": "+81 3-6455-5433",
+            "website": "https://www.jimbochoden.com/",
+            "lat": 35.6731762,
+            "lng": 139.7127216,
+        }
+        cases = (
+            (place_url, {}, False, False),
+            (place_url, {}, True, True),
+            (place_url, {"phone": None}, True, False),
+            (place_url, {"lat": 900}, True, False),
+            (place_url, {"limited_view": True}, True, False),
+            (search_url, {}, True, False),
+        )
+        for resolved_url, changes, opt_in, skipped in cases:
+            with self.subTest(resolved_url=resolved_url, changes=changes, opt_in=opt_in):
+                context = Mock()
+                page = context.new_page.return_value
+                page.url = resolved_url
+                page.evaluate.side_effect = (
+                    lambda script, dom={**overview, **changes}: (
+                        dom if script == _PLACE_JS_EXTRACTOR else False
+                    )
+                )
+                enrichment = {"description": "Preview-only description"}
+                with (
+                    patch(
+                        "gmaps_scraper.place_scraper._launch_browser_context",
+                        return_value=context,
+                    ),
+                    patch("gmaps_scraper.place_scraper._handle_google_consent"),
+                    patch(
+                        "gmaps_scraper.place_scraper._collect_preview_place_enrichment",
+                        return_value=enrichment,
+                    ) as preview,
+                ):
+                    snapshot = collect_place_snapshot(
+                        place_url,
+                        collect_reviews=False,
+                        collect_about=False,
+                        skip_preview_if_dom_complete=opt_in,
+                    )
+
+                self.assertEqual(snapshot["preview_skipped"], skipped)
+                self.assertEqual(snapshot["preview"], {} if skipped else enrichment)
+                self.assertEqual(preview.call_count, 0 if skipped else 1)
+
+    def test_batch_accepts_a_complete_overview_without_preview_fields(self) -> None:
+        place_url = "https://www.google.com/maps/place/Den"
+        for opt_in, limited_view, expected_attempts in (
+            (True, False, 1),
+            (False, False, 2),
+            (True, True, 2),
+        ):
+            with self.subTest(opt_in=opt_in, limited_view=limited_view):
+                context = Mock()
+                page = context.new_page.return_value
+                page.url = place_url
+                overview = {
+                    "name": "Den",
+                    "address": "2 Chome-3-18 Jingumae, Shibuya, Tokyo",
+                    "phone": "+81 3-6455-5433",
+                    "website": "https://www.jimbochoden.com/",
+                    "lat": 35.6731762,
+                    "lng": 139.7127216,
+                    "limited_view": limited_view,
+                }
+                page.evaluate.side_effect = (
+                    lambda script, dom=overview: dom if script == _PLACE_JS_EXTRACTOR else False
+                )
+                with (
+                    patch(
+                        "gmaps_scraper.place_scraper._launch_browser_context",
+                        return_value=context,
+                    ),
+                    patch("gmaps_scraper.place_scraper._handle_google_consent"),
+                    patch(
+                        "gmaps_scraper.place_scraper._collect_preview_place_enrichment",
+                        return_value={},
+                    ) as preview,
+                ):
+                    result, = scrape_places(
+                        [place_url],
+                        collect_reviews=False,
+                        collect_about=False,
+                        skip_preview_if_dom_complete=opt_in,
+                        retry_backoff_ms=0,
+                    )
+
+                self.assertEqual(result.attempts, expected_attempts)
+                self.assertEqual(preview.call_count, 0 if expected_attempts == 1 else 2)
+                self.assertEqual(result.error is None, expected_attempts == 1)
+                assert result.place is not None and result.place.diagnostics is not None
+                self.assertIn("thin_place_result", result.place.diagnostics.quality_flags)
 
     def test_collect_reservation_dialog_snapshot_clicks_and_reads_provider_links(self) -> None:
         class _FakePage:
@@ -916,6 +1097,41 @@ class PlaceScraperTests(unittest.TestCase):
         self.assertEqual(_parse_review_count("3.6K"), 3600)
         self.assertEqual(_parse_review_count("9.4万"), 94000)
 
+    def test_parse_review_count_handles_localized_suffixes_and_grouping(self) -> None:
+        cases = (
+            ("1,2K", 1_200),
+            ("2,01K", 2_010),
+            ("1,2M", 1_200_000),
+            ("1,13万", 11_300),
+            ("1,13萬", 11_300),
+            ("1,234K", 1_234_000),
+            ("1,234.5K", 1_234_500),
+            ("1.234,5K", 1_234_500),
+            ("1.234,567K", 1_234_567),
+            ("1\u202f234,5K", 1_234_500),
+        )
+        for value, expected in cases:
+            with self.subTest(value=value):
+                self.assertEqual(_parse_review_count(value), expected)
+
+    def test_parse_review_count_ignores_decimal_context_precision(self) -> None:
+        with localcontext(prec=2):
+            self.assertEqual(_parse_review_count("2,01K"), 2_010)
+            self.assertEqual(_parse_review_count("1.234,5678K"), 1_234_567)
+
+    def test_build_place_details_parses_localized_review_count(self) -> None:
+        for review_snapshot in (
+            {"review_count": "1.234,5K"},
+            {"panel_text": "(1.234,5K) reviews"},
+        ):
+            with self.subTest(review_snapshot=review_snapshot):
+                details = _build_place_details(
+                    "https://www.google.com/maps/place/Den",
+                    resolved_url="https://www.google.com/maps/place/Den",
+                    snapshot={"name": "Den", **review_snapshot},
+                )
+                self.assertEqual(details.review_count, 1_234_500)
+
     def test_extract_review_count_from_lines_prefers_place_panel_over_related_cards(
         self,
     ) -> None:
@@ -1032,6 +1248,63 @@ class PlaceScraperTests(unittest.TestCase):
                 },
             ],
         )
+
+    def test_place_repair_failure_preserves_details_and_logs_error_type(self) -> None:
+        place_url = "https://www.google.com/maps/place/Den"
+        repair = Mock(side_effect=RuntimeError("synthetic private response"))
+        with self.assertLogs("gmaps_scraper.place_scraper", level="WARNING") as logs:
+            details = _build_place_details_from_snapshot(
+                place_url,
+                snapshot={"resolved_url": place_url, "dom": {"name": "Den"}},
+                llm_fallback=repair,
+                llm_policy="always",
+            )
+
+        self.assertEqual(details.name, "Den")
+        assert details.diagnostics is not None
+        self.assertFalse(details.diagnostics.llm_used)
+        self.assertEqual(details.diagnostics.llm_error, "synthetic private response")
+        self.assertIn("RuntimeError", logs.output[0])
+        self.assertNotIn("synthetic private response", logs.output[0])
+
+    def test_invalid_place_llm_policy_is_rejected_before_repair(self) -> None:
+        repair = Mock()
+        with self.assertRaisesRegex(ValueError, "Unsupported llm_policy: invalid"):
+            _build_place_details_from_snapshot(
+                "https://www.google.com/maps/place/Den",
+                snapshot={"dom": {"name": "Den"}},
+                llm_fallback=repair,
+                llm_policy="invalid",
+            )
+        repair.assert_not_called()
+
+    def test_preview_network_failure_preserves_the_browser_snapshot(self) -> None:
+        place_url = "https://www.google.com/maps/place/Den"
+        context = Mock()
+        page = context.new_page.return_value
+        page.url = place_url
+        page.evaluate.side_effect = (
+            lambda script: {"name": "Den"} if script == _PLACE_JS_EXTRACTOR else False
+        )
+        curl_requests = MagicMock()
+        session = curl_requests.Session.return_value.__enter__.return_value
+        session.get.side_effect = ConnectionError("synthetic private response")
+        with (
+            patch("gmaps_scraper.place_scraper._launch_browser_context", return_value=context),
+            patch("gmaps_scraper.place_scraper._handle_google_consent"),
+            patch("gmaps_scraper.place_scraper._import_curl_requests", return_value=curl_requests),
+            patch("gmaps_scraper.scraper.time.sleep"),
+            self.assertLogs("gmaps_scraper.place_scraper", level="WARNING") as logs,
+        ):
+            snapshot = collect_place_snapshot(
+                place_url, collect_reviews=False, collect_about=False
+            )
+
+        self.assertEqual(snapshot["dom"], {"name": "Den"})
+        self.assertEqual(snapshot["preview"], {})
+        self.assertIn("ConnectionError", logs.output[0])
+        self.assertNotIn("synthetic private response", logs.output[0])
+        self.assertEqual([call.args for call in session.get.call_args_list], [(place_url,)] * 3)
 
     def test_llm_policy_uses_repair_only_for_quality_failures(self) -> None:
         self.assertFalse(
@@ -1183,6 +1456,129 @@ class PlaceScraperTests(unittest.TestCase):
         )
         assert details.diagnostics is not None
         self.assertEqual(details.diagnostics.field_sources.get("category"), "preview")
+
+    def test_build_place_details_prefers_canonical_resolved_url_coordinates(self) -> None:
+        details = _build_place_details_from_snapshot(
+            "https://www.google.com/maps?cid=4015507283657238879",
+            snapshot={
+                "resolved_url": (
+                    "https://www.google.com/maps/place/La+Paix/"
+                    "@50.8500000,4.3600000,17z/"
+                    "data=!4m6!3m5!1s0x0:0x0!8m2!3d50.8511538!4d4.3650878"
+                ),
+                "dom": {
+                    "name": "La Paix",
+                    "address": "Rue Royale 103, 1000 Bruxelles, Belgium",
+                },
+                "preview": {
+                    "lat": 50.901778,
+                    "lng": 4.31745,
+                },
+            },
+            llm_fallback=None,
+            llm_policy="never",
+        )
+
+        self.assertEqual(details.lat, 50.8511538)
+        self.assertEqual(details.lng, 4.3650878)
+        assert details.diagnostics is not None
+        self.assertEqual(details.diagnostics.field_sources.get("lat"), "resolved_url")
+        self.assertEqual(details.diagnostics.field_sources.get("lng"), "resolved_url")
+
+    def test_build_place_details_keeps_preview_coordinates_without_url_coordinates(
+        self,
+    ) -> None:
+        details = _build_place_details_from_snapshot(
+            "https://www.google.com/maps?cid=4015507283657238879",
+            snapshot={
+                "resolved_url": "https://www.google.com/maps/place/La+Paix",
+                "dom": {"name": "La Paix"},
+                "preview": {
+                    "lat": 50.8511538,
+                    "lng": 4.3650878,
+                },
+            },
+            llm_fallback=None,
+            llm_policy="never",
+        )
+
+        self.assertEqual(details.lat, 50.8511538)
+        self.assertEqual(details.lng, 4.3650878)
+        assert details.diagnostics is not None
+        self.assertEqual(details.diagnostics.field_sources.get("lat"), "preview")
+        self.assertEqual(details.diagnostics.field_sources.get("lng"), "preview")
+
+    def test_build_place_details_keeps_preview_coordinates_with_viewport_only_url(
+        self,
+    ) -> None:
+        details = _build_place_details_from_snapshot(
+            "https://www.google.com/maps?cid=4015507283657238879",
+            snapshot={
+                "resolved_url": (
+                    "https://www.google.com/maps/place/La+Paix/"
+                    "@50.901778,4.31745,17z"
+                ),
+                "dom": {"name": "La Paix"},
+                "preview": {
+                    "lat": 50.8511538,
+                    "lng": 4.3650878,
+                },
+            },
+            llm_fallback=None,
+            llm_policy="never",
+        )
+
+        self.assertEqual(details.lat, 50.8511538)
+        self.assertEqual(details.lng, 4.3650878)
+        assert details.diagnostics is not None
+        self.assertEqual(details.diagnostics.field_sources.get("lat"), "preview")
+        self.assertEqual(details.diagnostics.field_sources.get("lng"), "preview")
+
+    def test_build_place_details_rejects_out_of_range_url_coordinates(
+        self,
+    ) -> None:
+        for resolved_url in (
+            (
+                "https://www.google.com/maps/place/La+Paix/"
+                "@50.8500000,4.3600000,17z/"
+                "data=!4m6!3m5!1s0x0:0x0!8m2!3d950.0!4d4.3650878"
+            ),
+            "https://www.google.com/maps/place/La+Paix/@950.0,4.3600000,17z",
+        ):
+            with self.subTest(resolved_url=resolved_url):
+                details = _build_place_details_from_snapshot(
+                    "https://www.google.com/maps?cid=4015507283657238879",
+                    snapshot={
+                        "resolved_url": resolved_url,
+                        "dom": {"name": "La Paix"},
+                        "preview": {},
+                    },
+                    llm_fallback=None,
+                    llm_policy="never",
+                )
+
+                self.assertIsNone(details.lat)
+                self.assertIsNone(details.lng)
+
+    def test_build_place_details_keeps_valid_viewport_coordinate_fallback(
+        self,
+    ) -> None:
+        details = _build_place_details_from_snapshot(
+            "https://www.google.com/maps?cid=4015507283657238879",
+            snapshot={
+                "resolved_url": (
+                    "https://www.google.com/maps/place/La+Paix/"
+                    "@50.8500000,4.3600000,17z"
+                ),
+                "dom": {"name": "La Paix"},
+                "preview": {},
+            },
+            llm_fallback=None,
+            llm_policy="never",
+        )
+
+        self.assertEqual(details.lat, 50.85)
+        self.assertEqual(details.lng, 4.36)
 
     def test_build_place_details_backfills_preview_rating_summary_sources(self) -> None:
         preview = _extract_preview_place_enrichment(
@@ -1717,6 +2113,28 @@ class PlaceScraperTests(unittest.TestCase):
         self.assertEqual(enrichment["lat"], 35.6731762)
         self.assertEqual(enrichment["lng"], 139.7127216)
         self.assertEqual(enrichment["google_place_id"], "ChIJ8T36HxCLGGARvpARPDyaKLA")
+        self.assertEqual(enrichment["cid"], "7994226410217888392")
+
+    def test_extract_preview_cid_ignores_unrelated_or_ambiguous_entity_tokens(self) -> None:
+        place_id = "ChIJ8T36HxCLGGARvpARPDyaKLA"
+        for payload in (
+            [[place_id], ["0x1:0x2"]],
+            [[place_id, "0x1:0x2"], [place_id, "0x1:0x3"]],
+            [[place_id, "ChIJabcdefghij-", "0x1:0x2"]],
+        ):
+            with self.subTest(payload=payload):
+                enrichment = _extract_preview_place_enrichment(json.dumps(payload))
+                self.assertNotIn("cid", enrichment)
+
+        self.assertNotIn("google_place_id", enrichment)
+
+    def test_extract_preview_cid_accepts_repeated_identical_place_ids(self) -> None:
+        place_id = "ChIJ8T36HxCLGGARvpARPDyaKLA"
+        enrichment = _extract_preview_place_enrichment(
+            json.dumps([[place_id, place_id, "0x1:0x2"]]),
+        )
+        self.assertEqual(enrichment["google_place_id"], place_id)
+        self.assertEqual(enrichment["cid"], "2")
 
     def test_extract_preview_place_enrichment_reads_rating_summary_fixture(self) -> None:
         enrichment = _extract_preview_place_enrichment(
@@ -2525,6 +2943,73 @@ class PlaceScraperTests(unittest.TestCase):
                 ["Floor 1"],
             ],
         )
+
+    def test_place_snapshot_resolves_cid_and_emits_it_as_a_string(self) -> None:
+        source_url = "https://maps.google.com/?cid=5180951040094558101"
+        canonical_url = "https://www.google.com/maps/place/Den/data=!4m3!1s0x1%3A0xffffffffffffffff"
+        cases = (
+            (canonical_url, "7994226410217888392", "18446744073709551615"),
+            ("https://www.google.co.jp/maps?cid=3", None, "3"),
+            ("https://www.google.com/maps/place/Den", "7994226410217888392", "7994226410217888392"),
+            ("https://www.google.com/maps/place/Den", None, "5180951040094558101"),
+        )
+        for resolved_url, preview_cid, expected in cases:
+            with self.subTest(resolved_url=resolved_url, preview_cid=preview_cid):
+                details = _build_place_details_from_snapshot(
+                    source_url,
+                    snapshot={
+                        "resolved_url": resolved_url,
+                        "dom": {},
+                        "preview": {"cid": preview_cid},
+                    },
+                    llm_fallback=None,
+                    llm_policy="never",
+                )
+                self.assertEqual(details.cid, expected)
+                self.assertEqual(details.to_dict()["cid"], expected)
+
+    def test_place_details_omit_invalid_cids(self) -> None:
+        for url in (
+            "https://www.example.com/maps?cid=123",
+            "https://www.google.example.com/maps?cid=123",
+            "https://www.google.com.zz/maps?cid=123",
+            "https://www.maps.google.com/maps?cid=123",
+            "https://www.google.com/maps?cid=18446744073709551616",
+            "https://www.google.com/maps?cid=123&cid=456",
+            "https://www.google.com/maps/search/?cid=123",
+        ):
+            with self.subTest(url=url):
+                details = _build_place_details(url, resolved_url=url, snapshot={})
+                self.assertIsNone(details.cid)
+                self.assertNotIn("cid", details.to_dict())
+
+    def test_place_dom_repair_backfills_a_missing_valid_cid(self) -> None:
+        place_url = "https://www.google.com/maps/place/Den"
+        valid_cid = "5180951040094558101"
+        for source_url, task, proposed_cid, expected in (
+            (place_url, "dom_repair", valid_cid, valid_cid),
+            (place_url, "dom_repair", "18446744073709551616", None),
+            (place_url, "dom_repair", 5180951040094558101, None),
+            (place_url, "display_translation", valid_cid, None),
+            ("https://maps.google.com/?cid=42", "dom_repair", valid_cid, "42"),
+        ):
+            with self.subTest(source_url=source_url, task=task, proposed_cid=proposed_cid):
+                repair = Mock(return_value={"fields": {"cid": proposed_cid}})
+                details = _build_place_details_from_snapshot(
+                    source_url,
+                    snapshot={"resolved_url": place_url, "dom": {}},
+                    llm_fallback=repair,
+                    llm_policy="always",
+                    llm_tasks=(task,),
+                )
+                self.assertEqual(
+                    repair.call_args.args[0].current_fields["cid"],
+                    "42" if source_url != place_url else None,
+                )
+                self.assertEqual(details.cid, expected)
+                assert details.diagnostics is not None
+                if expected == valid_cid:
+                    self.assertEqual(details.diagnostics.field_sources["cid"], "llm")
 
     def test_build_place_details_preserves_search_result_fields(self) -> None:
         details = _build_place_details(
